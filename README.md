@@ -1,3 +1,2 @@
-# leitung
-sichere leitung
+#sichere leitung
 ![Screenshot](./ausgeschnitten.png)
