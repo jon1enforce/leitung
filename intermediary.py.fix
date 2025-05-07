@@ -1,0 +1,247 @@
+import asyncio
+import websockets
+
+# Dictionary zur Speicherung der Clients und ihrer Verbindungsdaten
+clients = {}
+
+async def handle_client(websocket, path):
+    # Client meldet sich an und sendet seine ID und Verbindungsdaten
+    async for message in websocket:
+        data = message.split(":")
+        client_id = data[0]
+        encrypted_data = data[1]
+
+        # Hier würdest du die Nachricht entschlüsseln (z. B. mit deiner hybriden Verschlüsselung)
+        # client_data = decrypt(encrypted_data)  # Beispiel: RSA + AES
+        client_data = encrypted_data  # Entferne diese Zeile, wenn du die Entschlüsselung implementierst
+
+        clients[client_id] = websocket
+
+        print(f"Client {client_id} verbunden: {client_data}")
+
+        # Wenn der Client einen Zielclient anfordert
+        if client_data.startswith("connect:"):
+            target_client_id = client_data.split(":")[1]
+            if target_client_id in clients:
+                target_websocket = clients[target_client_id]
+                await target_websocket.send(f"offer:{client_id}:{encrypted_data}")
+                print(f"Verbindungsanfrage von {client_id} an {target_client_id} gesendet.")
+            else:
+                await websocket.send(f"error:Client {target_client_id} nicht gefunden.")
+
+        # Wenn der Client ein Angebot oder eine Antwort sendet
+        elif client_data.startswith("offer:") or client_data.startswith("answer:"):
+            target_client_id = data[2]
+            if target_client_id in clients:
+                target_websocket = clients[target_client_id]
+                await target_websocket.send(message)
+                print(f"Nachricht von {client_id} an {target_client_id} weitergeleitet.")
+            else:
+                await websocket.send(f"error:Client {target_client_id} nicht gefunden.")
+
+# Starte den WebSocket-Server
+start_server = websockets.serve(handle_client, "0.0.0.0", 8765)
+
+asyncio.get_event_loop().run_until_complete(start_server)
+asyncio.get_event_loop().run_forever()
+
+
+
+#client.py
+
+import asyncio
+import websockets
+from aiortc import RTCPeerConnection, RTCSessionDescription
+import json
+
+# Beispiel für deine hybriden Verschlüsselungsmethoden
+def encrypt(data):
+    # Hier würdest du die Daten mit RSA + AES verschlüsseln
+    return data  # Beispiel: Rückgabe der unverschlüsselten Daten
+
+def decrypt(encrypted_data):
+    # Hier würdest du die Daten mit RSA + AES entschlüsseln
+    return encrypted_data  # Beispiel: Rückgabe der verschlüsselten Daten
+
+async def connect_to_server():
+    uri = "ws://dein-server.de:8765"
+    async with websockets.connect(uri) as websocket:
+        # Client-ID (kann dynamisch generiert werden)
+        client_id = "client1"
+        target_client_id = "client2"
+
+        # Verbindungsdaten verschlüsseln
+        connection_data = f"connect:{target_client_id}"
+        encrypted_data = encrypt(connection_data)
+
+        await websocket.send(f"{client_id}:{encrypted_data}")
+
+        async for message in websocket:
+            if message.startswith("offer:"):
+                # Ein Angebot vom anderen Client erhalten
+                parts = message.split(":")
+                offer = parts[1]
+                encrypted_data = parts[2]
+
+                # Entschlüsseln der Daten
+                decrypted_data = decrypt(encrypted_data)
+                print(f"Angebot erhalten: {decrypted_data}")
+
+                await handle_offer(offer, websocket, client_id)
+            elif message.startswith("answer:"):
+                # Eine Antwort vom anderen Client erhalten
+                answer = message.split(":")[1]
+                await handle_answer(answer)
+            elif message.startswith("error:"):
+                print(message)
+
+async def handle_offer(offer, websocket, client_id):
+    pc = RTCPeerConnection()
+
+    # Remote-Beschreibung setzen
+    await pc.setRemoteDescription(RTCSessionDescription(sdp=offer, type="offer"))
+
+    # Lokale Beschreibung erstellen
+    await pc.setLocalDescription(await pc.createAnswer())
+
+    # Antwort an den anderen Client senden
+    answer = pc.localDescription.sdp
+    encrypted_answer = encrypt(answer)
+    await websocket.send(f"{client_id}:answer:{encrypted_answer}")
+
+async def handle_answer(answer):
+    pc = RTCPeerConnection()
+    await pc.setRemoteDescription(RTCSessionDescription(sdp=answer, type="answer"))
+
+# Starte den Client
+asyncio.get_event_loop().run_until_complete(connect_to_server())
+
+
+
+#hybride verschlüsseung für client.py
+from M2Crypto import RSA, EVP
+
+# RSA-Schlüsselpaar generieren
+def generate_rsa_keys():
+    key = RSA.gen_key(2048, 65537)
+    private_key = key.as_pem(cipher=None)
+    public_key = key.public_key().as_pem()
+    return private_key, public_key
+
+# AES-Schlüssel generieren
+def generate_aes_key():
+    return EVP.Cipher(alg='aes_256_cbc', key=get_random_bytes(32), iv=get_random_bytes(16), op=1)
+
+# Daten mit AES verschlüsseln
+def encrypt_aes(data, key, iv):
+    cipher = EVP.Cipher(alg='aes_256_cbc', key=key, iv=iv, op=1)
+    encrypted = cipher.update(data)
+    encrypted += cipher.final()
+    return encrypted
+
+# Daten mit AES entschlüsseln
+def decrypt_aes(encrypted_data, key, iv):
+    cipher = EVP.Cipher(alg='aes_256_cbc', key=key, iv=iv, op=0)
+    decrypted = cipher.update(encrypted_data)
+    decrypted += cipher.final()
+    return decrypted
+
+# Daten mit RSA verschlüsseln
+def encrypt_rsa(data, public_key):
+    rsa_key = RSA.load_pub_key_bio(public_key)
+    encrypted = rsa_key.public_encrypt(data, RSA.pkcs1_oaep_padding)
+    return encrypted
+
+# Daten mit RSA entschlüsseln
+def decrypt_rsa(encrypted_data, private_key):
+    rsa_key = RSA.load_key_string(private_key)
+    decrypted = rsa_key.private_decrypt(encrypted_data, RSA.pkcs1_oaep_padding)
+    return decrypted
+
+# Hybride Verschlüsselung (RSA + AES)
+def encrypt(data, public_key):
+    # AES-Schlüssel und IV generieren
+    aes_key = get_random_bytes(32)
+    iv = get_random_bytes(16)
+
+    # Daten mit AES verschlüsseln
+    encrypted_data = encrypt_aes(data.encode(), aes_key, iv)
+
+    # AES-Schlüssel und IV mit RSA verschlüsseln
+    encrypted_key = encrypt_rsa(aes_key + iv, public_key)
+
+    # Kombinierte Nachricht zurückgeben
+    return encrypted_key + encrypted_data
+
+# Hybride Entschlüsselung (RSA + AES)
+def decrypt(encrypted_data, private_key):
+    # Nachricht aufteilen
+    encrypted_key = encrypted_data[:256]  # 256 Bytes für RSA
+    encrypted_aes_data = encrypted_data[256:]  # Rest ist der verschlüsselte Text
+
+    # AES-Schlüssel und IV mit RSA entschlüsseln
+    decrypted_key_iv = decrypt_rsa(encrypted_key, private_key)
+    aes_key = decrypted_key_iv[:32]  # 32 Bytes für AES-Schlüssel
+    iv = decrypted_key_iv[32:48]  # 16 Bytes für IV
+
+    # Daten mit AES entschlüsseln
+    decrypted_data = decrypt_aes(encrypted_aes_data, aes_key, iv)
+    return decrypted_data.decode()
+
+# Zufällige Bytes generieren
+def get_random_bytes(length):
+    import os
+    return os.urandom(length)
+
+
+
+#beispiel
+# RSA-Schlüsselpaar generieren
+private_key, public_key = generate_rsa_keys()
+
+# Daten verschlüsseln
+data = "Hallo, das ist eine geheime Nachricht!"
+encrypted_data = encrypt(data, public_key)
+
+# Daten entschlüsseln
+decrypted_data = decrypt(encrypted_data, private_key)
+
+print(f"Original: {data}")
+print(f"Verschlüsselt: {encrypted_data}")
+print(f"Entschlüsselt: {decrypted_data}")
+
+
+
+#integration
+# Beispiel für die Verwendung der hybriden Verschlüsselung
+async def connect_to_server():
+    uri = "ws://dein-server.de:8765"
+    async with websockets.connect(uri) as websocket:
+        # Client-ID (kann dynamisch generiert werden)
+        client_id = "client1"
+        target_client_id = "client2"
+
+        # Verbindungsdaten verschlüsseln
+        connection_data = f"connect:{target_client_id}"
+        encrypted_data = encrypt(connection_data, public_key)
+
+        await websocket.send(f"{client_id}:{encrypted_data}")
+
+        async for message in websocket:
+            if message.startswith("offer:"):
+                # Ein Angebot vom anderen Client erhalten
+                parts = message.split(":")
+                offer = parts[1]
+                encrypted_data = parts[2]
+
+                # Entschlüsseln der Daten
+                decrypted_data = decrypt(encrypted_data, private_key)
+                print(f"Angebot erhalten: {decrypted_data}")
+
+                await handle_offer(offer, websocket, client_id)
+            elif message.startswith("answer:"):
+                # Eine Antwort vom anderen Client erhalten
+                answer = message.split(":")[1]
+                await handle_answer(answer)
+            elif message.startswith("error:"):
+                print(message)
