@@ -183,10 +183,13 @@ def send_audio_stream(key,seed):
     # Erstelle einen Socket für die Netzwerkübertragung..tox
     with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
         s.connect((HOST, PORT))
-
+        #TODO:
+        #+++ asymmetrisch mit public key des clients +++ vorgang verstecken - Address Space Layout Randomization (ASLR)
+        a_seed = seed# .encrypt
+        a_key = key# .encrypt
         # Sende den IV zuerst
-        #tox..
-        s.sendall(seed)
+        s.sendall('SEED:' + a_seed)
+        s.sendall('KEY' + a_key)
 
         print("Starte Audioübertragung...")
 
@@ -228,8 +231,12 @@ def receive_audio_stream(key,seed):
         print(f"Verbunden mit {addr}")
 
         # Empfange den IV zuerst
-        iv = conn.recv(IV_LEN)
-
+        a_seed = conn.recv(SEED)
+        a_key = conn.recv(KEY)
+        #TODO:
+        # +++ seed +++ key +++ entschlüsseln mit privaten schlüssel +++ vorgang verstecken: Address Space Layout Randomization (ASLR) 
+        seed = a_seed# .decrypt mit privatem schlüssel
+        key = a_key# decrypt mit privatem schlüssel
         print("Starte Audioempfang...")
 
         try:
@@ -240,7 +247,7 @@ def receive_audio_stream(key,seed):
                     break
 
                 # Entschlüssele den Chunk
-                decrypted_chunk = decrypt_audio_chunk(encrypted_chunk, key, iv)
+                decrypted_chunk = decrypt_audio_chunk(encrypted_chunk, key, seed)
 
                 # Gib den entschlüsselten Chunk über die Lautsprecher aus
                 stream.write(decrypted_chunk)
