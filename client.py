@@ -275,18 +275,23 @@ def receive_audio_stream(key,seed):
             stream.close()
             audio.terminate()
 
-def build_sip_request(self, method, recipient):
+@staticmethod
+def build_sip_request(method, recipient, client_name, server_ip, server_port):
     """Generiert standardkonforme SIP-Nachrichten"""
+    local_ip = socket.gethostbyname(socket.gethostname())  # Aktuelle IP des Clients
+    domain = server_ip  # Wir verwenden die Server-IP als Domain
+    call_seq = 1  # Könnte auch als Parameter übergeben werden
+    
     return (
         f"{method} sip:{recipient} SIP/2.0\r\n"
-        f"Via: SIP/2.0/UDP {self.local_ip}:{self.local_port};"
+        f"Via: SIP/2.0/UDP {local_ip}:{local_port};"
         f"rport;branch=z9hG4bK{random.randint(1000,9999)}\r\n"
         f"Max-Forwards: 70\r\n"
-        f"From: <sip:{self.username}@{self.domain}>;tag={random.randint(1000,9999)}\r\n"
-        f"To: <sip:{recipient}@{self.domain}>\r\n"
-        f"Call-ID: {uuid.uuid4()}@{self.domain}\r\n"
-        f"CSeq: {self.call_seq} {method}\r\n"
-        f"Contact: <sip:{self.username}@{self.local_ip}:{self.local_port}>\r\n"
+        f"From: <sip:{client_name}@{domain}>;tag={random.randint(1000,9999)}\r\n"
+        f"To: <sip:{recipient}@{domain}>\r\n"
+        f"Call-ID: {uuid.uuid4()}@{domain}\r\n"
+        f"CSeq: {call_seq} {method}\r\n"
+        f"Contact: <sip:{client_name}@{local_ip}:{local_port}>\r\n"
         f"Content-Length: 0\r\n\r\n"
     )
 
