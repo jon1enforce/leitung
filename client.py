@@ -581,7 +581,7 @@ class PHONEBOOK(ctk.CTk):
         super().__init__()
         self.client_socket = None
         self.title("PHONEBOOK, mein Telefonbuch")
-        self.geometry("640x1280")
+        self.geometry("600x1000")
         self.configure(fg_color='black')
         ctk.set_appearance_mode("dark")
         # Stile für die UI-Elemente
