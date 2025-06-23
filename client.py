@@ -580,10 +580,10 @@ class PHONEBOOK(ctk.CTk):
         self.style = ttk.Style(self)
         self.style.theme_use('alt')
         self.style.configure('TFrame', background='black')
-        self.style.configure('TLabel', background='black', foreground='black')
+        self.style.configure('TLabel', background='black', foreground='white')
         self.style.configure('TButton', background='black', foreground='white')
-        self.style.configure('TEntry', background='gray', foreground='black')
-        self.style.configure('TCombobox', background='gray', foreground='black')
+        self.style.configure('TEntry', background='gray', foreground='white')
+        self.style.configure('TCombobox', background='gray', foreground='white')
         self.style.configure('TNotebook', background='black')
         self.style.configure('TNotebook.Tab', background='black', foreground='white')
 
