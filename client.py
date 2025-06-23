@@ -298,7 +298,7 @@ def build_sip_request(method, recipient, client_name, server_ip, server_port):
         f"Content-Length: 0\r\n\r\n"
     )
 
-def handle_sip_message(self, message):
+def handle_sip_message(message):
     """Verarbeitet eingehende SIP-Nachrichten"""
     if message.startswith("SIP/"):
         if "400" in message.split()[1]:
