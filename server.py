@@ -53,9 +53,10 @@ class Server:
         self.server_public_key = self.load_or_generate_server_publickey()
         self.phonebook = []  # Liste der Clients im Telefonbuch
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.bind(('0.0.0.0', 9999))
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        self.server_socket.bind(('0.0.0.0', 5060))
         self.server_socket.listen(5)
-        print("Server lauscht auf Port 9999...")
+        print("Server lauscht auf Port 5060...")
     def get_disk_entropy(self,size):
         """
         Lese zufällige Daten von der Festplatte (z. B. /dev/urandom).
