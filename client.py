@@ -395,7 +395,7 @@ def load_client_name():
         with open("client_name.txt", "r") as file:
             return file.read().strip()
     else:
-        client_name = tk.simpledialog.askstring("Name", "Gib deinen Namen ein:")
+        client_name = simpledialog.askstring("Name", "Gib deinen Namen ein:")
         if client_name:
             with open("client_name.txt", "w") as file:
                 file.write(client_name)
