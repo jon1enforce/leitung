@@ -313,9 +313,8 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         if not server_ip or not server_port:
             messagebox.showerror("Fehler", "Keine Server-IP oder Port angegeben.")
             return
-        
         # SIP-Registrierung initiieren
-        sip_register = build_sip_request("REGISTER", f"{client_name}@{server_ip}")
+        sip_register = build_sip_request("REGISTER", f"{client_name}@{server_ip}", client_name, server_ip, server_port)
         client_socket.send(sip_register.encode('utf-8'))
         
         # Variablen für die gesammelten Daten
