@@ -2,7 +2,6 @@ import socket
 import threading
 from M2Crypto import RSA, BIO, EVP, Rand
 import hashlib
-import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
 import json
 import os
@@ -11,6 +10,14 @@ import sys
 import pyaudio
 import customtkinter as ctk
 from PIL import ImageFont
+#fallback für bessere kompatibilität:
+try:
+    from tkinter import simpledialog
+except AttributeError:
+    import tkinter as tk
+    import tkinter.simpledialog as simpledialog
+
+
 BUFFER_SIZE = 4096
 
 
