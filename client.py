@@ -307,7 +307,7 @@ def start_connection(server_ip, server_port, client_name, client_socket):
             return
         
         # SIP-Registrierung initiieren
-        sip_register = build_sip_request("REGISTER", server_ip)
+        sip_register = build_sip_request("REGISTER", f"{client_name}@{server_ip}")
         client_socket.send(sip_register.encode('utf-8'))
         
         # Variablen für die gesammelten Daten
