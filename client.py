@@ -377,6 +377,10 @@ def start_connection(server_ip, server_port, client_name, client_socket):
                     # Warte auf eine Antwort (Pong)
                     print("Server ist online.")
                     client_socket.send("PONG".encode('utf-8'))
+                elif message.startswith("SIP/2.0 400"):
+                    print("SIP-Formatfehler: Request-Line ungültig")
+                    # self.handle_sip_error(400, data)
+        continue
                 else:
                     # Unbekannte Nachricht
                     print(f"Unbekannte Nachricht empfangen: {message}")
