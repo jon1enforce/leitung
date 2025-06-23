@@ -10,6 +10,7 @@ import sys
 import pyaudio
 import customtkinter as ctk
 from PIL import ImageFont
+import tkinter as tk
 #fallback für bessere kompatibilität:
 try:
     from tkinter import simpledialog
