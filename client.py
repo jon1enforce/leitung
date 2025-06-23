@@ -337,7 +337,7 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         print(f"Empfangene Nachricht: {message}")  # Debug-Ausgabe
         
         # SIP-Nachrichten vor der normalen Verarbeitung prüfen
-        if self.handle_sip_message(message):
+        if handle_sip_message(message):
             return
             
         if message.startswith("SERVER_PUBLIC_KEY:"):
@@ -351,7 +351,7 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         message = client_socket.recv(BUFFER_SIZE).decode('utf-8')
         
         # SIP-Nachrichten während des Handshakes prüfen
-        if self.handle_sip_message(message):
+        if handle_sip_message(message):
             return
             
         while message.startswith("CLIENT_PUBLIC_KEY:"):
@@ -362,7 +362,7 @@ def start_connection(server_ip, server_port, client_name, client_socket):
             message = client_socket.recv(BUFFER_SIZE).decode('utf-8')
             
             # SIP-Nachrichten während der Schlüsselübertragung prüfen
-            if self.handle_sip_message(message):
+            if handle_sip_message(message):
                 break
                 
             if message.startswith("CLIENT_PUBLIC_KEY:"):
@@ -392,7 +392,7 @@ def start_connection(server_ip, server_port, client_name, client_socket):
                 message = client_socket.recv(BUFFER_SIZE).decode('utf-8')
                 
                 # SIP-Nachrichten in der Hauptschleife zuerst prüfen
-                if self.handle_sip_message(message):
+                if handle_sip_message(message):
                     continue
                     
                 if message.startswith("CLIENT_ID:"):
