@@ -277,20 +277,24 @@ def receive_audio_stream(key,seed):
 
 @staticmethod
 def build_sip_request(method, recipient, client_name, server_ip, server_port):
-    """Generiert standardkonforme SIP-Nachrichten"""
-    local_ip = socket.gethostbyname(socket.gethostname())  # Eigene IP des Clients
-    local_port = 5060
+    """Generiert standardkonforme SIP-Nachrichten mit korrekten Port-Handlings"""
+    local_ip = socket.gethostbyname(socket.gethostname())
     
+    # Wichtige Änderungen:
+    local_port = random.randint(32768, 60999)  # IANA empfohlener ephemeral port range
+    call_id = f"{uuid.uuid4()}@{server_ip}"
+    branch_id = f"z9hG4bK{random.randint(1000,9999)}"
+    tag = random.randint(1000,9999)
+
     return (
-        f"{method} sip:{recipient}@{server_ip}:{server_port} SIP/2.0\r\n"  # Server-Port!
-        f"Via: SIP/2.0/UDP {local_ip}:{local_port};"  # Client-Port!
-        f"branch=z9hG4bK{random.randint(1000,9999)}\r\n"
+        f"{method} sip:{recipient}@{server_ip}:{server_port} SIP/2.0\r\n"
+        f"Via: SIP/2.0/UDP {local_ip}:{local_port};rport;branch={branch_id}\r\n"
         f"Max-Forwards: 70\r\n"
-        f"From: <sip:{client_name}@{server_ip}>;tag={random.randint(1000,9999)}\r\n"
+        f"From: <sip:{client_name}@{server_ip}>;tag={tag}\r\n"
         f"To: <sip:{recipient}@{server_ip}>\r\n"
-        f"Call-ID: {uuid.uuid4()}@{server_ip}\r\n"
-        f"CSeq: 1 {method}\r\n"  # CSeq könnte hochgezählt werden
-        f"Contact: <sip:{client_name}@{local_ip}:{local_port}>\r\n"  # Client-Port!
+        f"Call-ID: {call_id}\r\n"
+        f"CSeq: 1 {method}\r\n"
+        f"Contact: <sip:{client_name}@{local_ip}:{local_port}>\r\n"
         f"Content-Length: 0\r\n\r\n"
     )
 
