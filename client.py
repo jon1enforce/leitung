@@ -8,8 +8,14 @@ import os
 import time
 import sys
 import pyaudio
+import uuid
+import random
 import customtkinter as ctk
+import binascii
+from datetime import datetime
 from PIL import ImageFont
+import base64
+import re  # Für SIP-Header-Parsing
 import tkinter as tk
 #fallback für bessere kompatibilität:
 try:
@@ -219,6 +225,8 @@ def send_audio_stream(key,seed):
             stream.close()
             audio.terminate()
 
+
+
 def receive_audio_stream(key,seed):
     """
     Empfängt verschlüsselte Audiodaten über das Netzwerk, entschlüsselt sie und gibt sie über die Lautspre>
@@ -267,12 +275,41 @@ def receive_audio_stream(key,seed):
             stream.close()
             audio.terminate()
 
+def build_sip_request(self, method, recipient):
+    """Generiert standardkonforme SIP-Nachrichten"""
+    return (
+        f"{method} sip:{recipient} SIP/2.0\r\n"
+        f"Via: SIP/2.0/UDP {self.local_ip}:{self.local_port};"
+        f"rport;branch=z9hG4bK{random.randint(1000,9999)}\r\n"
+        f"Max-Forwards: 70\r\n"
+        f"From: <sip:{self.username}@{self.domain}>;tag={random.randint(1000,9999)}\r\n"
+        f"To: <sip:{recipient}@{self.domain}>\r\n"
+        f"Call-ID: {uuid.uuid4()}@{self.domain}\r\n"
+        f"CSeq: {self.call_seq} {method}\r\n"
+        f"Contact: <sip:{self.username}@{self.local_ip}:{self.local_port}>\r\n"
+        f"Content-Length: 0\r\n\r\n"
+    )
+
+def handle_sip_message(self, message):
+    """Verarbeitet eingehende SIP-Nachrichten"""
+    if message.startswith("SIP/"):
+        if "400" in message.split()[1]:
+            print("SIP-Fehler 400: Ungültige Anfrage")
+        elif "200 OK" in message:
+            print("SIP-Erfolg: 200 OK")
+        return True
+    return False
 
 def start_connection(server_ip, server_port, client_name, client_socket):
     try:
         if not server_ip or not server_port:
             messagebox.showerror("Fehler", "Keine Server-IP oder Port angegeben.")
             return
+        
+        # SIP-Registrierung initiieren
+        sip_register = build_sip_request("REGISTER", server_ip)
+        client_socket.send(sip_register.encode('utf-8'))
+        
         # Variablen für die gesammelten Daten
         server_public_key = None
         client_public_keys = []
@@ -280,6 +317,7 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         # Sende den Client-Namen
         client_socket.send(client_name.encode('utf-8'))
         time.sleep(0.1)
+        
         # Sende den öffentlichen Schlüssel des Clients
         public_key = load_publickey()
         if public_key:
@@ -290,64 +328,85 @@ def start_connection(server_ip, server_port, client_name, client_socket):
 
         message = client_socket.recv(BUFFER_SIZE).decode('utf-8')
         print(f"Empfangene Nachricht: {message}")  # Debug-Ausgabe
+        
+        # SIP-Nachrichten vor der normalen Verarbeitung prüfen
+        if self.handle_sip_message(message):
+            return
+            
         if message.startswith("SERVER_PUBLIC_KEY:"):
-                # Verarbeite den öffentlichen Schlüssel eines anderen Clients
-                public_key1 = message.split(":")[1]
-                server_public_key = public_key1
-                print(f"Empfangener öffentlicher Schlüssel vom Server: {public_key1}")
+            # Verarbeite den öffentlichen Schlüssel eines anderen Clients
+            public_key1 = message.split(":")[1]
+            server_public_key = public_key1
+            print(f"Empfangener öffentlicher Schlüssel vom Server: {public_key1}")
         else:
             print("Fehler in der Reihenfolge")
+            
         message = client_socket.recv(BUFFER_SIZE).decode('utf-8')
+        
+        # SIP-Nachrichten während des Handshakes prüfen
+        if self.handle_sip_message(message):
+            return
+            
         while message.startswith("CLIENT_PUBLIC_KEY:"):
             # Verarbeite den öffentlichen Schlüssel eines anderen Clients
             client_public_key = message.split(":")[1]
             client_public_keys.append(client_public_key)
             print(f"Empfangener öffentlicher Schlüssel eines Clients: {client_public_key}")
             message = client_socket.recv(BUFFER_SIZE).decode('utf-8')
+            
+            # SIP-Nachrichten während der Schlüsselübertragung prüfen
+            if self.handle_sip_message(message):
+                break
+                
             if message.startswith("CLIENT_PUBLIC_KEY:"):
                 continue
             else:
                 break
+                
         time.sleep(1)
-        #message = client_socket.recv(BUFFER_SIZE).decode('utf-8')
+        
         if message.startswith("MERKLE_ROOT:"):
             # Verarbeite den Merkle Root-Hash
             merkle_root = message.split(":")[1]
             print(f"Empfangener Merkle Root-Hash: {merkle_root}")
         else:
             print("kein Merkle Root-Hash empfangen, oder fehlerhafte Datei")
+            
         if verify_merkle_integrity(server_public_key, client_public_keys, merkle_root):
             print("Integritätsprüfung erfolgreich.")
         else:
             print("Integritätsprüfung fehlgeschlagen.")
-        # Hauptverbindungslogik (z. B. Empfangen von Nachrichten)
+
+        # Hauptverbindungslogik
         while True:
             try:
-                # Setze ein Timeout für den recv-Aufruf
-                client_socket.settimeout(1.0)  # Timeout von 1 Sekunde
+                client_socket.settimeout(1.0)
                 time.sleep(0.1)
-                # Warte auf Nachrichten vom Server
                 message = client_socket.recv(BUFFER_SIZE).decode('utf-8')
+                
+                # SIP-Nachrichten in der Hauptschleife zuerst prüfen
+                if self.handle_sip_message(message):
+                    continue
+                    
                 if message.startswith("CLIENT_ID:"):
-                    # Verarbeite die Client-ID
                     client_id = message.split("LIENT_ID:")[1]
                     save_client_id(client_id)
                     print(f"Empfangene Client-ID: {client_id}")
+                    
                 elif message.startswith("CLIENT_PUBLIC_KEY:"):
-                    # Verarbeite den öffentlichen Schlüssel des Servers
                     client_public_key = message.split(":")[1]
                     print(f"Empfangener öffentlicher Schlüssel des angerufenen Clients: {client_public_key}")
-                elif message.startswith("PHONEBOOK:"):#1
+                    
+                elif message.startswith("PHONEBOOK:"):
                     encrypted_phonebook = message.split("HONEBOOK:")[1]
                     print("PHONEBOOK+++")
                     print(encrypted_phonebook)
                     encrypted_phonebook = encrypted_phonebook.strip()
-                    #decrypt + update:
-                elif message.startswith("SECRET:"):#2
+                    
+                elif message.startswith("SECRET:"):
                     secret = message.split("ECRET:")[1]
                     print("SECRET+++")
                     print(secret)
-                    #funktioniert noch nicht ! +++
                     secret = secret.strip()
                     print("SECRET+++")
                     private_key = load_privatekey()
@@ -358,11 +417,9 @@ def start_connection(server_ip, server_port, client_name, client_socket):
                         secret = bytes.fromhex(secret)
                     except ValueError as e:
                         print("Fehler bei der Konvertierung von Hex zu Bytes")
-                    #print(secret)
                     print("3")
                     decrypted_secret = rsa_key.private_decrypt(secret, RSA.pkcs1_padding)
                     print("secret decrypted..AES..")
-                    #AES decrypt encrypted_phonebook..
                     print("3")
                     print(decrypted_secret)
                     print("4")
@@ -373,21 +430,19 @@ def start_connection(server_ip, server_port, client_name, client_socket):
                     print("6")
                     app.update_phonebook(phonebook.decode('utf-8'))
                     print("7")
+                    
                 elif message.startswith("PING"):
-                    # Warte auf eine Antwort (Pong)
                     print("Server ist online.")
                     client_socket.send("PONG".encode('utf-8'))
-                elif message.startswith("SIP/2.0 400"):
-                    print("SIP-Formatfehler: Request-Line ungültig")
-                    # self.handle_sip_error(400, data)
-        continue
+                    
                 else:
-                    # Unbekannte Nachricht
                     print(f"Unbekannte Nachricht empfangen: {message}")
+                    
             except socket.timeout:
                 continue
             except Exception as e:
                 print("Hauptverbindungslogik abgebrochen")
+                
     except Exception as e:
         messagebox.showerror("Fehler", f"Verbindung zum Server fehlgeschlagen: {e}")
     finally:
