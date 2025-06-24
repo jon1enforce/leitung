@@ -360,10 +360,12 @@ def start_connection(server_ip, server_port, client_name, client_socket):
 
         # 2. Server-Antwort empfangen (als Bytes)
         server_response = client_socket.recv(BUFFER_SIZE)
-        sip_data = parse_sip_message(server_response)
-        
-        if not sip_data or "200 OK" not in sip_data['method']:
-            raise ValueError("Registrierung fehlgeschlagen")
+        if not sip_data:
+            print(f"Ungültige SIP-Antwort: {server_response}")
+            raise ValueError("Ungültiges Server-Protokoll")
+        elif sip_data.get('status_code') != "200":
+            print(f"Registrierungsfehler: {sip_data.get('status_code', 'Kein Code')}")
+            raise ValueError(f"Server verweigerte Registrierung: {sip_data.get('status_code')}")
 
         # 3. Server Public Key extrahieren
         server_public_key = sip_data['custom_data'].get("SERVER_PUBLIC_KEY")
