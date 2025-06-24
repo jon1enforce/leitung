@@ -93,7 +93,7 @@ def handle_sip_message(raw_data):
 
 
 class Server:
-    def __init__(self):
+    def __init__(self, host='0.0.0.0', port=5060):
         self.host = host
         self.port = port
         self.clients = {}  # {client_id: {"name": str, "public_key": str, "socket": socket, "ip": str}}
