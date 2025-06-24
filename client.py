@@ -40,7 +40,7 @@ ENC_METHOD = "aes_256_cbc"
 
 # Netzwerk-Einstellungen peer to peer:
 HOST = "0.0.0.0"  # IP des Empfängers
-PORT = 5000  # Port für die Übertragung
+PORT = 5060  # Port für die Übertragung
 
 
 
@@ -374,7 +374,7 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         
         if message.startswith("MERKLE_ROOT:"):
             # Verarbeite den Merkle Root-Hash
-            merkle_root = message.split(":")[1]
+            merkle_root = message.split("ERKLE_ROOT:")[1]
             print(f"Empfangener Merkle Root-Hash: {merkle_root}")
         else:
             print("kein Merkle Root-Hash empfangen, oder fehlerhafte Datei")
