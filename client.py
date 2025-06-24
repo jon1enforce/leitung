@@ -310,75 +310,36 @@ def handle_sip_message(message):
 
 def start_connection(server_ip, server_port, client_name, client_socket):
     try:
-        if not server_ip or not server_port:
-            messagebox.showerror("Fehler", "Keine Server-IP oder Port angegeben.")
-            return
-        # SIP-Registrierung initiieren
-        sip_register = build_sip_request("REGISTER", f"{client_name}@{server_ip}", client_name, server_ip, server_port)
+        # SIP-Registrierung (unverändert)
+        sip_register = build_sip_request("REGISTER", f"{client_name}@{server_ip}")
         client_socket.send(sip_register.encode('utf-8'))
-        
-        # Variablen für die gesammelten Daten
-        server_public_key = None
-        client_public_keys = []
 
-        # Sende den Client-Namen
+        # Schlüsselaustausch (Original-Logik)
         client_socket.send(client_name.encode('utf-8'))
-        time.sleep(0.1)
-        
-        # Sende den öffentlichen Schlüssel des Clients
         public_key = load_publickey()
-        if public_key:
-            client_socket.send(public_key.encode('utf-8'))
-        else:
-            messagebox.showerror("Fehler", "Öffentlicher Schlüssel konnte nicht geladen werden.")
-            return
+        client_socket.send(public_key.encode('utf-8'))
 
+        # Phase 1: Server-Key empfangen
         message = client_socket.recv(BUFFER_SIZE).decode('utf-8')
-        print(f"Empfangene Nachricht: {message}")  # Debug-Ausgabe
-        
-        # SIP-Nachrichten vor der normalen Verarbeitung prüfen
-        if handle_sip_message(message):
-            return
-            
-        if message.startswith("SERVER_PUBLIC_KEY:"):
-            # Verarbeite den öffentlichen Schlüssel eines anderen Clients
-            public_key1 = message.split(":")[1]
-            server_public_key = public_key1
-            print(f"Empfangener öffentlicher Schlüssel vom Server: {public_key1}")
-        else:
-            print("Fehler in der Reihenfolge")
-            
-        message = client_socket.recv(BUFFER_SIZE).decode('utf-8')
-        
-        # SIP-Nachrichten während des Handshakes prüfen
-        if handle_sip_message(message):
-            return
-            
-        while message.startswith("CLIENT_PUBLIC_KEY:"):
-            # Verarbeite den öffentlichen Schlüssel eines anderen Clients
-            client_public_key = message.split(":")[1]
-            client_public_keys.append(client_public_key)
-            print(f"Empfangener öffentlicher Schlüssel eines Clients: {client_public_key}")
+        if not message.startswith("SERVER_PUBLIC_KEY:"):
+            raise ValueError("Falsche Server-Antwort - Kein PUBLIC_KEY")
+        server_public_key = message.split(":")[1]
+
+        # Phase 2: Client-Keys sammeln
+        client_public_keys = []
+        while True:
             message = client_socket.recv(BUFFER_SIZE).decode('utf-8')
-            
-            # SIP-Nachrichten während der Schlüsselübertragung prüfen
-            if handle_sip_message(message):
-                break
-                
             if message.startswith("CLIENT_PUBLIC_KEY:"):
-                continue
+                client_public_keys.append(message.split(":")[1])
             else:
-                break
-                
-        time.sleep(1)
-        
+                break  # Ende der Client-Liste
         if message.startswith("MERKLE_ROOT:"):
-            # Verarbeite den Merkle Root-Hash
-            merkle_root = message.split("MERKLE_ROOT:")[1].strip()  # strip() entfernt Whitespace
+            merkle_root = message.split("MERKLE_ROOT:")[1].strip()  # strip() für Whitespace/Endmarker
             print(f"Empfangener Merkle Root-Hash: {merkle_root}")
         else:
-            print("kein Merkle Root-Hash empfangen, oder fehlerhafte Datei")
-            
+            print("Kein Merkle Root-Hash empfangen")
+            return
+
         if verify_merkle_integrity(server_public_key, client_public_keys, merkle_root):
             print("Integritätsprüfung erfolgreich.")
         else:
