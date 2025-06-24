@@ -151,7 +151,7 @@ class Server:
             )
             
             # Debug-Ausgabe vor der Bindung
-            debug_socket(self.server_socket)
+            self.debug_socket(self.server_socket)
             
             # SO_REUSEADDR setzen
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
@@ -169,7 +169,7 @@ class Server:
             print(f"Server lauscht (backlog=5)")
             
             # Debug-Ausgabe nach listen
-            debug_socket(self.server_socket)
+            self.debug_socket(self.server_socket)
             
             while True:
                 try:
