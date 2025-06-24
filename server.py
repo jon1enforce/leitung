@@ -94,6 +94,8 @@ def handle_sip_message(raw_data):
 
 class Server:
     def __init__(self):
+        self.host = host
+        self.port = port
         self.clients = {}  # {client_id: {"name": str, "public_key": str, "socket": socket, "ip": str}}
         self.server_public_key = self.load_or_generate_server_publickey()
         self.phonebook = []  # Liste der Clients im Telefonbuch
