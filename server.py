@@ -170,109 +170,62 @@ class Server:
             return public_key
     
 def handle_client(self, client_socket, client_address):
-    print(f"Verbindung hergestellt mit {client_address}")
-
+    print(f"\n[Server] Neue Verbindung von {client_address}")
     try:
-        decrypted_secret = self.generate_secret()
-        
-        # 1. SIP-Registrierung verarbeiten
-        data = client_socket.recv(BUFFER_SIZE)
-        sip_msg = self.handle_sip_message(data)
+        # 1. SIP-REGISTER empfangen
+        register_data = client_socket.recv(BUFFER_SIZE)
+        sip_msg = self.parse_sip_message(register_data)
         
         if not sip_msg or sip_msg['method'] != "REGISTER":
-            client_socket.send(b"SIP/2.0 400 Bad Request\r\n\r\n")
+            client_socket.send(b"SIP/2.0 400 Invalid Request\r\n\r\n")
             return
 
-        client_name = sip_msg['custom_data'].get("CLIENT_NAME", "")
-        public_key = sip_msg['custom_data'].get("PUBLIC_KEY", "")
+        client_name = sip_msg['custom_data'].get("CLIENT_NAME")
+        public_key = sip_msg['custom_data'].get("PUBLIC_KEY")
         
-        print(f"Client {client_name} verbunden.")
-        print(f"Öffentlicher Schlüssel von {client_name} empfangen.")
-
         # 2. Client registrieren
-        client_id = str(len(self.clients) + 1)
+        client_id = f"client_{len(self.clients)+1}"
         self.clients[client_id] = {
-            "name": client_name,
-            "public_key": public_key,
-            "socket": client_socket,
-            "ip": client_address[0]
+            'name': client_name,
+            'public_key': public_key,
+            'socket': client_socket
         }
 
-        # 3. Server-Key senden (SIP-konform)
-        server_key_msg = self.build_sip_message(
-            method="MESSAGE",
-            recipient=client_name,
-            custom_data={
-                "SERVER_PUBLIC_KEY": self.server_public_key,
-                "CLIENT_ID": client_id
-            }
+        # 3. Server-Antwort senden (200 OK + Server-Key)
+        response = self.build_sip_message(
+            "SIP/2.0 200 OK",
+            client_name,
+            {"SERVER_PUBLIC_KEY": self.server_public_key}
         )
-        client_socket.send(server_key_msg.encode())
+        client_socket.send(response.encode())
 
-        # 4. Client-Keys senden
-        client_public_keys = []
-        for client in self.clients.values():
-            if client["public_key"] != public_key:
-                key_msg = self.build_sip_message(
-                    method="MESSAGE",
-                    recipient=client_name,
-                    custom_data={
-                        "CLIENT_PUBLIC_KEY": client['public_key'],
-                        "CLIENT_IP": client['ip']
-                    }
-                )
-                client_socket.send(key_msg.encode())
-                client_public_keys.append(client['public_key'])
-
-        # 5. Merkle-Root berechnen und senden
-        public_keys_list = [self.server_public_key] + client_public_keys
-        key_string = merge_public_keys(public_keys_list)
-        merkle_root = build_merkle_tree(key_string)
-        
+        # 4. Merkle-Root senden
+        merkle_root = self.calculate_merkle_root(client_id)
         merkle_msg = self.build_sip_message(
-            method="MESSAGE",
-            recipient=client_name,
-            custom_data={
-                "MERKLE_ROOT": merkle_root,
-                "END_OF_KEYS": "true"  # Signalisiert Ende der Übertragung
-            }
+            "MESSAGE",
+            client_name,
+            {"MERKLE_ROOT": merkle_root}
         )
         client_socket.send(merkle_msg.encode())
 
-        # 6. Hauptkommunikationsschleife
+        # 5. Hauptkommunikationsschleife
         while True:
-            try:
-                data = client_socket.recv(BUFFER_SIZE)
-                if not data:
-                    break
+            data = client_socket.recv(BUFFER_SIZE)
+            if not data: break
+            
+            msg = self.parse_sip_message(data)
+            if msg and msg.get('custom_data', {}).get("PING"):
+                pong = self.build_sip_message(
+                    "MESSAGE",
+                    client_name,
+                    {"PONG": "true"}
+                )
+                client_socket.send(pong.encode())
 
-                msg = self.handle_sip_message(data)
-                if not msg:
-                    print("Ungültige Nachricht:", data[:100])
-                    continue
-
-                # Ping/Pong
-                if msg['method'] == "MESSAGE" and "PING" in msg['custom_data']:
-                    pong_msg = self.build_sip_message(
-                        method="MESSAGE",
-                        recipient=client_name,
-                        custom_data={"PONG": "true"}
-                    )
-                    client_socket.send(pong_msg.encode())
-
-                # Anruf-Signalisierung
-                elif msg['method'] == "INVITE":
-                    target_client = msg['headers']['to'].split(':')[1]
-                    print(f"Vermittle Anruf an {target_client}")
-                    # ... bestehende Anruflogik ...
-
-            except Exception as e:
-                print(f"Fehler: {e}")
-                break
-
+    except Exception as e:
+        print(f"[Server] Fehler: {str(e)}")
     finally:
         client_socket.close()
-        self.update_phonebook()
 
 
 
