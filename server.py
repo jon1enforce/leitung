@@ -44,7 +44,50 @@ def build_merkle_tree(data_blocks):
     return tree[0]  # Der Merkle Root-Hash
 
     
+def handle_sip_message(raw_data):
+    """Verarbeitet ALLE SIP-Nachrichten und gibt Typ/Header/Body zurück"""
+    try:
+        data = raw_data.decode()
+        lines = data.split('\r\n')
+        
+        # Start-Line parsen (z.B. "REGISTER sip:server.com SIP/2.0")
+        start_line = lines[0]
+        method = start_line.split()[0] if ' ' in start_line else None
+        
+        # Header extrahieren
+        headers = {}
+        body = ""
+        header_mode = True
+        
+        for line in lines[1:]:
+            if not line.strip():
+                header_mode = False  # Leerzeile markiert Body-Start
+                continue
+                
+            if header_mode and ': ' in line:
+                key, val = line.split(': ', 1)
+                headers[key.lower()] = val.strip()
+            elif not header_mode:
+                body += line + '\r\n'
 
+        # Ihre Protokoll-Labels extrahieren (MERKLE_ROOT: etc.)
+        custom_data = {}
+        for line in body.split('\r\n'):
+            if ':' in line:
+                key, val = line.split(':', 1)
+                custom_data[key.strip()] = val.strip()
+
+        return {
+            'method': method,
+            'headers': headers,
+            'body': body.strip(),
+            'custom_data': custom_data  # Enthält MERKLE_ROOT/public_key etc.
+        }
+
+    except Exception as e:
+        print(f"SIP-Parsingfehler: {e}")
+        return None
+        return b"SIP/2.0 400 Bad Request\r\n\r\n"
 
 
 class Server:
