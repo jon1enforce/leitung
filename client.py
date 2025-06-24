@@ -356,21 +356,24 @@ def start_connection(server_ip, server_port, client_name, client_socket):
                 "PUBLIC_KEY": load_publickey()
             }
         )
-    # 1. Nachricht senden
-    client_socket.send(register_msg.encode('utf-8'))
-    
-    # 2. Auf Antwort warten (mit Timeout und Wiederholungen)
-    client_socket.settimeout(5.0)  # 5 Sekunden Timeout
-    for _ in range(3):  # 3 Versuche
-        try:
-            server_response = client_socket.recv(4096)
-            if server_response:  # Nur parsen wenn Daten da sind
-                sip_data = parse_sip_message(server_response)
-                if sip_data:  # Gültige SIP-Nachricht?
-                    break
-        except socket.timeout:
-            print("Warte auf Server-Antwort...")
-            continue
+        # 1. Nachricht senden
+        client_socket.send(register_msg.encode('utf-8'))
+        
+        # 2. Auf Antwort warten (mit Timeout und Wiederholungen)
+        client_socket.settimeout(5.0)  # 5 Sekunden Timeout
+        for _ in range(3):  # 3 Versuche
+            try:
+                server_response = client_socket.recv(4096)
+                if server_response:  # Nur parsen wenn Daten da sind
+                    sip_data = parse_sip_message(server_response)
+                    if sip_data:  # Gültige SIP-Nachricht?
+                        break
+            except socket.timeout:
+                print("Warte auf Server-Antwort...")
+                continue
+    except socket.timeout:
+        print("Warte auf Server-Antwort...")
+        continue
     
     if not server_response:
         raise ValueError("Keine Antwort vom Server (Timeout)")
