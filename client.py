@@ -374,7 +374,7 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         
         if message.startswith("MERKLE_ROOT:"):
             # Verarbeite den Merkle Root-Hash
-            merkle_root = message.split("ERKLE_ROOT:")[1]
+            merkle_root = message.split("MERKLE_ROOT:")[1].strip()  # strip() entfernt Whitespace
             print(f"Empfangener Merkle Root-Hash: {merkle_root}")
         else:
             print("kein Merkle Root-Hash empfangen, oder fehlerhafte Datei")
