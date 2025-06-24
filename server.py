@@ -44,50 +44,52 @@ def build_merkle_tree(data_blocks):
     return tree[0]  # Der Merkle Root-Hash
 
     
+@staticmethod
+def build_sip_message(method, recipient, custom_data={}):
+    """Generiert SIP-Nachrichten mit Custom-Daten"""
+    body = "\r\n".join(f"{k}: {v}" for k, v in custom_data.items())
+    
+    return (
+        f"{method} sip:{recipient} SIP/2.0\r\n"
+        f"From: <sip:server@{socket.gethostbyname(socket.gethostname())}>\r\n"
+        f"To: <sip:{recipient}>\r\n"
+        f"Call-ID: {uuid.uuid4()}\r\n"
+        f"CSeq: 1 {method}\r\n"
+        f"Content-Type: text/custom\r\n"
+        f"Content-Length: {len(body)}\r\n\r\n"
+        f"{body}"
+    )
+
+@staticmethod
 def handle_sip_message(raw_data):
-    """Verarbeitet ALLE SIP-Nachrichten und gibt Typ/Header/Body zurück"""
+    """Verarbeitet eingehende SIP-Nachrichten"""
     try:
         data = raw_data.decode()
-        lines = data.split('\r\n')
-        
-        # Start-Line parsen (z.B. "REGISTER sip:server.com SIP/2.0")
-        start_line = lines[0]
-        method = start_line.split()[0] if ' ' in start_line else None
-        
-        # Header extrahieren
+        if not data:
+            return None
+            
+        parts = data.split("\r\n\r\n", 1)
         headers = {}
-        body = ""
-        header_mode = True
-        
-        for line in lines[1:]:
-            if not line.strip():
-                header_mode = False  # Leerzeile markiert Body-Start
-                continue
-                
-            if header_mode and ': ' in line:
-                key, val = line.split(': ', 1)
+        for line in parts[0].split("\r\n"):
+            if ": " in line:
+                key, val = line.split(": ", 1)
                 headers[key.lower()] = val.strip()
-            elif not header_mode:
-                body += line + '\r\n'
-
-        # Ihre Protokoll-Labels extrahieren (MERKLE_ROOT: etc.)
+        
         custom_data = {}
-        for line in body.split('\r\n'):
-            if ':' in line:
-                key, val = line.split(':', 1)
-                custom_data[key.strip()] = val.strip()
+        if len(parts) > 1:
+            for line in parts[1].split("\r\n"):
+                if ": " in line:
+                    key, val = line.split(": ", 1)
+                    custom_data[key] = val.strip()
 
         return {
-            'method': method,
-            'headers': headers,
-            'body': body.strip(),
-            'custom_data': custom_data  # Enthält MERKLE_ROOT/public_key etc.
+            "method": data.split()[0],
+            "headers": headers,
+            "custom_data": custom_data
         }
-
     except Exception as e:
         print(f"SIP-Parsingfehler: {e}")
         return None
-        return b"SIP/2.0 400 Bad Request\r\n\r\n"
 
 
 class Server:
@@ -167,75 +169,111 @@ class Server:
 
             return public_key
     
-    def handle_client(self, client_socket, client_address):
-        print(f"Verbindung hergestellt mit {client_address}")
+def handle_client(self, client_socket, client_address):
+    print(f"Verbindung hergestellt mit {client_address}")
 
-        try:
-            decrypted_secret = self.generate_secret()
-            # Empfange den Client-Namen
-            client_name = client_socket.recv(BUFFER_SIZE).decode('utf-8')
-            print(f"Client {client_name} verbunden.")
-            # Empfange den öffentlichen Schlüssel des Clients
-            public_key = client_socket.recv(BUFFER_SIZE).decode('utf-8')
-            client_id = str(len(self.clients) + 1)  # Generiere eine Client-ID
-            self.clients[client_id] = {"name": client_name, "public_key": public_key, "socket": client_socket, "ip": client_address[0]}
-            print(f"Öffentlicher Schlüssel von {client_name} empfangen.")
-            # Sende den öffentlichen Schlüssel des Servers an den Client
-            client_socket.send(f"SERVER_PUBLIC_KEY:{self.server_public_key}".encode('utf-8'))
+    try:
+        decrypted_secret = self.generate_secret()
+        
+        # 1. SIP-Registrierung verarbeiten
+        data = client_socket.recv(BUFFER_SIZE)
+        sip_msg = self.handle_sip_message(data)
+        
+        if not sip_msg or sip_msg['method'] != "REGISTER":
+            client_socket.send(b"SIP/2.0 400 Bad Request\r\n\r\n")
+            return
 
-            # Sende die öffentlichen Schlüssel aller Clients an den neuen Client
-            client_public_keys = []
-            for client in self.clients.values():
-                if client["public_key"] != public_key:  # Sende nicht den eigenen Schlüssel
-                    client_socket.send(f"CLIENT_PUBLIC_KEY:{client['public_key']}:{client['ip']}".encode('utf-8'))
-                    client_public_keys.append(client["public_key"])
-            client_socket.send("END_OF_KEYS".encode('utf-8'))  # Signalisiere das Ende der Schlüssel       
-            public_keys_list = []
-            public_keys_list.append(self.server_public_key)#.decode('utf-8'))
-            for key0 in client_public_keys:
-                public_keys_list.append(key0)
-            key_string = merge_public_keys(public_keys_list)
-            # Generiere und sende den Merkle Root Hash an alle Clients
-            merkle_root = build_merkle_tree(key_string)
-            print("+++STRING+++")
-            print(key_string)
-            print("+++STRING+++")
-            time.sleep(1)
-            client_socket.send(f"MERKLE_ROOT:{merkle_root}".encode('utf-8'))
-            time.sleep(1)
-            # Sende die Client-ID an den Client
-            client_socket.send(f"CLIENT_ID:{client_id}".encode('utf-8'))   
-                    # Schleife zum Empfangen und Verarbeiten von Nachrichten
-            time.sleep(1)
-            self.update_phonebook()
-            self.broadcast_phonebook(decrypted_secret)
-            time.sleep(5)
-            client_socket.send(f"PING".encode("utf-8"))
-            while True:
-                time.sleep(1)
-                message = client_socket.recv(BUFFER_SIZE).decode('utf-8')
-                print(f"Empfangene Nachricht: {message}")  # Debug-Ausgabe
+        client_name = sip_msg['custom_data'].get("CLIENT_NAME", "")
+        public_key = sip_msg['custom_data'].get("PUBLIC_KEY", "")
+        
+        print(f"Client {client_name} verbunden.")
+        print(f"Öffentlicher Schlüssel von {client_name} empfangen.")
 
-                if message.startswith("CALL_ID:"):
-                    # Verarbeite die Client-ID
-                    client_id = message.split(":")[1]
-                    save_client_id(client_id)
-                    print(f"Empfangene Client-ID: {client_id}")
+        # 2. Client registrieren
+        client_id = str(len(self.clients) + 1)
+        self.clients[client_id] = {
+            "name": client_name,
+            "public_key": public_key,
+            "socket": client_socket,
+            "ip": client_address[0]
+        }
 
-                elif message.startswith("CALL_PUBLIC_KEY:"):
-                    # Verarbeite den öffentlichen Schlüssel des Servers
-                    client_public_key = message.split(":")[1]
-                    print(f"Empfangener öffentlicher Schlüssel des Anrufers: {client_public_key}")
-                    client_socket.send(f"CALL_PUBLIC_KEY:{client_public_key}".encode('utf-8'))
-                elif message.startswith("PONG"):
-                    client_socket.send(f"PING".encode('utf-8'))
-                else:
-                    # Unbekannte Nachricht
-                    print(f"Unbekannte Nachricht empfangen: {message}")
-        except Exception as e:
-            print(f"Fehler bei der Kommunikation mit {client_address}: {e}")
-        finally:
-            client_socket.close()
+        # 3. Server-Key senden (SIP-konform)
+        server_key_msg = self.build_sip_message(
+            method="MESSAGE",
+            recipient=client_name,
+            custom_data={
+                "SERVER_PUBLIC_KEY": self.server_public_key,
+                "CLIENT_ID": client_id
+            }
+        )
+        client_socket.send(server_key_msg.encode())
+
+        # 4. Client-Keys senden
+        client_public_keys = []
+        for client in self.clients.values():
+            if client["public_key"] != public_key:
+                key_msg = self.build_sip_message(
+                    method="MESSAGE",
+                    recipient=client_name,
+                    custom_data={
+                        "CLIENT_PUBLIC_KEY": client['public_key'],
+                        "CLIENT_IP": client['ip']
+                    }
+                )
+                client_socket.send(key_msg.encode())
+                client_public_keys.append(client['public_key'])
+
+        # 5. Merkle-Root berechnen und senden
+        public_keys_list = [self.server_public_key] + client_public_keys
+        key_string = merge_public_keys(public_keys_list)
+        merkle_root = build_merkle_tree(key_string)
+        
+        merkle_msg = self.build_sip_message(
+            method="MESSAGE",
+            recipient=client_name,
+            custom_data={
+                "MERKLE_ROOT": merkle_root,
+                "END_OF_KEYS": "true"  # Signalisiert Ende der Übertragung
+            }
+        )
+        client_socket.send(merkle_msg.encode())
+
+        # 6. Hauptkommunikationsschleife
+        while True:
+            try:
+                data = client_socket.recv(BUFFER_SIZE)
+                if not data:
+                    break
+
+                msg = self.handle_sip_message(data)
+                if not msg:
+                    print("Ungültige Nachricht:", data[:100])
+                    continue
+
+                # Ping/Pong
+                if msg['method'] == "MESSAGE" and "PING" in msg['custom_data']:
+                    pong_msg = self.build_sip_message(
+                        method="MESSAGE",
+                        recipient=client_name,
+                        custom_data={"PONG": "true"}
+                    )
+                    client_socket.send(pong_msg.encode())
+
+                # Anruf-Signalisierung
+                elif msg['method'] == "INVITE":
+                    target_client = msg['headers']['to'].split(':')[1]
+                    print(f"Vermittle Anruf an {target_client}")
+                    # ... bestehende Anruflogik ...
+
+            except Exception as e:
+                print(f"Fehler: {e}")
+                break
+
+    finally:
+        client_socket.close()
+        self.update_phonebook()
+
 
 
 
