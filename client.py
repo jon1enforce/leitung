@@ -343,10 +343,9 @@ def parse_sip_message(message):
         "method": message.split()[0],
         "headers": headers,
         "custom_data": custom_data
-    }
-def start_connection(server_ip, server_port, client_name, client_socket):
+    }def start_connection(server_ip, server_port, client_name, client_socket):
     try:
-        # 1. SIP-REGISTER senden
+        # 1. SIP-REGISTER senden (als Bytes)
         register_msg = build_sip_message(
             "REGISTER",
             server_ip,
@@ -355,42 +354,57 @@ def start_connection(server_ip, server_port, client_name, client_socket):
                 "PUBLIC_KEY": load_publickey()
             }
         )
-        client_socket.send(register_msg.encode())
+        client_socket.send(register_msg.encode('utf-8'))
 
-        # 2. Server-Antwort empfangen
+        # 2. Server-Antwort empfangen (als Bytes)
         server_response = client_socket.recv(BUFFER_SIZE)
         sip_data = parse_sip_message(server_response)
         
         if not sip_data or "200 OK" not in sip_data['method']:
             raise ValueError("Registrierung fehlgeschlagen")
 
-        # 3. Merkle-Root verifizieren
-        merkle_msg = client_socket.recv(BUFFER_SIZE)
-        merkle_data = parse_sip_message(merkle_msg)
+        # 3. Server Public Key extrahieren
+        server_public_key = sip_data['custom_data'].get("SERVER_PUBLIC_KEY")
+        if not server_public_key:
+            raise ValueError("Kein Server-Key erhalten")
+
+        # 4. Merkle-Root empfangen und verifizieren
+        merkle_data = parse_sip_message(client_socket.recv(BUFFER_SIZE))
         merkle_root = merkle_data['custom_data'].get("MERKLE_ROOT")
         
-        if not verify_merkle_integrity(...):
+        if not verify_merkle_integrity(server_public_key, [], merkle_root):
             raise ValueError("Integritätsprüfung fehlgeschlagen")
 
-        # 4. Hauptkommunikation
+        # 5. Hauptkommunikationsschleife
         while True:
-            # Ping senden
-            ping_msg = build_sip_message("MESSAGE", server_ip, {"PING": "true"})
-            client_socket.send(ping_msg.encode())
-            
-            # Auf Pong warten
-            pong_data = client_socket.recv(BUFFER_SIZE)
-            if b"PONG" not in pong_data:
-                print("Kein PONG empfangen")
-            
-            time.sleep(5)  # Alle 5 Sekunden Ping
+            try:
+                # Ping senden
+                ping_msg = build_sip_message(
+                    "MESSAGE",
+                    server_ip,
+                    {"PING": "true"}
+                )
+                client_socket.send(ping_msg.encode('utf-8'))
+
+                # Auf Pong warten
+                pong_data = client_socket.recv(BUFFER_SIZE)
+                if not pong_data:
+                    break
+                    
+                if b"PONG" not in pong_data:
+                    print("Ungültige PONG-Antwort")
+                
+                time.sleep(5)
+
+            except socket.timeout:
+                print("Timeout - Neuer Versuch...")
+                continue
 
     except Exception as e:
         print(f"[Client] Fehler: {str(e)}")
+        raise
     finally:
         client_socket.close()
-
-
 def load_client_name():
     """Lädt den Client-Namen aus einer lokalen Datei oder fordert den Benutzer zur Eingabe auf."""
     if os.path.exists("client_name.txt"):
