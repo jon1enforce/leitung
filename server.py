@@ -117,7 +117,7 @@ class Server:
         self.host = host
         self.port = port
         self.clients = {}
-        self.server_public_key = load_publickey()
+        self.server_public_key = load_server_publickey()
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Wichtig für Port-Reuse
 
