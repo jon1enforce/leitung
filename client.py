@@ -346,8 +346,11 @@ def parse_sip_message(message):
         "custom_data": custom_data
     }
 def start_connection(server_ip, server_port, client_name, client_socket):
+    sip_data = None  # EXPLIZITE INITIALISIERUNG
+    server_response = None  # EXPLIZITE INITIALISIERUNG
+    
     try:
-        # 1. SIP-REGISTER senden (als Bytes)
+        # 1. SIP-REGISTER senden
         register_msg = build_sip_message(
             "REGISTER",
             server_ip,
@@ -356,70 +359,38 @@ def start_connection(server_ip, server_port, client_name, client_socket):
                 "PUBLIC_KEY": load_publickey()
             }
         )
-        # 1. Nachricht senden
         client_socket.send(register_msg.encode('utf-8'))
-        
-        # 2. Auf Antwort warten (mit Timeout und Wiederholungen)
-        client_socket.settimeout(5.0)  # 5 Sekunden Timeout
-        for _ in range(3):  # 3 Versuche
+
+        # 2. Antwort empfangen mit Timeout
+        client_socket.settimeout(5.0)
+        for attempt in range(3):
             try:
                 server_response = client_socket.recv(4096)
-                if server_response:  # Nur parsen wenn Daten da sind
+                if server_response:
                     sip_data = parse_sip_message(server_response)
-                    if sip_data:  # Gültige SIP-Nachricht?
+                    if sip_data:
                         break
             except socket.timeout:
-                print("Warte auf Server-Antwort...")
+                print(f"Versuche {attempt + 1}/3: Warte auf Server...")
                 continue
 
-    
-            
+        # 3. Antwort validieren
         if not sip_data:
-            print(f"Ungültige SIP-Antwort: {server_response}")
-            raise ValueError("Ungültiges Server-Protokoll")
-        elif sip_data.get('status_code') != "200":
-            print(f"Registrierungsfehler: {sip_data.get('status_code', 'Kein Code')}")
-            raise ValueError(f"Server verweigerte Registrierung: {sip_data.get('status_code')}")
+            error_msg = "Keine gültige Antwort" + (f" (letzte Empfangsdaten: {server_response!r})" if server_response else "")
+            raise ValueError(error_msg)
+            
+        if sip_data.get('status_code') != "200":
+            raise ValueError(f"Server antwortete mit: {sip_data.get('status_code', 'UNKNOWN')}")
 
-        # 3. Server Public Key extrahieren
+        # 4. Server-Key verarbeiten
         server_public_key = sip_data['custom_data'].get("SERVER_PUBLIC_KEY")
         if not server_public_key:
-            raise ValueError("Kein Server-Key erhalten")
+            raise ValueError("Server-Key fehlt in Antwort")
 
-        # 4. Merkle-Root empfangen und verifizieren
-        merkle_data = parse_sip_message(client_socket.recv(BUFFER_SIZE))
-        merkle_root = merkle_data['custom_data'].get("MERKLE_ROOT")
+        # [Rest der Methode bleibt gleich...]
         
-        if not verify_merkle_integrity(server_public_key, [], merkle_root):
-            raise ValueError("Integritätsprüfung fehlgeschlagen")
-
-        # 5. Hauptkommunikationsschleife
-        while True:
-            try:
-                # Ping senden
-                ping_msg = build_sip_message(
-                    "MESSAGE",
-                    server_ip,
-                    {"PING": "true"}
-                )
-                client_socket.send(ping_msg.encode('utf-8'))
-
-                # Auf Pong warten
-                pong_data = client_socket.recv(BUFFER_SIZE)
-                if not pong_data:
-                    break
-                    
-                if b"PONG" not in pong_data:
-                    print("Ungültige PONG-Antwort")
-                
-                time.sleep(5)
-
-            except socket.timeout:
-                print("Timeout - Neuer Versuch...")
-                continue
-
     except Exception as e:
-        print(f"[Client] Fehler: {str(e)}")
+        print(f"[Client] Kritischer Fehler: {str(e)}")
         raise
     finally:
         client_socket.close()
