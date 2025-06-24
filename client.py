@@ -371,16 +371,9 @@ def start_connection(server_ip, server_port, client_name, client_socket):
             except socket.timeout:
                 print("Warte auf Server-Antwort...")
                 continue
-    except socket.timeout:
-        print("Warte auf Server-Antwort...")
-        continue
-    
-    if not server_response:
-        raise ValueError("Keine Antwort vom Server (Timeout)")
-    if not sip_data:
-        raise ValueError("Ungültiges Protokollformat")
 
-        
+    
+            
         if not sip_data:
             print(f"Ungültige SIP-Antwort: {server_response}")
             raise ValueError("Ungültiges Server-Protokoll")
