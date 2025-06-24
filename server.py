@@ -121,52 +121,62 @@ class Server:
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Wichtig für Port-Reuse
     def start(self):
+        print(1)
         try:
             print(f"Starte Server auf {self.host}:{self.port}...")
             
-            # Socket erstellen und korrekt konfigurieren
-            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            # Socket mit expliziten Parametern erstellen
+            self.server_socket = socket.socket(
+                family=socket.AF_INET,
+                type=socket.SOCK_STREAM,
+                proto=socket.IPPROTO_TCP
+            )
+            
+            # Debug-Ausgabe vor der Bindung
+            debug_socket(self.server_socket)
+            
+            # SO_REUSEADDR setzen
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             
+            # Bindung mit expliziter Prüfung
             try:
                 self.server_socket.bind((self.host, self.port))
+                print(f"Socket gebunden an {self.host}:{self.port}")
             except OSError as e:
-                if e.errno == 98:  # Port bereits in Benutzung
-                    print(f"Port {self.port} ist belegt. Warte 2 Sekunden...")
-                    time.sleep(2)
-                    self.server_socket.close()
-                    return self.start()  # Neustart
+                print(f"Bind-Fehler: {e}")
                 raise
             
-            # Wichtig: Socket in Listen-Modus versetzen
+            # Listen muss unbedingt aufgerufen werden!
             self.server_socket.listen(5)
-            print(f"Server lauscht auf {self.host}:{self.port}")
+            print(f"Server lauscht (backlog=5)")
+            
+            # Debug-Ausgabe nach listen
+            debug_socket(self.server_socket)
             
             while True:
                 try:
-                    # Vereinfachter accept()-Aufruf ohne spezielle Flags
+                    print("Warte auf Verbindung...")
+                    # Standard accept() ohne Flags verwenden
                     client_socket, addr = self.server_socket.accept()
-                    print(f"Verbindung hergestellt mit {addr}")
+                    print(f"Verbindung von {addr} angenommen")
                     
                     try:
                         self.handle_client(client_socket)
-                    except Exception as e:
-                        print(f"Fehler bei Client-Verarbeitung: {e}")
                     finally:
                         client_socket.close()
                         
                 except KeyboardInterrupt:
-                    print("\nServer wird beendet...")
+                    print("\nServer-Shutdown")
                     break
                 except OSError as e:
-                    print(f"Socket-Fehler: {e}")
+                    print(f"Accept-Fehler: {e}")
                     continue
                     
         except Exception as e:
-            print(f"Kritischer Serverfehler: {e}")
+            print(f"Kritischer Fehler: {e}")
         finally:
             self.server_socket.close()
-            print("Server wurde heruntergefahren")
+            print("Server beendet")
     def get_disk_entropy(self,size):
         """
         Lese zufällige Daten von der Festplatte (z. B. /dev/urandom).
