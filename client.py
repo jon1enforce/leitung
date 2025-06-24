@@ -357,9 +357,10 @@ def start_connection(server_ip, server_port, client_name, client_socket):
             }
         )
         client_socket.send(register_msg.encode('utf-8'))
-
+        sip_data = parse_sip_message(server_response)
         # 2. Server-Antwort empfangen (als Bytes)
         server_response = client_socket.recv(BUFFER_SIZE)
+        
         if not sip_data:
             print(f"Ungültige SIP-Antwort: {server_response}")
             raise ValueError("Ungültiges Server-Protokoll")
