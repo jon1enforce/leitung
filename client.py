@@ -321,7 +321,8 @@ def build_sip_message(method, recipient, custom_data={}):
     )
 
 def parse_sip_message(message):
-    """Extrahiert Header und Body aus SIP-Nachrichten"""
+    if isinstance(message, bytes):  # Neu: Bytes-Erkennung
+        message = message.decode('utf-8')
     if not message.startswith(("SIP/", "REGISTER", "INVITE")):
         return None
         
