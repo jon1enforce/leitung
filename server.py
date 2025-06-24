@@ -263,7 +263,10 @@ class Server:
                 return public_key
         
     def handle_client(self, client_socket):
+        client_address = client_socket.getpeername()  # Adresse direkt vom Socket holen
         print(f"\n[Server] Neue Verbindung von {client_address}")
+        
+        client_id = None  # Wichtig für das finally-Block
         try:
             client_socket.settimeout(30.0)
             
@@ -289,7 +292,7 @@ class Server:
                 'name': client_name,
                 'public_key': client_pubkey,
                 'socket': client_socket,
-                'ip': client_address[0]
+                'ip': client_address[0]  # Hier verwenden wir client_address[0] für die IP
             }
     
             # 4. Server-Antwort mit Server-Key senden
@@ -338,16 +341,14 @@ class Server:
                         )
                         client_socket.send(pong_msg.encode('utf-8'))
     
-                    # Hier können weitere Nachrichtentypen verarbeitet werden
-    
                 except socket.timeout:
                     print(f"Timeout bei {client_address} - Verbindung bleibt aktiv")
                     continue
-
+    
         except Exception as e:
             print(f"Fehler mit {client_address}: {str(e)}")
         finally:
-            if client_id in self.clients:
+            if client_id and client_id in self.clients:
                 del self.clients[client_id]
             client_socket.close()
             print(f"Verbindung zu {client_address} geschlossen")
