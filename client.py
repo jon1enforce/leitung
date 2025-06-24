@@ -346,48 +346,47 @@ def parse_sip_message(message):
     }
 def start_connection(server_ip, server_port, client_name, client_socket):
     try:
-        # 1. SIP-Registrierung
+        # 1. SIP-REGISTER senden
         register_msg = build_sip_message(
-            method="REGISTER",
-            recipient=server_ip,
-            custom_data={
+            "REGISTER",
+            server_ip,
+            {
                 "CLIENT_NAME": client_name,
-                "PUBLIC_KEY": load_publickey(),
-                "AUDIO_PORT": str(PORT)
+                "PUBLIC_KEY": load_publickey()
             }
         )
         client_socket.send(register_msg.encode())
 
-        # 2. Kommunikationsschleife
+        # 2. Server-Antwort empfangen
+        server_response = client_socket.recv(BUFFER_SIZE)
+        sip_data = parse_sip_message(server_response)
+        
+        if not sip_data or "200 OK" not in sip_data['method']:
+            raise ValueError("Registrierung fehlgeschlagen")
+
+        # 3. Merkle-Root verifizieren
+        merkle_msg = client_socket.recv(BUFFER_SIZE)
+        merkle_data = parse_sip_message(merkle_msg)
+        merkle_root = merkle_data['custom_data'].get("MERKLE_ROOT")
+        
+        if not verify_merkle_integrity(...):
+            raise ValueError("Integritätsprüfung fehlgeschlagen")
+
+        # 4. Hauptkommunikation
         while True:
-            data = client_socket.recv(BUFFER_SIZE).decode()
-            sip_msg = parse_sip_message(data)
+            # Ping senden
+            ping_msg = build_sip_message("MESSAGE", server_ip, {"PING": "true"})
+            client_socket.send(ping_msg.encode())
             
-            if not sip_msg:
-                print("Non-SIP-Nachricht:", data[:100])
-                continue
-                
-            # SIP-Antworten verarbeiten
-            if sip_msg["method"] == "SIP/2.0":
-                status = data.split()[1]
-                if status == "200":
-                    print("Registrierung erfolgreich")
-                elif status == "400":
-                    print("Fehlerhafte Anfrage")
+            # Auf Pong warten
+            pong_data = client_socket.recv(BUFFER_SIZE)
+            if b"PONG" not in pong_data:
+                print("Kein PONG empfangen")
             
-            # Merkle-Root verarbeiten
-            if "MERKLE_ROOT" in sip_msg["custom_data"]:
-                merkle_root = sip_msg["custom_data"]["MERKLE_ROOT"]
-                if verify_merkle_integrity(...):
-                    print("Integrität bestätigt")
-            
-            # Phonebook-Daten
-            if "PHONEBOOK" in sip_msg["custom_data"]:
-                encrypted_data = sip_msg["custom_data"]["PHONEBOOK"]
-                # ... Entschlüsselung wie zuvor ...
-            
+            time.sleep(5)  # Alle 5 Sekunden Ping
+
     except Exception as e:
-        print(f"Verbindungsfehler: {e}")
+        print(f"[Client] Fehler: {str(e)}")
     finally:
         client_socket.close()
 
