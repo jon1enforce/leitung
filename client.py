@@ -311,7 +311,7 @@ def handle_sip_message(message):
 def start_connection(server_ip, server_port, client_name, client_socket):
     try:
         # SIP-Registrierung (unverändert)
-        sip_register = build_sip_request("REGISTER", f"{client_name}@{server_ip}")
+        sip_register = build_sip_request("REGISTER", f"{client_name}@{server_ip}",client_name, server_ip, server_port)
         client_socket.send(sip_register.encode('utf-8'))
 
         # Schlüsselaustausch (Original-Logik)
