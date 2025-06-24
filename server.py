@@ -151,10 +151,27 @@ class Server:
                     # accept4 mit korrekten Flags
                     client_socket, addr = self.server_socket.accept()
                     print(f"Verbindung hergestellt mit {addr}")
-                    self.handle_client(client_socket)
+                    try:
+                        self.handle_client(client_socket)
+                    except Exception as e:
+                        print(f"Fehler bei Client-Verarbeitung: {e}")
+                    finally:
+                        client_socket.close()
                 except OSError as e:
                     print(f"Fehler bei Verbindungsannahme: {e}")
                     continue
+                except KeyboardInterrupt:
+                    print("\nServer wird beendet...")
+                    break
+                except Exception as e:
+                    print(f"Unerwarteter Fehler: {e}")
+                    break
+        
+        except Exception as e:
+            print(f"Schwerer Serverfehler: {e}")
+        finally:
+            self.server_socket.close()
+            print("Server-Socket wurde geschlossen")
     def get_disk_entropy(self,size):
         """
         Lese zufällige Daten von der Festplatte (z. B. /dev/urandom).
