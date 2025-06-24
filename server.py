@@ -126,7 +126,7 @@ class Server:
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Wichtig für Port-Reuse
         print("init4")
     def start(self):
-        print(1)
+        print("start1")
         try:
             print(f"Starte Server auf {self.host}:{self.port}...")
             
