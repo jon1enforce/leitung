@@ -344,7 +344,8 @@ def parse_sip_message(message):
         "method": message.split()[0],
         "headers": headers,
         "custom_data": custom_data
-    }def start_connection(server_ip, server_port, client_name, client_socket):
+    }
+def start_connection(server_ip, server_port, client_name, client_socket):
     try:
         client_socket.settimeout(10.0)
         
