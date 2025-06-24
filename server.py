@@ -296,13 +296,13 @@ class Server:
                     print(f"Timeout bei {client_address} - Verbindung bleibt aktiv")
                     continue
 
-    except Exception as e:
-        print(f"Fehler mit {client_address}: {str(e)}")
-    finally:
-        if client_id in self.clients:
-            del self.clients[client_id]
-        client_socket.close()
-        print(f"Verbindung zu {client_address} geschlossen")
+        except Exception as e:
+            print(f"Fehler mit {client_address}: {str(e)}")
+        finally:
+            if client_id in self.clients:
+                del self.clients[client_id]
+            client_socket.close()
+            print(f"Verbindung zu {client_address} geschlossen")
 
 
 
