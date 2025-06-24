@@ -96,31 +96,38 @@ class Server:
     def __init__(self, host='0.0.0.0', port=5060):
         self.host = host
         self.port = port
-        self.clients = {}  # {client_id: {"name": str, "public_key": str, "socket": socket, "ip": str}}
-        self.server_public_key = self.load_or_generate_server_publickey()
-        self.phonebook = []  # Liste der Clients im Telefonbuch
+        self.clients = {}
+        self.server_public_key = load_publickey()
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.server_socket.bind(('0.0.0.0', 5060))
-        self.server_socket.listen(5)
-        print("Server lauscht auf Port 5060...")
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Wichtig!
+
     def start(self):
         """Startet den SIP-Server"""
         try:
+            print(f"Versuche Server auf {self.host}:{self.port} zu starten...")
             self.server_socket.bind((self.host, self.port))
-            self.server_socket.listen()
-            print(f"Server lauscht auf {self.host}:{self.port}...")
+            self.server_socket.listen(5)
+            print(f"Server lauscht auf Port {self.port}...")
 
             while True:
-                client_socket, client_address = self.server_socket.accept()
-                threading.Thread(
-                    target=self.handle_client,
-                    args=(client_socket, client_address)
-                ).start()
+                try:
+                    client_socket, addr = self.server_socket.accept()
+                    print(f"Neue Verbindung von {addr}")
+                    client_thread = threading.Thread(
+                        target=self.handle_client,
+                        args=(client_socket, addr),
+                        daemon=True
+                    )
+                    client_thread.start()
+                except OSError as e:
+                    print(f"Verbindungsfehler: {e}")
+                    break
+
         except Exception as e:
-            print(f"Serverfehler: {e}")
+            print(f"Kritischer Serverfehler: {e}")
         finally:
             self.server_socket.close()
+            print("Server wurde beendet")
     def get_disk_entropy(self,size):
         """
         Lese zufällige Daten von der Festplatte (z. B. /dev/urandom).
@@ -191,6 +198,7 @@ class Server:
 def handle_client(self, client_socket, client_address):
     print(f"\n[Server] Neue Verbindung von {client_address}")
     try:
+        client_socket.settimeout(10.0)  # Timeout von 10 Sekunden
         # 1. SIP-REGISTER empfangen
         register_data = client_socket.recv(BUFFER_SIZE)
         sip_msg = self.parse_sip_message(register_data)
@@ -240,11 +248,14 @@ def handle_client(self, client_socket, client_address):
                     {"PONG": "true"}
                 )
                 client_socket.send(pong.encode())
-
+    except socket.timeout:
+        print(f"Timeout mit {client_address}")
     except Exception as e:
-        print(f"[Server] Fehler: {str(e)}")
+        print(f"Client-Fehler {client_address}: {str(e)}")
     finally:
         client_socket.close()
+        print(f"Verbindung zu {client_address} geschlossen")
+
 
 
 
