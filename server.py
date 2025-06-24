@@ -8,9 +8,28 @@ import random
 import time
 
 BUFFER_SIZE = 4096
-def load_publickey():
-    """Lädt den öffentlichen Schlüssel des Servers"""
-    with open("public_key.pem", "rb") as f:
+def generate_keys():
+    """Generiert Server-Schlüsselpaar falls nicht vorhanden"""
+    if not os.path.exists("server_public_key.pem"):
+        print("Generiere neue Server-Schlüssel...")
+        key = RSA.gen_key(2048, 65537)
+        
+        # Speichere öffentlichen Schlüssel
+        pub_bio = BIO.MemoryBuffer()
+        key.save_pub_key_bio(pub_bio)
+        with open("server_public_key.pem", "wb") as f:
+            f.write(pub_bio.getvalue())
+        
+        # Speichere privaten Schlüssel
+        priv_bio = BIO.MemoryBuffer()
+        key.save_key_bio(priv_bio, cipher=None)
+        with open("server_private_key.pem", "wb") as f:
+            f.write(priv_bio.getvalue())
+
+def load_server_publickey():
+    """Lädt den öffentlichen Server-Schlüssel"""
+    generate_keys()  # Stellt sicher dass Schlüssel existieren
+    with open("server_public_key.pem", "rb") as f:
         return f.read().decode('utf-8')
 
 def merge_public_keys(keys):
