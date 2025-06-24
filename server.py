@@ -383,11 +383,6 @@ class Server:
             print(f"Fehler bei der Verschlüsselung des Telefonbuchs: {e}")
             return ""
 
-    def start(self):
-        while True:
-            client_socket, client_address = self.server_socket.accept()
-            threading.Thread(target=self.handle_client, args=(client_socket, client_address)).start()
-
 def load_server_publickey():
     if not os.path.exists("server_public_key.pem"):
         bits = 4096
@@ -404,7 +399,9 @@ def load_server_publickey():
 
 if __name__ == "__main__":
     try:
+        print("main0")
         server = Server()
+        print("main1")
         server.start()
     except Exception as e:
         print(f"Kritischer Fehler: {e}")
