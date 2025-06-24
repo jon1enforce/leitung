@@ -271,9 +271,13 @@ class Server:
             client_socket.settimeout(30.0)
             
             # 1. REGISTER-Nachricht empfangen und parsen
-            register_data = client_socket.recv(BUFFER_SIZE)
+            client_socket.settimeout(10.0)  # Timeout hinzufügen
+            register_data = client_socket.recv(4096)  # Puffergröße erhöhen
             if not register_data:
-                raise ValueError("Leere Registrierungsdaten")
+                print("Keine Registrierungsdaten erhalten")
+                client_socket.close()
+                return
+
     
             sip_msg = self.parse_sip_message(register_data)
             if not sip_msg or sip_msg.get('method') != "REGISTER":
