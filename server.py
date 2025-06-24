@@ -262,7 +262,7 @@ class Server:
 
                 return public_key
         
-    def handle_client(self, client_socket, client_address):
+    def handle_client(self, client_socket):
         print(f"\n[Server] Neue Verbindung von {client_address}")
         try:
             client_socket.settimeout(30.0)
