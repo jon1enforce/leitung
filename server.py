@@ -125,6 +125,10 @@ class Server:
         try:
             print(f"Starte Server auf {self.host}:{self.port}...")
             
+            # Socket erstellen und konfigurieren
+            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            
             # Kritische Änderung: Korrekte Socket-Bindung
             try:
                 self.server_socket.bind((self.host, self.port))
@@ -135,27 +139,22 @@ class Server:
                     self.server_socket.close()
                     self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                     self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                    self.server_socket.bind((self.host, self.port))
+                    return self.start()  # Rekursiver Aufruf
                 else:
                     raise
-    
+            
             self.server_socket.listen(5)
-            print(f"Server lauscht auf Port {self.port}")
-    
+            print(f"Server lauscht auf {self.host}:{self.port}")
+            
             while True:
-                client_sock, addr = self.server_socket.accept()
-                threading.Thread(
-                    target=self.handle_client,
-                    args=(client_sock, addr),
-                    daemon=True
-                ).start()
-    
-        except PermissionError:
-            print(f"FEHLER: Port {self.port} benötigt Root-Rechte (sudo)")
-        except Exception as e:
-            print(f"Serverfehler: {e}")
-        finally:
-            self.server_socket.close()
+                try:
+                    # accept4 mit korrekten Flags
+                    client_socket, addr = self.server_socket.accept()
+                    print(f"Verbindung hergestellt mit {addr}")
+                    self.handle_client(client_socket)
+                except OSError as e:
+                    print(f"Fehler bei Verbindungsannahme: {e}")
+                    continue
     def get_disk_entropy(self,size):
         """
         Lese zufällige Daten von der Festplatte (z. B. /dev/urandom).
