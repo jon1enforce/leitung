@@ -102,6 +102,23 @@ class Server:
         self.server_socket.bind(('0.0.0.0', 5060))
         self.server_socket.listen(5)
         print("Server lauscht auf Port 5060...")
+    def start(self):
+        """Startet den SIP-Server"""
+        try:
+            self.server_socket.bind((self.host, self.port))
+            self.server_socket.listen()
+            print(f"Server lauscht auf {self.host}:{self.port}...")
+
+            while True:
+                client_socket, client_address = self.server_socket.accept()
+                threading.Thread(
+                    target=self.handle_client,
+                    args=(client_socket, client_address)
+                ).start()
+        except Exception as e:
+            print(f"Serverfehler: {e}")
+        finally:
+            self.server_socket.close()
     def get_disk_entropy(self,size):
         """
         Lese zufällige Daten von der Festplatte (z. B. /dev/urandom).
