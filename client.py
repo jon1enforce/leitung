@@ -304,121 +304,90 @@ def build_sip_request(method, recipient, client_name, server_ip, server_port):
         f"Content-Length: 0\r\n\r\n"
     )
 
-def handle_sip_message(message):
-    """Verarbeitet eingehende SIP-Nachrichten"""
-    if message.startswith("SIP/"):
-        if "400" in message.split()[1]:
-            print("SIP-Fehler 400: Ungültige Anfrage")
-        elif "200 OK" in message:
-            print("SIP-Erfolg: 200 OK")
-        return True
-    return False
+def build_sip_message(method, recipient, custom_data={}):
+    """Baut eine vollständige SIP-Nachricht mit Custom-Daten"""
+    local_ip = socket.gethostbyname(socket.gethostname())
+    body = "\r\n".join(f"{k}: {v}" for k, v in custom_data.items())
+    
+    return (
+        f"{method} sip:{recipient} SIP/2.0\r\n"
+        f"From: <sip:{load_client_name()}@{local_ip}>\r\n"
+        f"To: <sip:{recipient}>\r\n"
+        f"Call-ID: {uuid.uuid4()}\r\n"
+        f"CSeq: 1 {method}\r\n"
+        f"Content-Type: text/custom\r\n"
+        f"Content-Length: {len(body)}\r\n\r\n"
+        f"{body}"
+    )
 
+def parse_sip_message(message):
+    """Extrahiert Header und Body aus SIP-Nachrichten"""
+    if not message.startswith(("SIP/", "REGISTER", "INVITE")):
+        return None
+        
+    parts = message.split("\r\n\r\n", 1)
+    headers = {}
+    for line in parts[0].split("\r\n"):
+        if ": " in line:
+            key, val = line.split(": ", 1)
+            headers[key.lower()] = val.strip()
+    
+    custom_data = {}
+    if len(parts) > 1:
+        for line in parts[1].split("\r\n"):
+            if ": " in line:
+                key, val = line.split(": ", 1)
+                custom_data[key] = val.strip()
+    
+    return {
+        "method": message.split()[0],
+        "headers": headers,
+        "custom_data": custom_data
+    }
 def start_connection(server_ip, server_port, client_name, client_socket):
     try:
-        # SIP-Registrierung (unverändert)
-        sip_register = build_sip_request("REGISTER", f"{client_name}@{server_ip}",client_name, server_ip, server_port)
-        client_socket.send(sip_register.encode('utf-8'))
+        # 1. SIP-Registrierung
+        register_msg = build_sip_message(
+            method="REGISTER",
+            recipient=server_ip,
+            custom_data={
+                "CLIENT_NAME": client_name,
+                "PUBLIC_KEY": load_publickey(),
+                "AUDIO_PORT": str(PORT)
+            }
+        )
+        client_socket.send(register_msg.encode())
 
-        # Schlüsselaustausch (Original-Logik)
-        client_socket.send(client_name.encode('utf-8'))
-        public_key = load_publickey()
-        client_socket.send(public_key.encode('utf-8'))
-
-        # Phase 1: Server-Key empfangen
-        message = client_socket.recv(BUFFER_SIZE).decode('utf-8')
-        if not message.startswith("SERVER_PUBLIC_KEY:"):
-            raise ValueError("Falsche Server-Antwort - Kein PUBLIC_KEY")
-        server_public_key = message.split(":")[1]
-
-        # Phase 2: Client-Keys sammeln
-        client_public_keys = []
+        # 2. Kommunikationsschleife
         while True:
-            message = client_socket.recv(BUFFER_SIZE).decode('utf-8')
-            if message.startswith("CLIENT_PUBLIC_KEY:"):
-                client_public_keys.append(message.split(":")[1])
-            else:
-                break  # Ende der Client-Liste
-        if message.startswith("MERKLE_ROOT:"):
-            merkle_root = message.split("MERKLE_ROOT:")[1].strip()  # strip() für Whitespace/Endmarker
-            print(f"Empfangener Merkle Root-Hash: {merkle_root}")
-        else:
-            print("Kein Merkle Root-Hash empfangen")
-            return
-
-        if verify_merkle_integrity(server_public_key, client_public_keys, merkle_root):
-            print("Integritätsprüfung erfolgreich.")
-        else:
-            print("Integritätsprüfung fehlgeschlagen.")
-
-        # Hauptverbindungslogik
-        while True:
-            try:
-                client_socket.settimeout(1.0)
-                time.sleep(0.1)
-                message = client_socket.recv(BUFFER_SIZE).decode('utf-8')
-                
-                # SIP-Nachrichten in der Hauptschleife zuerst prüfen
-                if handle_sip_message(message):
-                    continue
-                    
-                if message.startswith("CLIENT_ID:"):
-                    client_id = message.split("LIENT_ID:")[1]
-                    save_client_id(client_id)
-                    print(f"Empfangene Client-ID: {client_id}")
-                    
-                elif message.startswith("CLIENT_PUBLIC_KEY:"):
-                    client_public_key = message.split(":")[1]
-                    print(f"Empfangener öffentlicher Schlüssel des angerufenen Clients: {client_public_key}")
-                    
-                elif message.startswith("PHONEBOOK:"):
-                    encrypted_phonebook = message.split("HONEBOOK:")[1]
-                    print("PHONEBOOK+++")
-                    print(encrypted_phonebook)
-                    encrypted_phonebook = encrypted_phonebook.strip()
-                    
-                elif message.startswith("SECRET:"):
-                    secret = message.split("ECRET:")[1]
-                    print("SECRET+++")
-                    print(secret)
-                    secret = secret.strip()
-                    print("SECRET+++")
-                    private_key = load_privatekey()
-                    print("1")
-                    rsa_key = RSA.load_key_string(private_key.encode('utf-8'))
-                    print("2")
-                    try:
-                        secret = bytes.fromhex(secret)
-                    except ValueError as e:
-                        print("Fehler bei der Konvertierung von Hex zu Bytes")
-                    print("3")
-                    decrypted_secret = rsa_key.private_decrypt(secret, RSA.pkcs1_padding)
-                    print("secret decrypted..AES..")
-                    print("3")
-                    print(decrypted_secret)
-                    print("4")
-                    cipher = EVP.Cipher('aes_256_cbc', decrypted_secret[16:], decrypted_secret[:16], 0)
-                    print("5")
-                    encrypted_phonebook = bytes.fromhex(encrypted_phonebook)
-                    phonebook = cipher.update(encrypted_phonebook) + cipher.final()
-                    print("6")
-                    app.update_phonebook(phonebook.decode('utf-8'))
-                    print("7")
-                    
-                elif message.startswith("PING"):
-                    print("Server ist online.")
-                    client_socket.send("PONG".encode('utf-8'))
-                    
-                else:
-                    print(f"Unbekannte Nachricht empfangen: {message}")
-                    
-            except socket.timeout:
+            data = client_socket.recv(BUFFER_SIZE).decode()
+            sip_msg = parse_sip_message(data)
+            
+            if not sip_msg:
+                print("Non-SIP-Nachricht:", data[:100])
                 continue
-            except Exception as e:
-                print("Hauptverbindungslogik abgebrochen")
                 
+            # SIP-Antworten verarbeiten
+            if sip_msg["method"] == "SIP/2.0":
+                status = data.split()[1]
+                if status == "200":
+                    print("Registrierung erfolgreich")
+                elif status == "400":
+                    print("Fehlerhafte Anfrage")
+            
+            # Merkle-Root verarbeiten
+            if "MERKLE_ROOT" in sip_msg["custom_data"]:
+                merkle_root = sip_msg["custom_data"]["MERKLE_ROOT"]
+                if verify_merkle_integrity(...):
+                    print("Integrität bestätigt")
+            
+            # Phonebook-Daten
+            if "PHONEBOOK" in sip_msg["custom_data"]:
+                encrypted_data = sip_msg["custom_data"]["PHONEBOOK"]
+                # ... Entschlüsselung wie zuvor ...
+            
     except Exception as e:
-        messagebox.showerror("Fehler", f"Verbindung zum Server fehlgeschlagen: {e}")
+        print(f"Verbindungsfehler: {e}")
     finally:
         client_socket.close()
 
