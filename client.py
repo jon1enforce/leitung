@@ -17,6 +17,9 @@ from PIL import ImageFont
 import base64
 import re  # Für SIP-Header-Parsing
 import tkinter as tk
+import stun  # pip install pystun3
+
+
 #fallback für bessere kompatibilität:
 try:
     from tkinter import simpledialog
@@ -42,6 +45,9 @@ ENC_METHOD = "aes_256_cbc"
 HOST = "0.0.0.0"  # IP des Empfängers
 PORT = 5060  # Port für die Übertragung
 
+def get_public_ip():
+    nat_type, public_ip, public_port = stun.get_ip_info()
+    return public_ip, public_port  # Für SIP-Contact-Header
 
 
 def shorten_public_key(key):
