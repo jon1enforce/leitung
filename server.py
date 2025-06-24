@@ -114,33 +114,42 @@ def handle_sip_message(raw_data):
 
 class Server:
     def __init__(self, host='0.0.0.0', port=5060):
-        self.host = host
-        self.port = port
-        self.clients = {}
-        try:
-            self.server_public_key = load_server_publickey()
-            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        except Exception as e:
-            print(f"Initialisierungsfehler: {e}")
-            raise
+    self.host = host
+    self.port = port
+    self.clients = {}
+    self.server_public_key = load_publickey()
+    self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Wichtig für Port-Reuse
 
     def start(self):
         try:
             print(f"Starte Server auf {self.host}:{self.port}...")
-            self.server_socket.bind((self.host, self.port))
+            
+            # Kritische Änderung: Korrekte Socket-Bindung
+            try:
+                self.server_socket.bind((self.host, self.port))
+            except OSError as e:
+                if e.errno == 98:  # Port bereits in Benutzung
+                    print(f"Port {self.port} ist belegt. Bitte warten...")
+                    time.sleep(2)
+                    self.server_socket.close()
+                    self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                    self.server_socket.bind((self.host, self.port))
+                else:
+                    raise
+    
             self.server_socket.listen(5)
             print(f"Server lauscht auf Port {self.port}")
-
+    
             while True:
                 client_sock, addr = self.server_socket.accept()
-                print(f"Neue Verbindung von {addr}")
                 threading.Thread(
                     target=self.handle_client,
                     args=(client_sock, addr),
                     daemon=True
                 ).start()
-
+    
         except PermissionError:
             print(f"FEHLER: Port {self.port} benötigt Root-Rechte (sudo)")
         except Exception as e:
