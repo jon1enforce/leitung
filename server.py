@@ -118,7 +118,7 @@ class Server:
         self.port = port
         self.clients = {}
         try:
-            self.server_public_key = load_publickey()
+            self.server_public_key = load_server_publickey()
             self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         except Exception as e:
