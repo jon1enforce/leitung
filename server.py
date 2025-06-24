@@ -114,12 +114,12 @@ def handle_sip_message(raw_data):
 
 class Server:
     def __init__(self, host='0.0.0.0', port=5060):
-    self.host = host
-    self.port = port
-    self.clients = {}
-    self.server_public_key = load_publickey()
-    self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Wichtig für Port-Reuse
+        self.host = host
+        self.port = port
+        self.clients = {}
+        self.server_public_key = load_publickey()
+        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Wichtig für Port-Reuse
 
     def start(self):
         try:
