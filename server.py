@@ -8,18 +8,19 @@ import random
 import time
 
 BUFFER_SIZE = 4096
+def load_publickey():
+    """Lädt den öffentlichen Schlüssel des Servers"""
+    with open("public_key.pem", "rb") as f:
+        return f.read().decode('utf-8')
 
+def merge_public_keys(keys):
+    """Hilfsfunktion für Merkle-Root"""
+    return ":".join([k.replace("-----BEGIN PUBLIC KEY-----", "").replace("-----END PUBLIC KEY-----", "") for k in keys])
 
 def shorten_public_key(key):
     """Kürzt die Darstellung des öffentlichen Schlüssels."""
     shortened = key.replace("-----BEGIN PUBLIC KEY-----", "").replace("-----END PUBLIC KEY-----", "").replace("\n", "")
     return shortened
-
-def merge_public_keys(keys):
-    """Führt eine Liste von öffentlichen Schlüsseln in einem String zusammen."""
-    # Kürze jeden Schlüssel und füge sie mit einem Trennzeichen zusammen
-    shortened_keys = [shorten_public_key(key) for key in keys]
-    return ":".join(shortened_keys)
 
 
 
@@ -97,37 +98,36 @@ class Server:
         self.host = host
         self.port = port
         self.clients = {}
-        self.server_public_key = load_publickey()
-        self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Wichtig!
+        try:
+            self.server_public_key = load_publickey()
+            self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        except Exception as e:
+            print(f"Initialisierungsfehler: {e}")
+            raise
 
     def start(self):
-        """Startet den SIP-Server"""
         try:
-            print(f"Versuche Server auf {self.host}:{self.port} zu starten...")
+            print(f"Starte Server auf {self.host}:{self.port}...")
             self.server_socket.bind((self.host, self.port))
             self.server_socket.listen(5)
-            print(f"Server lauscht auf Port {self.port}...")
+            print(f"Server lauscht auf Port {self.port}")
 
             while True:
-                try:
-                    client_socket, addr = self.server_socket.accept()
-                    print(f"Neue Verbindung von {addr}")
-                    client_thread = threading.Thread(
-                        target=self.handle_client,
-                        args=(client_socket, addr),
-                        daemon=True
-                    )
-                    client_thread.start()
-                except OSError as e:
-                    print(f"Verbindungsfehler: {e}")
-                    break
+                client_sock, addr = self.server_socket.accept()
+                print(f"Neue Verbindung von {addr}")
+                threading.Thread(
+                    target=self.handle_client,
+                    args=(client_sock, addr),
+                    daemon=True
+                ).start()
 
+        except PermissionError:
+            print(f"FEHLER: Port {self.port} benötigt Root-Rechte (sudo)")
         except Exception as e:
-            print(f"Kritischer Serverfehler: {e}")
+            print(f"Serverfehler: {e}")
         finally:
             self.server_socket.close()
-            print("Server wurde beendet")
     def get_disk_entropy(self,size):
         """
         Lese zufällige Daten von der Festplatte (z. B. /dev/urandom).
@@ -198,7 +198,12 @@ class Server:
 def handle_client(self, client_socket, client_address):
     print(f"\n[Server] Neue Verbindung von {client_address}")
     try:
-        client_socket.settimeout(10.0)  # Timeout von 10 Sekunden
+        client_socket.settimeout(30.0)
+            
+            # 1. Client-Registrierung
+        data = client_socket.recv(BUFFER_SIZE).decode()
+        if not data.startswith("REGISTER"):
+            raise ValueError("Keine REGISTER-Nachricht")
         # 1. SIP-REGISTER empfangen
         register_data = client_socket.recv(BUFFER_SIZE)
         sip_msg = self.parse_sip_message(register_data)
@@ -320,5 +325,8 @@ def load_server_publickey():
     return public_key.decode('utf-8')
 
 if __name__ == "__main__":
-    server = Server()
-    server.start()
+    try:
+        server = Server()
+        server.start()
+    except Exception as e:
+        print(f"Kritischer Fehler: {e}")
