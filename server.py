@@ -125,7 +125,7 @@ class Server:
         print(("init3"))
         self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Wichtig für Port-Reuse
         print("init4")
-    def debug_socket(sock):
+    def debug_socket(self,sock):
         """Hilfsfunktion zur Socket-Diagnose"""
         if sock is None:
             print("Socket: None")
