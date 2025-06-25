@@ -475,19 +475,17 @@ class Server:
                     if not msg:
                         continue
         
-                    # Verbessertes Ping-Pong Handling
-                    custom_data = msg.get('custom_data', {})
-                    if custom_data.get("PING"):
-                        pong_data = {"PONG": "true"}
-                        if "TIMESTAMP" in custom_data:
-                            pong_data["TIMESTAMP"] = custom_data["TIMESTAMP"]
-                        
-                        pong_msg = self.build_sip_message(
-                            "MESSAGE",
-                            client_name,
-                            pong_data
-                        )
-                        client_socket.send(pong_msg.encode('utf-8'))
+                    # Verbessertes Ping-Handling
+                    if msg.get('method') == "MESSAGE":
+                        custom_data = msg.get('custom_data', {})
+                        if custom_data.get("PING"):
+                            pong_msg = self.build_sip_message(
+                                "MESSAGE",
+                                client_name,
+                                {"PONG": "true"}
+                            )
+                            client_socket.send(pong_msg.encode('utf-8'))
+                            continue
         
                 except Exception as e:
                     print(f"Fehler in Client-Handler: {str(e)}")
