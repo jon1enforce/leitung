@@ -359,7 +359,7 @@ def parse_sip_message(message):
                 result['headers'][key] = value
     
     return result if ('method' in result or 'status_code' in result) else None
-def monitor_connection(client_socket, server_ip):
+def connection_loop(client_socket, server_ip):
     ping_interval = 5  # Sekunden zwischen Pings
     pong_timeout = 70  # Sekunden auf Pong warten
     
@@ -480,7 +480,7 @@ def start_connection(server_ip, server_port, client_name, client_socket):
             raise ValueError("Timeout beim Warten auf Merkle-Root")
 
         # 5. Hauptkommunikationsschleife
-        monitor_connection(client_socket, server_ip):
+        connection_loop(client_socket, server_ip)
 
 
     except Exception as e:
