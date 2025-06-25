@@ -367,7 +367,8 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         pubkey = load_publickey()
         if isinstance(pubkey, bytes):
             pubkey = pubkey.decode('utf-8')
-
+        client_socket.settimeout(10.0)  # Timeout setzen
+        print(f"Verbinde zu {server_ip}:{server_port}...")  # Debug
         register_msg = build_sip_message(
             "REGISTER",
             server_ip,
@@ -379,22 +380,26 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         )
         pubkey = load_publickey()
         print(f"Sende Registrierung mit: Name={client_name}, Key={pubkey[:20]}...")
+        print(f"Sende Registrierung: {register_msg[:200]}...")  # Debug
         client_socket.send(register_msg.encode('utf-8'))
-
-        # 2. 200 OK empfangen
-        response = client_socket.recv(4096)
-        if not response:
-            raise ValueError("Keine Antwort vom Server")
-
-        sip_data = parse_sip_message(response)
-        if not sip_data or 'status_code' not in sip_data:
-            print(f"Protokollfehler: Ungültige SIP-Struktur - {sip_data}")
-            raise ValueError("Ungültiges Server-Protokoll")
+        for attempt in range(3):  # Wiederholungsversuche
+            try:
+                response = client_socket.recv(4096)
+                if response:
+                    print(f"Serverantwort: {response[:200]}...")  # Debug
+                    sip_data = parse_sip_message(response)
+                    break
+            except socket.timeout:
+                print(f"Timeout Versuch {attempt+1}/3")
+                continue
     
+        if not response:
+            raise ValueError("Keine Serverantwort (Timeout)")
+        if not sip_data or 'status_code' not in sip_data:
+            raise ValueError("Ungültiges Protokollformat")
         if sip_data['status_code'] != "200":
-            error_msg = sip_data.get('status_message', 'Unknown error')
-            print(f"Server meldet Fehler {sip_data['status_code']}: {error_msg}")
-            raise ValueError(f"Serverfehler: {error_msg}")
+            error_details = sip_data.get('custom_data', {})
+            raise ValueError(f"Serverfehler {sip_data['status_code']}: {error_details.get('ERROR','')}")
 
         # 3. Server-Key speichern
         server_public_key = sip_data['custom_data'].get("SERVER_PUBLIC_KEY")
