@@ -365,30 +365,7 @@ class Server:
             print(f"Geparste Nachricht - Headers: {sip_msg.get('headers', {})}")  # Debug
             print(f"Geparste Nachricht - Custom Data: {sip_msg.get('custom_data', {})}")  # Debug
         
-            if not sip_msg or 'custom_data' not in sip_msg:
-                error_msg = "Ungültiges Nachrichtenformat"
-            else:
-                client_name = sip_msg['custom_data'].get('CLIENT_NAME', '') or sip_msg['headers'].get('CLIENT_NAME', '')
-                client_pubkey = sip_msg['custom_data'].get('PUBLIC_KEY', '') or sip_msg['headers'].get('PUBLIC_KEY', '')
-                
-                if not client_name or not client_pubkey:
-                    error_msg = "Fehlende Pflichtfelder (CLIENT_NAME oder PUBLIC_KEY)"
-                else:
-                    error_msg = None
-        
-            if error_msg:
-                print(f"Validierungsfehler: {error_msg}")
-                error_response = self.build_sip_message(
-                    "SIP/2.0 400 Bad Request",
-                    "",
-                    {
-                        "ERROR": error_msg,
-                        "RECEIVED_HEADERS": sip_msg.get('headers', {}),
-                        "RECEIVED_DATA": sip_msg.get('custom_data', {})
-                    }
-                )
-                client_socket.send(error_response.encode('utf-8'))
-                return
+
             # 2. Client-Daten verarbeiten
             # Extrahiere Body-Daten
             body_data = {}
