@@ -320,9 +320,15 @@ class Server:
     
             sip_msg = self.parse_sip_message(register_data)
             if not sip_msg or sip_msg.get('method') != "REGISTER":
-                client_socket.send(b"SIP/2.0 400 Invalid Request\r\n\r\n")
+                error_response = (
+                    "SIP/2.0 400 Bad Request\r\n"
+                    "Content-Type: text/plain\r\n"
+                    "\r\n"
+                    "Invalid registration data"
+                )
+                client_socket.send(error_response.encode('utf-8'))                
                 return
-    
+
             # 2. Client-Daten verarbeiten
             client_name = sip_msg['custom_data'].get("CLIENT_NAME", "")
             client_pubkey = sip_msg['custom_data'].get("PUBLIC_KEY", "")
