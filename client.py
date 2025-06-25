@@ -402,7 +402,14 @@ def start_connection(server_ip, server_port, client_name, client_socket):
             raise ValueError(f"Serverfehler {sip_data['status_code']}: {error_details.get('ERROR','')}")
 
         # 3. Server-Key speichern
-        server_public_key = sip_data['custom_data'].get("SERVER_PUBLIC_KEY")
+        # Extrahiere den Key aus dem Body der Nachricht
+        server_public_key = None
+        if '\r\n\r\n' in response.decode('utf-8'):
+            body = response.decode('utf-8').split('\r\n\r\n')[1]
+            for line in body.split('\n'):
+                if line.startswith('SERVER_PUBLIC_KEY:'):
+                    server_public_key = line.split('SERVER_PUBLIC_KEY:')[1].strip()
+                    break
         if not server_public_key:
             raise ValueError("Kein Server-Key erhalten")
 
