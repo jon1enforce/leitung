@@ -359,6 +359,51 @@ def parse_sip_message(message):
                 result['headers'][key] = value
     
     return result if ('method' in result or 'status_code' in result) else None
+def monitor_connection(client_socket, server_ip):
+    ping_interval = 5  # Sekunden zwischen Pings
+    pong_timeout = 70  # Sekunden auf Pong warten
+    
+    while True:
+        try:
+            # 1. Ping senden
+            ping_msg = self.build_sip_message(
+                "MESSAGE",
+                server_ip,
+                {"PING": "true"}
+            )
+            client_socket.sendall(ping_msg.encode('utf-8'))
+            print("Ping gesendet")
+
+            # 2. Auf Pong warten
+            client_socket.settimeout(pong_timeout)
+            try:
+                pong_response = client_socket.recv(4096)
+                if not pong_response:
+                    print("Warnung: Leere Pong-Antwort")
+                    continue  # Weiter versuchen statt abbrechen
+
+                pong_data = self.parse_sip_message(pong_response)
+                if not pong_data:
+                    print("Warnung: Unparsebare Pong-Antwort - Rohdaten:", pong_response[:100])
+                    continue
+
+                if pong_data.get('custom_data', {}).get("PONG") == "true":
+                    print("Pong erfolgreich validiert")
+                else:
+                    print("Warnung: Ungültiges Pong-Format")
+                    
+            except socket.timeout:
+                print("Info: Kein Pong innerhalb von 70s (normal bei 60s Server-Intervall)")
+            
+            # 3. Warten bis zum nächsten Ping
+            time.sleep(ping_interval)
+
+        except ConnectionError as e:
+            print(f"Verbindungsfehler: {str(e)}")
+            return False
+        except Exception as e:
+            print(f"Unerwarteter Fehler: {str(e)}")
+            continue
 def start_connection(server_ip, server_port, client_name, client_socket):
     try:
         client_socket.settimeout(10.0)
@@ -435,43 +480,8 @@ def start_connection(server_ip, server_port, client_name, client_socket):
             raise ValueError("Timeout beim Warten auf Merkle-Root")
 
         # 5. Hauptkommunikationsschleife
-        while True:
-            # Ping senden
-            ping_msg = build_sip_message(
-                "MESSAGE",
-                server_ip,
-                {"PING": "true"}
-            )
-            
-            client_socket.settimeout(70.0)
-            client_socket.send(ping_msg.encode('utf-8'))
-            
-            try:
-                pong_response = client_socket.recv(4096)
-                if not pong_response:
-                    print("Info: Keine Pong-Daten empfangen")
-                    return False
-                    
-                pong_data = parse_sip_message(pong_response)
-                if not pong_data:
-                    print("Info: Pong konnte nicht geparst werden - Rohdaten:", pong_response[:100])
-                    return False
-                    
-                if pong_data.get('custom_data', {}).get("PONG") == "true":
-                    print("Pong erfolgreich validiert")
-                    return True
-                else:
-                    print("Info: Pong enthält kein gültiges PONG-Flag")
-                    return False
-                    
-            except socket.timeout:
-                print("Info: Pong Timeout (erwartet bei 60s Verzögerung)")
-                return False
-            except Exception as e:
-                print(f"Pong-Verarbeitungsfehler: {str(e)}")
-                return False
-                
-            time.sleep(5)  # 5 Sekunden zwischen Pings
+        monitor_connection(client_socket, server_ip):
+
 
     except Exception as e:
         print(f"[Client] Kritischer Fehler: {str(e)}")
