@@ -404,20 +404,19 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         # 3. Server-Key speichern
         # Extrahiere den Key aus dem Body der Nachricht
         server_public_key = None
+        merkle_root = None
         if '\r\n\r\n' in response.decode('utf-8'):
             body = response.decode('utf-8').split('\r\n\r\n')[1]
             for line in body.split('\n'):
                 if line.startswith('SERVER_PUBLIC_KEY:'):
                     server_public_key = line.split('SERVER_PUBLIC_KEY:')[1].strip()
-                    break
+                elif line.startswith('MERKLE_ROOT:'):
+                    merkle_root = line.split('MERKLE_ROOT:')[1].strip()
+
         if not server_public_key:
             raise ValueError("Kein Server-Key erhalten")
-
-        # 4. Merkle-Root empfangen
-        merkle_response = client_socket.recv(4096)
-        merkle_data = parse_sip_message(merkle_response)
-        if not merkle_data or not merkle_data.get('custom_data', {}).get("MERKLE_ROOT"):
-            raise ValueError("Ungültige Merkle-Antwort")
+        if not merkle_root:
+            raise ValueError("Keine Merkle-Root erhalten")
 
         # 5. Hauptkommunikationsschleife
         while True:
