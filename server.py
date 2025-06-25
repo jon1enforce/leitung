@@ -460,7 +460,7 @@ class Server:
                     client_name,
                     {"MERKLE_ROOT": merkle_root}
                 )
-            client_socket.send(merkle_msg.encode('utf-8'))
+                client_socket.send(merkle_msg.encode('utf-8'))
             except Exception as e:
                 print(f"Fehler beim Senden der Merkle-Root: {str(e)}")
     
