@@ -467,8 +467,9 @@ class Server:
             # 6. Hauptkommunikationsschleife
             last_pong_time = 0
             pong_delay = 60  # 60 Sekunden Verzögerung
-            
+            last_pong_sent = time.time()
             while True:
+                time.sleep(1)
                 try:
                     data = client_socket.recv(4096)
                     if not data:
@@ -482,7 +483,7 @@ class Server:
                         custom_data = msg.get('custom_data', {})
                         if custom_data.get("PING"):
                             current_time = time.time()
-                            if current_time - last_pong_sent >= pong_interval:
+                            if current_time - last_pong_sent >= pong_delay:
                                 try:
                                     pong_msg = self.build_sip_message(
                                         "MESSAGE",
@@ -495,7 +496,7 @@ class Server:
                                     )
                                     client_socket.sendall(pong_msg.encode('utf-8'))  # sendall statt send
                                     last_pong_sent = current_time
-                                    print(f"[Server] PONG gesendet (nächstes in {pong_interval}s)")
+                                    print(f"[Server] PONG gesendet")
                                 except Exception as e:
                                     print(f"[Server] Pong-Sendefehler: {str(e)}")
                             continue
