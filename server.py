@@ -6,8 +6,15 @@ import json
 import os
 import random
 import time
+import uiid
+import re
 
 BUFFER_SIZE = 4096
+
+
+
+
+
 def generate_keys():
     """Generiert Server-Schlüsselpaar falls nicht vorhanden"""
     if not os.path.exists("server_public_key.pem"):
@@ -62,6 +69,16 @@ def build_merkle_tree(data_blocks):
         tree = [quantum_safe_hash(tree[i] + tree[i + 1]) for i in range(0, len(tree), 2)]
 
     return tree[0]  # Der Merkle Root-Hash
+
+def parse_multiline_headers(raw_data):
+    """Hilfsfunktion zum Parsen von mehrzeiligen Headern"""
+    headers = {}
+    lines = raw_data.split('\n')
+    for line in lines:
+        if ': ' in line:
+            key, val = line.split(': ', 1)
+            headers[key.strip()] = val.strip()
+    return headers
 
     
 @staticmethod
@@ -341,6 +358,7 @@ class Server:
             
             if not register_data:
                 print("Leere Anfrage - Verbindung geschlossen")
+                client_socket.close()
                 return
         
             sip_msg = self.parse_sip_message(register_data)
@@ -372,15 +390,26 @@ class Server:
                 client_socket.send(error_response.encode('utf-8'))
                 return
             # 2. Client-Daten verarbeiten
-            print("+++sig_msg+++")
-            print(sip_msg)
-            print("+++sip_msg+++")
-            client_name = sip_msg['custom_data'].get("CLIENT_NAME", "")
-            client_pubkey = sip_msg['custom_data'].get("PUBLIC_KEY", "")
-            print("+++client_name+++")
-            print(client_name)
-            print("+++client_pubkey+++")
-            print(client_pubkey)
+            # Extrahiere Body-Daten
+            body_data = {}
+            if '\r\n\r\n' in register_data.decode('utf-8'):
+                body = register_data.decode('utf-8').split('\r\n\r\n')[1]
+                body_data = parse_multiline_headers(body)
+             
+            # Kombiniere Header und Body-Daten
+            client_name = (sip_msg['headers'].get('CLIENT_NAME') or 
+                          sip_msg['custom_data'].get('CLIENT_NAME') or
+                          body_data.get('CLIENT_NAME', ''))
+             
+            client_pubkey = (sip_msg['headers'].get('PUBLIC_KEY') or 
+                           sip_msg['custom_data'].get('PUBLIC_KEY') or
+                           body_data.get('PUBLIC_KEY', ''))
+             
+            # Entferne eventuelle doppelten Zeilenumbrüche
+            client_pubkey = re.sub(r'\n+', '\n', client_pubkey).strip()
+             
+            print(f"Extrahierter CLIENT_NAME: {client_name}")
+            print(f"Extrahierter PUBLIC_KEY: {client_pubkey[:50]}...")
             if not client_name or not client_pubkey:
                 raise ValueError("Unvollständige Client-Daten")
     
