@@ -436,36 +436,31 @@ def start_connection(server_ip, server_port, client_name, client_socket):
 
         # 5. Hauptkommunikationsschleife
         while True:
-            try:
-                # Ping-Pong Mechanismus
-                ping_msg = build_sip_message(
-                    "MESSAGE",
-                    server_ip,
-                    {"PING": "true", "TIMESTAMP": str(time.time())}
-                )
-                client_socket.send(ping_msg.encode('utf-8'))
-    
-                # Pong-Antwort empfangen und verarbeiten
+            ping_msg = self.build_sip_message(
+                "MESSAGE",
+                self.server_ip,
+                {"PING": "true"}
+            )
             
-                pong_response = client_socket.recv(4096)
-                if not pong_response:
-                    raise ValueError("Keine Pong-Antwort erhalten")
-                    
-                pong_data = parse_sip_message(pong_response)
-                if not pong_data:
-                    raise ValueError("Ungültiges Pong-Nachrichtenformat")
-                    
-                pong = pong_data.get('custom_data', {}).get("PONG")
-                if pong != "true":
+            self.sock.settimeout(5.0)  # 5 Sekunden Timeout
+            self.sock.send(ping_msg.encode('utf-8'))
+            try:
+                pong_response = self.sock.recv(4096)
+                pong_data = self.parse_sip_message(pong_response)
+                
+                if not pong_data or pong_data.get('custom_data', {}).get("PONG") != "true":
                     raise ValueError("Ungültige Pong-Antwort")
                     
                 print("Ping-Pong erfolgreich")
-            
+                
             except socket.timeout:
-                raise ValueError("Timeout bei Pong-Antwort")
+                print("Warnung: Pong Timeout (Server reagiert nicht)")
+                # Kein Abbruch, nur Warnung
+            except Exception as e:
+                print(f"Pong-Fehler: {str(e)}")
 
     except Exception as e:
-        print(f"[Client] Fehler: {str(e)}")
+        print(f"[Client] Kritischer Fehler: {str(e)}")
         raise
     finally:
         client_socket.close()
