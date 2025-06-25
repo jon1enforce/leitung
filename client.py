@@ -366,7 +366,7 @@ def connection_loop(client_socket, server_ip):
     while True:
         try:
             # 1. Ping senden
-            ping_msg = self.build_sip_message(
+            ping_msg = build_sip_message(
                 "MESSAGE",
                 server_ip,
                 {"PING": "true"}
@@ -382,7 +382,7 @@ def connection_loop(client_socket, server_ip):
                     print("Warnung: Leere Pong-Antwort")
                     continue  # Weiter versuchen statt abbrechen
 
-                pong_data = self.parse_sip_message(pong_response)
+                pong_data = parse_sip_message(pong_response)
                 if not pong_data:
                     print("Warnung: Unparsebare Pong-Antwort - Rohdaten:", pong_response[:100])
                     continue
