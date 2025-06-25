@@ -464,27 +464,31 @@ class Server:
             except Exception as e:
                 print(f"Fehler beim Senden der Merkle-Root: {str(e)}")
     
-            # 6. Hauptkommunikationsschleife
+        # 6. Hauptkommunikationsschleife
             while True:
                 try:
                     data = client_socket.recv(4096)
-                    if not data:
-                        break
+                if not data:
+                    break
     
-                    msg = self.parse_sip_message(data)
-                    if not msg:
-                        continue
-    
-                    if msg.get('custom_data', {}).get("PING"):
-                        pong_msg = self.build_sip_message(
-                            "MESSAGE",
-                            client_name,
-                            {"PONG": "true"}
-                        )
-                        client_socket.send(pong_msg.encode('utf-8'))
-    
-                except socket.timeout:
+                msg = self.parse_sip_message(data)
+                if not msg:
                     continue
+    
+                # Ping-Pong Handling
+                if msg.get('custom_data', {}).get("PING"):
+                    pong_msg = self.build_sip_message(
+                        "MESSAGE",
+                        client_name,
+                        {"PONG": "true", "TIMESTAMP": msg['custom_data']["TIMESTAMP"]}
+                    )
+                    client_socket.send(pong_msg.encode('utf-8'))
+
+        except socket.timeout:
+            continue
+        except Exception as e:
+            print(f"Fehler in Client-Handler: {str(e)}")
+            break
     
         except Exception as e:
             print(f"Fehler mit {client_address}: {str(e)}")
