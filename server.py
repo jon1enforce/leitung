@@ -145,41 +145,54 @@ class Server:
         if isinstance(message, bytes):
             message = message.decode('utf-8')
         
-        if not message.strip():
+        message = message.strip()
+        if not message:
             return None
     
-        lines = [line.strip() for line in message.splitlines() if line.strip()]
+        lines = [line.strip() for line in message.replace('\r\n', '\n').split('\n') if line.strip()]
         result = {'headers': {}, 'custom_data': {}}
         
         # Erste Zeile analysieren
         first_line = lines[0]
-        if first_line.startswith('SIP/2.0'):
-            parts = first_line.split()
-            if len(parts) >= 3: # Mindestens "SIP/2.0 CODE MESSAGE"
-                result['status_code'] = parts[1]
-                result['status_message'] = ' '.join(parts[2:])
+        if first_line.startswith(('SIP/2.0', 'REGISTER', 'INVITE', 'MESSAGE')):
+            if first_line.startswith('SIP/2.0'):
+                parts = first_line.split(maxsplit=2)
+                if len(parts) >= 2:
+                    result['status_code'] = parts[1]
+                    if len(parts) > 2:
+                        result['status_message'] = parts[2]
             else:
-                return None # Ungültiges SIP-Format
-        elif first_line in ["REGISTER", "INVITE", "MESSAGE"]:
-            result['method'] = first_line
+                result['method'] = first_line.split()[0]
         else:
-            return None  # Ungültige erste Zeile
+            return None
     
         # Header parsen
         for line in lines[1:]:
             if ':' in line:
-                key, value = line.split(':', 1)
+                key, sep, value = line.partition(':')
                 key = key.strip().upper()
                 value = value.strip()
                 
-                if key == "CUSTOM-DATA":
+                if not key:
+                    continue
+                if key == "CONTENT-LENGTH":
                     try:
-                        result['custom_data'] = json.loads(value)
-                    except json.JSONDecodeError:
-                        result['custom_data'] = {}
-                else:
+                        result['content_length'] = int(value)
+                    except ValueError:
+                        pass
+                elif key not in result['headers']:  # Nur ersten Header-Wert behalten
                     result['headers'][key] = value
-        
+        if 'content_length' in result and result['content_length'] > 0:
+            body = '\n'.join(lines[len(result['headers'])+1:])
+            if body:
+                try:
+                    result['custom_data'] = dict(
+                        line.split(':', 1) 
+                        for line in body.splitlines() 
+                        if ':' in line
+                    )
+                except Exception:
+                    result['custom_data'] = {}
         return result if ('method' in result or 'status_code' in result) else None     
     def start(self):
         print("start1")
@@ -307,7 +320,8 @@ class Server:
     def handle_client(self, client_socket):
         client_address = client_socket.getpeername()
         print(f"\n[Server] Neue Verbindung von {client_address}")
-        
+        client_name = None
+        client_pubkey = None
         client_id = None
         try:
             client_socket.settimeout(10.0)
@@ -326,16 +340,32 @@ class Server:
                 print("FEHLER: CLIENT_NAME fehlt")
             if not client_pubkey:
                 print("FEHLER: PUBLIC_KEY fehlt")
-            if not sip_msg or sip_msg.get('method') != "REGISTER":
-                error_msg = self.build_sip_message(
+            if not sip_msg:
+                error_msg = "Ungültiges SIP-Nachrichtenformat"
+            elif sip_msg.get('method') != "REGISTER":
+                error_msg = f"Ungültige Methode: {sip_msg.get('method')}, erwartet: REGISTER"
+            else:
+                client_name = sip_msg['headers'].get('FROM', '').split('@')[0].strip('<sip:') or \
+                             sip_msg['custom_data'].get('CLIENT_NAME', '')
+                client_pubkey = sip_msg['custom_data'].get('PUBLIC_KEY', '')
+                if not client_name or not client_pubkey:
+                    error_msg = "Fehlende Pflichtfelder (CLIENT_NAME oder PUBLIC_KEY)"
+                else:
+                    error_msg = None
+
+            if error_msg:
+                print(f"Validierungsfehler: {error_msg}")
+                error_response = self.build_sip_message(
                     "SIP/2.0 400 Bad Request",
                     "",
-                    {"ERROR": "Ungültige Methode", "ERWARTET": "REGISTER"}
+                   {
+                       "ERROR": error_msg,
+                       "RECEIVED_HEADERS": sip_msg.get('headers', {}),
+                       "RECEIVED_DATA": sip_msg.get('custom_data', {})
+                   }
                 )
-                client_socket.send(error_msg.encode('utf-8'))
+                client_socket.send(error_response.encode('utf-8'))
                 return
-
-
             # 2. Client-Daten verarbeiten
             client_name = sip_msg['custom_data'].get("CLIENT_NAME", "")
             client_pubkey = sip_msg['custom_data'].get("PUBLIC_KEY", "")
