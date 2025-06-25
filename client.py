@@ -366,7 +366,7 @@ def start_connection(server_ip, server_port, client_name, client_socket):
             raise ValueError("Keine Antwort vom Server")
 
         sip_data = parse_sip_message(response)
-        if not sip_data or sip_data.get('status_code') != "200":
+        if not sip_data or not sip_data.get('status_code') or int(sip_data.get('status_code', 0)) >= 400:
             print(f"Rohe Antwort: {response!r}")  # Debug-Ausgabe
             print(f"Parsed data: {sip_data}") 
             raise ValueError("Ungültige Server-Antwort")
