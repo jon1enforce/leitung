@@ -488,10 +488,10 @@ class Server:
                                     pong_msg = self.build_sip_message(
                                         "MESSAGE",
                                         client_name,
-                                        {"PONG": "true"},
-                                        headers={
-                                            "Call-ID": msg['headers'].get('Call-ID', ''),
-                                            "CSeq": msg['headers'].get('CSeq', '1')
+                                        {
+                                            "PONG": "true",
+                                            "CALL_ID": msg['headers'].get('CALL-ID', ''),
+                                            "CSEQ": msg['headers'].get('CSEQ', '1')
                                         }
                                     )
                                     client_socket.sendall(pong_msg.encode('utf-8'))  # sendall statt send
