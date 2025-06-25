@@ -155,9 +155,11 @@ class Server:
         first_line = lines[0]
         if first_line.startswith('SIP/2.0'):
             parts = first_line.split()
-            if len(parts) >= 2:
-                result['status_code'] = parts[1]  # z.B. "200"
-                result['status_message'] = ' '.join(parts[2:]) if len(parts) > 2 else ""
+            if len(parts) >= 3: # Mindestens "SIP/2.0 CODE MESSAGE"
+                result['status_code'] = parts[1]
+                result['status_message'] = ' '.join(parts[2:])
+            else:
+                return None # Ungültiges SIP-Format
         elif first_line in ["REGISTER", "INVITE", "MESSAGE"]:
             result['method'] = first_line
         else:
