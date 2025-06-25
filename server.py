@@ -374,9 +374,6 @@ class Server:
             # 2. Client-Daten verarbeiten
             client_name = sip_msg['custom_data'].get("CLIENT_NAME", "")
             client_pubkey = sip_msg['custom_data'].get("PUBLIC_KEY", "")
-            except ValueError:
-                print(f"Ungültiges Key-Format: {client_pubkey[:50]}...")
-                return False
             if not client_name or not client_pubkey:
                 raise ValueError("Unvollständige Client-Daten")
     
