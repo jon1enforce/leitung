@@ -12,7 +12,16 @@ import re
 BUFFER_SIZE = 4096
 
 
-
+def extract_public_key(raw_data):
+    """Extrahiert den kompletten Public Key aus den Rohdaten"""
+    data = raw_data.decode('utf-8')
+    if '-----BEGIN PUBLIC KEY-----' not in data:
+        return None
+    
+    # Finde Start und Ende des Keys
+    start = data.index('-----BEGIN PUBLIC KEY-----')
+    end = data.index('-----END PUBLIC KEY-----') + len('-----END PUBLIC KEY-----')
+    return data[start:end]
 
 
 def generate_keys():
@@ -378,9 +387,7 @@ class Server:
                           sip_msg['custom_data'].get('CLIENT_NAME') or
                           body_data.get('CLIENT_NAME', ''))
              
-            client_pubkey = (sip_msg['headers'].get('PUBLIC_KEY') or 
-                           sip_msg['custom_data'].get('PUBLIC_KEY') or
-                           body_data.get('PUBLIC_KEY', ''))
+            client_pubkey = extract_public_key(register_data)
              
             # Entferne eventuelle doppelten Zeilenumbrüche
             client_pubkey = re.sub(r'\n+', '\n', client_pubkey).strip()
