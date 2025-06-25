@@ -138,6 +138,16 @@ class Server:
             print(f"Socket Addr: {sock.getsockname()}")
         except Exception as e:
             print(f"Socket Addr Error: {e}")
+    def build_sip_message(self, method, recipient, custom_data={}):
+        """Einfache SIP-Nachricht-Erstellung kompatibel zum Client"""
+        body = "\r\n".join(f"{k}: {v}" for k, v in custom_data.items())
+        return (
+            f"{method} sip:{recipient} SIP/2.0\r\n"
+            f"From: <sip:server@{self.host}>\r\n"
+            f"To: <sip:{recipient}>\r\n"
+            f"Content-Length: {len(body)}\r\n\r\n"
+            f"{body}"
+        )
     def parse_sip_message(self, message):
         """
         Korrigierte Version die SIP-Antworten richtig erkennt
@@ -151,7 +161,7 @@ class Server:
     
         lines = [line.strip() for line in message.replace('\r\n', '\n').split('\n') if line.strip()]
         result = {'headers': {}, 'custom_data': {}}
-        
+        print(f"Original headers: {lines[1:]}")  # Zeigt die tatsächlich geparsten Header
         # Erste Zeile analysieren
         first_line = lines[0]
         if first_line.startswith(('SIP/2.0', 'REGISTER', 'INVITE', 'MESSAGE')):
@@ -336,6 +346,9 @@ class Server:
             sip_msg = self.parse_sip_message(register_data)
             print(f"Geparste Nachricht: {sip_msg}")  # Debug
             print(f"Empfangene Registrierungsdaten: {register_data.decode('utf-8')}")
+            
+            client_name = sip_msg['headers'].get('CLIENT_NAME', '')
+            client_pubkey = sip_msg['headers'].get('PUBLIC_KEY', '')
             if not client_name:
                 print("FEHLER: CLIENT_NAME fehlt")
             if not client_pubkey:
