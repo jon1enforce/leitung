@@ -436,28 +436,46 @@ def start_connection(server_ip, server_port, client_name, client_socket):
 
         # 5. Hauptkommunikationsschleife
         while True:
-            ping_msg = build_sip_message(
+            # Ping senden
+            ping_msg = self.build_sip_message(
                 "MESSAGE",
-                server_ip,
+                self.server_ip,
                 {"PING": "true"}
             )
             
-            client_socket.settimeout(70.0)  # 5 Sekunden Timeout
-            client_socket.send(ping_msg.encode('utf-8'))
+            self.sock.settimeout(70.0)
+            self.sock.send(ping_msg.encode('utf-8'))
+
             try:
-                pong_response = client_socket.recv(4096)
-                pong_data = parse_sip_message(pong_response)
-                
-                if not pong_data or pong_data.get('custom_data', {}).get("PONG") != "true":
-                    raise ValueError("Ungültige Pong-Antwort")
+                # Pong empfangen
+                pong_response = self.sock.recv(4096)
+                if not pong_response:
+                    print("Warnung: Leere Pong-Antwort")
+                    continue
                     
-                print("Ping-Pong erfolgreich")
-                
+                # Verbessertes Parsing
+                pong_data = self.parse_sip_message(pong_response)
+                if not pong_data:
+                    print("Warnung: Unparsebare Pong-Antwort")
+                    continue
+                    
+                # Striktere Validierung
+                if (pong_data.get('method') == "MESSAGE" and 
+                    pong_data.get('custom_data', {}).get("PONG") == "true"):
+                    print("[Client] Ping-Pong erfolgreich")
+                else:
+                    print("Warnung: Ungültige Pong-Struktur")
+                    
             except socket.timeout:
-                print("Warnung: Pong Timeout (Server reagiert nicht)")
-                # Kein Abbruch, nur Warnung
+                print("Info: Kein Pong innerhalb von 70s empfangen")
             except Exception as e:
-                print(f"Pong-Fehler: {str(e)}")
+                print(f"Pong-Verarbeitungsfehler: {str(e)}")
+                
+            time.sleep(5)  # 5 Sekunden zwischen Pings
+
+    except Exception as e:
+        print(f"[Client] Kritischer Fehler: {str(e)}")
+        raise
 
     except Exception as e:
         print(f"[Client] Kritischer Fehler: {str(e)}")
