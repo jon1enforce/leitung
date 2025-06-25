@@ -311,32 +311,30 @@ class Server:
         client_id = None
         try:
             client_socket.settimeout(10.0)
-            
+            print("Neue Client-Verbindung")  # Debug
             # 1. REGISTER empfangen
             register_data = client_socket.recv(4096)
+            print(f"Empfangene Daten: {register_data[:200]}...")  # Debug
             if not register_data:
-                print("Keine Registrierungsdaten erhalten")
+                print("Leere Anfrage - Verbindung geschlossen")
                 return
     
             sip_msg = self.parse_sip_message(register_data)
+            print(f"Geparste Nachricht: {sip_msg}")  # Debug
             print(f"Empfangene Registrierungsdaten: {register_data.decode('utf-8')}")
-            print(f"Geparste SIP-Nachricht: {sip_msg}")
             if not client_name:
                 print("FEHLER: CLIENT_NAME fehlt")
             if not client_pubkey:
                 print("FEHLER: PUBLIC_KEY fehlt")
             if not sip_msg or sip_msg.get('method') != "REGISTER":
-                error_response = build_sip_message(
+                error_msg = self.build_sip_message(
                     "SIP/2.0 400 Bad Request",
                     "",
-                    {
-                        "ERROR": "Invalid registration",
-                        "MISSING_FIELDS": ["PUBLIC_KEY"] if not client_pubkey else [],
-                        "KEY_FORMAT_VALID": bool(client_pubkey)
-                    }
+                    {"ERROR": "Ungültige Methode", "ERWARTET": "REGISTER"}
                 )
-                client_socket.send(error_response.encode('utf-8'))                
+                client_socket.send(error_msg.encode('utf-8'))
                 return
+
 
             # 2. Client-Daten verarbeiten
             client_name = sip_msg['custom_data'].get("CLIENT_NAME", "")
