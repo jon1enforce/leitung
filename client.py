@@ -366,7 +366,7 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         # 1. REGISTER senden
         pubkey = load_publickey()
         if isinstance(pubkey, bytes):
-        pubkey = pubkey.decode('utf-8')
+            pubkey = pubkey.decode('utf-8')
 
         register_msg = build_sip_message(
             "REGISTER",
