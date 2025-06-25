@@ -438,7 +438,7 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         while True:
             try:
                 # Ping-Pong Mechanismus
-                ping_msg = self.build_sip_message(
+                ping_msg = build_sip_message(
                     "MESSAGE",
                     self.server_ip,
                     {"PING": "true", "TIMESTAMP": str(time.time())}
