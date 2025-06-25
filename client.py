@@ -442,7 +442,7 @@ def start_connection(server_ip, server_port, client_name, client_socket):
                 {"PING": "true"}
             )
             
-            client_socket.settimeout(5.0)  # 5 Sekunden Timeout
+            client_socket.settimeout(70.0)  # 5 Sekunden Timeout
             client_socket.send(ping_msg.encode('utf-8'))
             try:
                 pong_response = client_socket.recv(4096)
