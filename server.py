@@ -335,48 +335,39 @@ class Server:
         client_id = None
         try:
             client_socket.settimeout(10.0)
-            print("Neue Client-Verbindung")  # Debug
-            # 1. REGISTER empfangen
+            print("Neue Client-Verbindung")
             register_data = client_socket.recv(4096)
-            print(f"Empfangene Daten: {register_data[:200]}...")  # Debug
+            print(f"Vollständige empfangene Daten:\n{register_data.decode('utf-8')}")  # Debug
+            
             if not register_data:
                 print("Leere Anfrage - Verbindung geschlossen")
                 return
-    
+        
             sip_msg = self.parse_sip_message(register_data)
-            print(f"Geparste Nachricht: {sip_msg}")  # Debug
-            print(f"Empfangene Registrierungsdaten: {register_data.decode('utf-8')}")
-            
-            
-            client_name = sip_msg['custom_data'].get('CLIENT_NAME', '')
-            client_pubkey = sip_msg['custom_data'].get('PUBLIC_KEY', '')
-            if not client_name:
-                print("FEHLER: CLIENT_NAME fehlt")
-            if not client_pubkey:
-                print("FEHLER: PUBLIC_KEY fehlt")
-            if not sip_msg:
-                error_msg = "Ungültiges SIP-Nachrichtenformat"
-            elif sip_msg.get('method') != "REGISTER":
-                error_msg = f"Ungültige Methode: {sip_msg.get('method')}, erwartet: REGISTER"
+            print(f"Geparste Nachricht - Headers: {sip_msg.get('headers', {})}")  # Debug
+            print(f"Geparste Nachricht - Custom Data: {sip_msg.get('custom_data', {})}")  # Debug
+        
+            if not sip_msg or 'custom_data' not in sip_msg:
+                error_msg = "Ungültiges Nachrichtenformat"
             else:
-                client_name = sip_msg['headers'].get('FROM', '').split('@')[0].strip('<sip:') or \
-                             sip_msg['custom_data'].get('CLIENT_NAME', '')
-                client_pubkey = sip_msg['custom_data'].get('PUBLIC_KEY', '')
+                client_name = sip_msg['custom_data'].get('CLIENT_NAME', '') or sip_msg['headers'].get('CLIENT_NAME', '')
+                client_pubkey = sip_msg['custom_data'].get('PUBLIC_KEY', '') or sip_msg['headers'].get('PUBLIC_KEY', '')
+                
                 if not client_name or not client_pubkey:
                     error_msg = "Fehlende Pflichtfelder (CLIENT_NAME oder PUBLIC_KEY)"
                 else:
                     error_msg = None
-
+        
             if error_msg:
                 print(f"Validierungsfehler: {error_msg}")
                 error_response = self.build_sip_message(
                     "SIP/2.0 400 Bad Request",
                     "",
-                   {
-                       "ERROR": error_msg,
-                       "RECEIVED_HEADERS": sip_msg.get('headers', {}),
-                       "RECEIVED_DATA": sip_msg.get('custom_data', {})
-                   }
+                    {
+                        "ERROR": error_msg,
+                        "RECEIVED_HEADERS": sip_msg.get('headers', {}),
+                        "RECEIVED_DATA": sip_msg.get('custom_data', {})
+                    }
                 )
                 client_socket.send(error_response.encode('utf-8'))
                 return
