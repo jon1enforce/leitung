@@ -320,7 +320,7 @@ def build_sip_message(method, recipient, custom_data={}):
         f"{body}"
     )
 def parse_sip_message(message):
-    """Korrigierte SIP-Nachrichtenparser-Funktion"""
+    """Korrigierte SIP-Nachrichtenparser"""
     if isinstance(message, bytes):
         message = message.decode('utf-8')
     
@@ -328,37 +328,44 @@ def parse_sip_message(message):
         return None
 
     lines = [line.strip() for line in message.splitlines() if line.strip()]
-    result = {'headers': {}, 'custom_data': {}}
-    
-    # Erste Zeile analysieren
+    if not lines:
+        return None
+
+    result = {
+        'method': None,
+        'headers': {},
+        'custom_data': {}
+    }
+
+    # Erste Zeile (Request/Status-Line)
     first_line = lines[0]
-    if first_line.startswith('SIP/2.0'):
-        parts = first_line.split()
-        if len(parts) >= 2:
-            result['status_code'] = parts[1]  # Statuscode (200, 400 etc.)
-            if len(parts) > 2:
-                result['status_message'] = ' '.join(parts[2:])
-    elif first_line in ["REGISTER", "INVITE", "MESSAGE"]:
-        result['method'] = first_line
-    else:
-        return None  # Ungültige Nachricht
+    if first_line.startswith(('SIP/2.0', 'REGISTER', 'INVITE', 'MESSAGE')):
+        if first_line.startswith('SIP/2.0'):
+            parts = first_line.split()
+            if len(parts) >= 2:
+                result['status_code'] = parts[1]
+        else:
+            result['method'] = first_line.split()[0]
 
     # Header parsen
-    for line in lines[1:]:
+    body_start = len(lines)
+    for i, line in enumerate(lines[1:], 1):
+        if not line:
+            body_start = i
+            break
         if ':' in line:
-            key, value = line.split(':', 1)
-            key = key.strip().upper()
-            value = value.strip()
-            
-            if key == "CUSTOM-DATA":
-                try:
-                    result['custom_data'] = json.loads(value)
-                except json.JSONDecodeError:
-                    result['custom_data'] = {}
-            else:
-                result['headers'][key] = value
-    
-    return result if ('method' in result or 'status_code' in result) else None
+            key, val = line.split(':', 1)
+            result['headers'][key.strip().upper()] = val.strip()
+
+    # Body parsen (custom data)
+    if len(lines) > body_start:
+        body_lines = lines[body_start:]
+        for line in body_lines:
+            if ':' in line:
+                key, val = line.split(':', 1)
+                result['custom_data'][key.strip()] = val.strip()
+
+    return result
 def connection_loop(client_socket, server_ip):
     ping_interval = 5  # Sekunden zwischen Pings
     pong_timeout = 70  # Sekunden auf Pong warten
