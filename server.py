@@ -466,7 +466,7 @@ class Server:
     
             # 6. Hauptkommunikationsschleife
             last_pong_time = 0
-            pong_delay = 60  # 60 Sekunden Verzögerung
+            pong_delay = 20  # 60 Sekunden Verzögerung
             last_pong_sent = time.time()
             while True:
                 time.sleep(1)
