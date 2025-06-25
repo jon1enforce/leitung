@@ -393,7 +393,7 @@ class Server:
         client_pubkey = None
         client_id = None
         try:
-            client_socket.settimeout(10.0)
+            client_socket.settimeout(300.0)
             print("Neue Client-Verbindung")
             register_data = client_socket.recv(4096)
             print(f"Vollständige empfangene Daten:\n{register_data.decode('utf-8')}")  # Debug
