@@ -10,11 +10,9 @@ import uuid
 import re
 
 BUFFER_SIZE = 4096
-
-
 def extract_public_key(raw_data):
     """
-    Extrahiert den kompletten Public Key im PEM-Format aus den Rohdaten.
+    Extrahiert den Public Key Inhalt (ohne BEGIN/END Markierungen) aus den Rohdaten.
     Gibt None zurück wenn kein gültiger Key gefunden wird.
     """
     try:
@@ -35,17 +33,14 @@ def extract_public_key(raw_data):
         if end_idx == -1:
             return None
             
-        # Extrahiere den Key inklusive Markern
-        public_key = data[start_idx:end_idx + len(end_marker)]
+        # Extrahiere den Key ohne Marker
+        key_start = start_idx + len(start_marker)
+        public_key_content = data[key_start:end_idx].strip()
         
-        # Validierung
-        if not public_key.startswith(start_marker) or not public_key.endswith(end_marker):
-            return None
-            
-        # Normalisiere Zeilenumbrüche
-        public_key = '\n'.join(line.strip() for line in public_key.splitlines())
+        # Entferne alle Leerzeichen/Zeilenumbrüche
+        public_key_content = ''.join(public_key_content.split())
         
-        return public_key
+        return public_key_content
         
     except Exception as e:
         print(f"Fehler beim Extrahieren des Public Keys: {str(e)}")
