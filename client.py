@@ -410,13 +410,25 @@ def start_connection(server_ip, server_port, client_name, client_socket):
             for line in body.split('\n'):
                 if line.startswith('SERVER_PUBLIC_KEY:'):
                     server_public_key = line.split('SERVER_PUBLIC_KEY:')[1].strip()
-                elif line.startswith('MERKLE_ROOT:'):
-                    merkle_root = line.split('MERKLE_ROOT:')[1].strip()
 
         if not server_public_key:
             raise ValueError("Kein Server-Key erhalten")
-        if not merkle_root:
-            raise ValueError("Keine Merkle-Root erhalten")
+        try:
+            client_socket.settimeout(5.0)  # Timeout für Merkle-Root
+            merkle_response = client_socket.recv(4096)
+            if not merkle_response:
+                raise ValueError("Keine Merkle-Root Antwort erhalten")
+                
+            merkle_data = parse_sip_message(merkle_response)
+            merkle_root = merkle_data.get('custom_data', {}).get("MERKLE_ROOT")
+            
+            if not merkle_root:
+                raise ValueError("Keine Merkle-Root in der Antwort")
+                
+            print(f"Merkle-Root erhalten: {merkle_root}")
+            
+        except socket.timeout:
+            raise ValueError("Timeout beim Warten auf Merkle-Root")
 
         # 5. Hauptkommunikationsschleife
         while True:
