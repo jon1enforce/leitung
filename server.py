@@ -493,6 +493,10 @@ class Server:
                     print(f"Fehler in Client-Handler: {str(e)}")
                     break
 
+        except Exception as e:
+            print(f"Fehler bei der Kommunikation mit {client_address}: {e}")
+        finally:
+            client_socket.close()
 
 
 
