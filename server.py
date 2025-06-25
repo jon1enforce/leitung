@@ -449,17 +449,20 @@ class Server:
                 }
             )
             client_socket.send(response.encode('utf-8'))
+            time.sleep(0.1)
     
-            # 5. Merkle-Root senden
-            all_keys = [self.server_public_key] + [c['public_key'] for c in self.clients.values()]
-            merkle_root = build_merkle_tree(merge_public_keys(all_keys))
-            
-            merkle_msg = self.build_sip_message(
-                "MESSAGE",
-                client_name,
-                {"MERKLE_ROOT": merkle_root}
-            )
+            try:
+                all_keys = [self.server_public_key] + [c['public_key'] for c in self.clients.values()]
+                merkle_root = build_merkle_tree(merge_public_keys(all_keys))
+        
+                merkle_msg = self.build_sip_message(
+                    "MESSAGE",
+                    client_name,
+                    {"MERKLE_ROOT": merkle_root}
+                )
             client_socket.send(merkle_msg.encode('utf-8'))
+            except Exception as e:
+                print(f"Fehler beim Senden der Merkle-Root: {str(e)}")
     
             # 6. Hauptkommunikationsschleife
             while True:
