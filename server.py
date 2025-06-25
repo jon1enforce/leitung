@@ -139,48 +139,48 @@ class Server:
         except Exception as e:
             print(f"Socket Addr Error: {e}")
     def parse_sip_message(self, message):
-    """
-    Parst eine SIP-Nachricht in folgendem Format:
+        """
+        Parst eine SIP-Nachricht in folgendem Format:
+        
+        METHODE/HEADER
+        Key: Value
+        Custom-Data: {"key":"value"}
+        """
+        if isinstance(message, bytes):
+            message = message.decode('utf-8')
+        
+        if not message.strip():
+            return None
     
-    METHODE/HEADER
-    Key: Value
-    Custom-Data: {"key":"value"}
-    """
-    if isinstance(message, bytes):
-        message = message.decode('utf-8')
-    
-    if not message.strip():
-        return None
-
-    lines = message.splitlines()
-    result = {}
-    
-    # Erste Zeile (Method/Status)
-    first_line = lines[0].strip()
-    if first_line.startswith("SIP/2.0"):
-        result['status_code'] = first_line.split()[1]
-    elif first_line in ["REGISTER", "INVITE", "MESSAGE"]:
-        result['method'] = first_line
-    
-    # Header-Daten
-    result['headers'] = {}
-    result['custom_data'] = {}
-    
-    for line in lines[1:]:
-        if ':' in line:
-            key, value = line.split(':', 1)
-            key = key.strip().upper()
-            value = value.strip()
-            
-            if key == "CUSTOM-DATA":
-                try:
-                    result['custom_data'] = json.loads(value)
-                except json.JSONDecodeError:
-                    result['custom_data'] = {}
-            else:
-                result['headers'][key] = value
-    
-    return result if ('method' in result or 'status_code' in result) else None        
+        lines = message.splitlines()
+        result = {}
+        
+        # Erste Zeile (Method/Status)
+        first_line = lines[0].strip()
+        if first_line.startswith("SIP/2.0"):
+            result['status_code'] = first_line.split()[1]
+        elif first_line in ["REGISTER", "INVITE", "MESSAGE"]:
+            result['method'] = first_line
+        
+        # Header-Daten
+        result['headers'] = {}
+        result['custom_data'] = {}
+        
+        for line in lines[1:]:
+            if ':' in line:
+                key, value = line.split(':', 1)
+                key = key.strip().upper()
+                value = value.strip()
+                
+                if key == "CUSTOM-DATA":
+                    try:
+                        result['custom_data'] = json.loads(value)
+                    except json.JSONDecodeError:
+                        result['custom_data'] = {}
+                else:
+                    result['headers'][key] = value
+        
+        return result if ('method' in result or 'status_code' in result) else None        
     def start(self):
         print("start1")
         try:
