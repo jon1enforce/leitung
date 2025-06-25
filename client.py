@@ -419,8 +419,12 @@ def start_connection(server_ip, server_port, client_name, client_socket):
             if not merkle_response:
                 raise ValueError("Keine Merkle-Root Antwort erhalten")
                 
-            merkle_data = parse_sip_message(merkle_response)
-            merkle_root = merkle_data.get('custom_data', {}).get("MERKLE_ROOT")
+    
+            if '\r\n\r\n' in merkle_response.decode('utf-8'):
+                body = merkle_response.decode('utf-8').split('\r\n\r\n')[1]
+                for line in body.split('\n'):
+                    if line.startswith('MERKLE_ROOT:'):
+                        merkle_root = line.split('MERKLE_ROOT:')[1].strip()
             
             if not merkle_root:
                 raise ValueError("Keine Merkle-Root in der Antwort")
