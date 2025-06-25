@@ -426,7 +426,7 @@ class Server:
             client_pubkey = re.sub(r'\n+', '\n', client_pubkey).strip()
              
             print(f"Extrahierter CLIENT_NAME: {client_name}")
-            print(f"Extrahierter PUBLIC_KEY: {client_pubkey[:50]}...")
+            print(f"Extrahierter PUBLIC_KEY: {client_pubkey}")
             if not client_name or not client_pubkey:
                 raise ValueError("Unvollständige Client-Daten")
     
