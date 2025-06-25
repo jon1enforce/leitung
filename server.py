@@ -486,9 +486,9 @@ class Server:
 
                 except socket.timeout:
                     continue
-        except Exception as e:
-            print(f"Fehler in Client-Handler: {str(e)}")
-            break
+            except Exception as e:
+                print(f"Fehler in Client-Handler: {str(e)}")
+                break
         finally:
             if client_id:
                 self.clients.pop(client_id, None)
