@@ -364,14 +364,21 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         client_socket.settimeout(10.0)
         
         # 1. REGISTER senden
+        pubkey = load_publickey()
+        if isinstance(pubkey, bytes):
+        pubkey = pubkey.decode('utf-8')
+
         register_msg = build_sip_message(
             "REGISTER",
             server_ip,
             {
                 "CLIENT_NAME": client_name,
-                "PUBLIC_KEY": load_publickey()
+                "PUBLIC_KEY": pubkey,  # Als String
+                "VERSION": "1.0"       # Neu: Protokollversion
             }
         )
+        pubkey = load_publickey()
+        print(f"Sende Registrierung mit: Name={client_name}, Key={pubkey[:20]}...")
         client_socket.send(register_msg.encode('utf-8'))
 
         # 2. 200 OK empfangen
