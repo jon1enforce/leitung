@@ -319,32 +319,46 @@ def build_sip_message(method, recipient, custom_data={}):
         f"Content-Length: {len(body)}\r\n\r\n"
         f"{body}"
     )
-
 def parse_sip_message(message):
-    if isinstance(message, bytes):  # Neu: Bytes-Erkennung
+    """Korrigierte SIP-Nachrichtenparser-Funktion"""
+    if isinstance(message, bytes):
         message = message.decode('utf-8')
-    if not message.startswith(("SIP/", "REGISTER", "INVITE")):
+    
+    if not message.strip():
         return None
-        
-    parts = message.split("\r\n\r\n", 1)
-    headers = {}
-    for line in parts[0].split("\r\n"):
-        if ": " in line:
-            key, val = line.split(": ", 1)
-            headers[key.lower()] = val.strip()
+
+    lines = [line.strip() for line in message.splitlines() if line.strip()]
+    result = {'headers': {}, 'custom_data': {}}
     
-    custom_data = {}
-    if len(parts) > 1:
-        for line in parts[1].split("\r\n"):
-            if ": " in line:
-                key, val = line.split(": ", 1)
-                custom_data[key] = val.strip()
+    # Erste Zeile analysieren
+    first_line = lines[0]
+    if first_line.startswith('SIP/2.0'):
+        parts = first_line.split()
+        if len(parts) >= 2:
+            result['status_code'] = parts[1]  # Statuscode (200, 400 etc.)
+            if len(parts) > 2:
+                result['status_message'] = ' '.join(parts[2:])
+    elif first_line in ["REGISTER", "INVITE", "MESSAGE"]:
+        result['method'] = first_line
+    else:
+        return None  # Ungültige Nachricht
+
+    # Header parsen
+    for line in lines[1:]:
+        if ':' in line:
+            key, value = line.split(':', 1)
+            key = key.strip().upper()
+            value = value.strip()
+            
+            if key == "CUSTOM-DATA":
+                try:
+                    result['custom_data'] = json.loads(value)
+                except json.JSONDecodeError:
+                    result['custom_data'] = {}
+            else:
+                result['headers'][key] = value
     
-    return {
-        "method": message.split()[0],
-        "headers": headers,
-        "custom_data": custom_data
-    }
+    return result if ('method' in result or 'status_code' in result) else None
 def start_connection(server_ip, server_port, client_name, client_socket):
     try:
         client_socket.settimeout(10.0)
