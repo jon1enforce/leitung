@@ -347,8 +347,9 @@ class Server:
             print(f"Geparste Nachricht: {sip_msg}")  # Debug
             print(f"Empfangene Registrierungsdaten: {register_data.decode('utf-8')}")
             
-            client_name = sip_msg['headers'].get('CLIENT_NAME', '')
-            client_pubkey = sip_msg['headers'].get('PUBLIC_KEY', '')
+            
+            client_name = sip_msg['custom_data'].get('CLIENT_NAME', '')
+            client_pubkey = sip_msg['custom_data'].get('PUBLIC_KEY', '')
             if not client_name:
                 print("FEHLER: CLIENT_NAME fehlt")
             if not client_pubkey:
