@@ -436,17 +436,17 @@ def start_connection(server_ip, server_port, client_name, client_socket):
 
         # 5. Hauptkommunikationsschleife
         while True:
-            ping_msg = self.build_sip_message(
+            ping_msg = build_sip_message(
                 "MESSAGE",
                 self.server_ip,
                 {"PING": "true"}
             )
             
-            self.sock.settimeout(5.0)  # 5 Sekunden Timeout
-            self.sock.send(ping_msg.encode('utf-8'))
+            client_socket.settimeout(5.0)  # 5 Sekunden Timeout
+            client_socket.send(ping_msg.encode('utf-8'))
             try:
-                pong_response = self.sock.recv(4096)
-                pong_data = self.parse_sip_message(pong_response)
+                pong_response = client_socket.recv(4096)
+                pong_data = parse_sip_message(pong_response)
                 
                 if not pong_data or pong_data.get('custom_data', {}).get("PONG") != "true":
                     raise ValueError("Ungültige Pong-Antwort")
