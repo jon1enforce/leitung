@@ -319,6 +319,12 @@ class Server:
                 return
     
             sip_msg = self.parse_sip_message(register_data)
+            print(f"Empfangene Registrierungsdaten: {register_data.decode('utf-8')}")
+            print(f"Geparste SIP-Nachricht: {sip_msg}")
+            if not client_name:
+                print("FEHLER: CLIENT_NAME fehlt")
+            if not client_pubkey:
+                print("FEHLER: PUBLIC_KEY fehlt")
             if not sip_msg or sip_msg.get('method') != "REGISTER":
                 error_response = (
                     "SIP/2.0 400 Bad Request\r\n"
@@ -332,6 +338,12 @@ class Server:
             # 2. Client-Daten verarbeiten
             client_name = sip_msg['custom_data'].get("CLIENT_NAME", "")
             client_pubkey = sip_msg['custom_data'].get("PUBLIC_KEY", "")
+            try:
+            # Versuche den Key zu laden um Format zu prüfen
+                load_key(client_pubkey) 
+            except ValueError:
+                print(f"Ungültiges Key-Format: {client_pubkey[:50]}...")
+                return False
             if not client_name or not client_pubkey:
                 raise ValueError("Unvollständige Client-Daten")
     
