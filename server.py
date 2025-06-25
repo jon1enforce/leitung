@@ -12,38 +12,41 @@ import re
 BUFFER_SIZE = 4096
 def extract_public_key(raw_data):
     """
-    Extrahiert den Public Key Inhalt (ohne BEGIN/END Markierungen) aus den Rohdaten.
-    Gibt None zurück wenn kein gültiger Key gefunden wird.
+    Extrahiert den vollständigen Public Key inkl. BEGIN/END Markern
+    aus den SIP-Headern und gibt ihn als korrekt formatierten String zurück
     """
     try:
-        if isinstance(raw_data, bytes):
-            data = raw_data.decode('utf-8')
-        else:
-            data = str(raw_data)
-
-        # Finde Start und Ende des Keys
-        start_marker = '-----BEGIN PUBLIC KEY-----'
-        end_marker = '-----END PUBLIC KEY-----'
+        data = raw_data.decode('utf-8') if isinstance(raw_data, bytes) else str(raw_data)
         
-        start_idx = data.find(start_marker)
-        if start_idx == -1:
+        # Sammle alle Key-Zeilen
+        key_lines = []
+        in_key = False
+        
+        for line in data.splitlines():
+            if '-----BEGIN PUBLIC KEY-----' in line:
+                in_key = True
+                key_lines.append(line.strip())
+            elif '-----END PUBLIC KEY-----' in line:
+                key_lines.append(line.strip())
+                in_key = False
+            elif in_key:
+                key_lines.append(line.strip())
+        
+        if not key_lines:
             return None
             
-        end_idx = data.find(end_marker, start_idx)
-        if end_idx == -1:
+        # Kombiniere alle Zeilen mit korrekten Zeilenumbrüchen
+        pubkey = '\n'.join(key_lines)
+        
+        # Finale Validierung
+        if not pubkey.startswith('-----BEGIN PUBLIC KEY-----') or \
+           not pubkey.endswith('-----END PUBLIC KEY-----'):
             return None
             
-        # Extrahiere den Key ohne Marker
-        key_start = start_idx + len(start_marker)
-        public_key_content = data[key_start:end_idx].strip()
-        
-        # Entferne alle Leerzeichen/Zeilenumbrüche
-        public_key_content = ''.join(public_key_content.split())
-        
-        return public_key_content
+        return pubkey
         
     except Exception as e:
-        print(f"Fehler beim Extrahieren des Public Keys: {str(e)}")
+        print(f"Public Key Extraction Error: {str(e)}")
         return None
 
 
