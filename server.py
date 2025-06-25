@@ -13,15 +13,43 @@ BUFFER_SIZE = 4096
 
 
 def extract_public_key(raw_data):
-    """Extrahiert den kompletten Public Key aus den Rohdaten"""
-    data = raw_data.decode('utf-8')
-    if '-----BEGIN PUBLIC KEY-----' not in data:
+    """
+    Extrahiert den kompletten Public Key im PEM-Format aus den Rohdaten.
+    Gibt None zurück wenn kein gültiger Key gefunden wird.
+    """
+    try:
+        if isinstance(raw_data, bytes):
+            data = raw_data.decode('utf-8')
+        else:
+            data = str(raw_data)
+
+        # Finde Start und Ende des Keys
+        start_marker = '-----BEGIN PUBLIC KEY-----'
+        end_marker = '-----END PUBLIC KEY-----'
+        
+        start_idx = data.find(start_marker)
+        if start_idx == -1:
+            return None
+            
+        end_idx = data.find(end_marker, start_idx)
+        if end_idx == -1:
+            return None
+            
+        # Extrahiere den Key inklusive Markern
+        public_key = data[start_idx:end_idx + len(end_marker)]
+        
+        # Validierung
+        if not public_key.startswith(start_marker) or not public_key.endswith(end_marker):
+            return None
+            
+        # Normalisiere Zeilenumbrüche
+        public_key = '\n'.join(line.strip() for line in public_key.splitlines())
+        
+        return public_key
+        
+    except Exception as e:
+        print(f"Fehler beim Extrahieren des Public Keys: {str(e)}")
         return None
-    
-    # Finde Start und Ende des Keys
-    start = data.index('-----BEGIN PUBLIC KEY-----')
-    end = data.index('-----END PUBLIC KEY-----') + len('-----END PUBLIC KEY-----')
-    return data[start:end]
 
 
 def generate_keys():
