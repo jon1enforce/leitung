@@ -439,7 +439,7 @@ def start_connection(server_ip, server_port, client_name, client_socket):
             # Ping senden
             ping_msg = build_sip_message(
                 "MESSAGE",
-                sserver_ip,
+                server_ip,
                 {"PING": "true"}
             )
             
