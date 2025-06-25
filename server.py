@@ -6,7 +6,7 @@ import json
 import os
 import random
 import time
-import uiid
+import uuid
 import re
 
 BUFFER_SIZE = 4096
