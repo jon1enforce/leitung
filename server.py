@@ -140,11 +140,7 @@ class Server:
             print(f"Socket Addr Error: {e}")
     def parse_sip_message(self, message):
         """
-        Parst eine SIP-Nachricht in folgendem Format:
-        
-        METHODE/HEADER
-        Key: Value
-        Custom-Data: {"key":"value"}
+        Korrigierte Version die SIP-Antworten richtig erkennt
         """
         if isinstance(message, bytes):
             message = message.decode('utf-8')
@@ -152,20 +148,22 @@ class Server:
         if not message.strip():
             return None
     
-        lines = message.splitlines()
-        result = {}
+        lines = [line.strip() for line in message.splitlines() if line.strip()]
+        result = {'headers': {}, 'custom_data': {}}
         
-        # Erste Zeile (Method/Status)
-        first_line = lines[0].strip()
-        if first_line.startswith("SIP/2.0"):
-            result['status_code'] = first_line.split()[1]
+        # Erste Zeile analysieren
+        first_line = lines[0]
+        if first_line.startswith('SIP/2.0'):
+            parts = first_line.split()
+            if len(parts) >= 2:
+                result['status_code'] = parts[1]  # z.B. "200"
+                result['status_message'] = ' '.join(parts[2:]) if len(parts) > 2 else ""
         elif first_line in ["REGISTER", "INVITE", "MESSAGE"]:
             result['method'] = first_line
-        
-        # Header-Daten
-        result['headers'] = {}
-        result['custom_data'] = {}
-        
+        else:
+            return None  # Ungültige erste Zeile
+    
+        # Header parsen
         for line in lines[1:]:
             if ':' in line:
                 key, value = line.split(':', 1)
@@ -180,7 +178,7 @@ class Server:
                 else:
                     result['headers'][key] = value
         
-        return result if ('method' in result or 'status_code' in result) else None        
+        return result if ('method' in result or 'status_code' in result) else None     
     def start(self):
         print("start1")
         try:
