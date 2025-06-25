@@ -445,31 +445,31 @@ def start_connection(server_ip, server_port, client_name, client_socket):
             
             client_socket.settimeout(70.0)
             client_socket.send(ping_msg.encode('utf-8'))
-
+            
             try:
-                # Pong empfangen
-                pong_response = client_socket.recv(4096)
+                pong_response = self.sock.recv(4096)
                 if not pong_response:
-                    print("Warnung: Leere Pong-Antwort")
-                    continue
+                    print("Info: Keine Pong-Daten empfangen")
+                    return False
                     
-                # Verbessertes Parsing
-                pong_data = parse_sip_message(pong_response)
+                pong_data = self.parse_sip_message(pong_response)
                 if not pong_data:
-                    print("Warnung: Unparsebare Pong-Antwort")
-                    continue
+                    print("Info: Pong konnte nicht geparst werden - Rohdaten:", pong_response[:100])
+                    return False
                     
-                # Striktere Validierung
-                if (pong_data.get('method') == "MESSAGE" and 
-                    pong_data.get('custom_data', {}).get("PONG") == "true"):
-                    print("[Client] Ping-Pong erfolgreich")
+                if pong_data.get('custom_data', {}).get("PONG") == "true":
+                    print("Pong erfolgreich validiert")
+                    return True
                 else:
-                    print("Warnung: Ungültige Pong-Struktur")
+                    print("Info: Pong enthält kein gültiges PONG-Flag")
+                    return False
                     
             except socket.timeout:
-                print("Info: Kein Pong innerhalb von 70s empfangen")
+                print("Info: Pong Timeout (erwartet bei 60s Verzögerung)")
+                return False
             except Exception as e:
                 print(f"Pong-Verarbeitungsfehler: {str(e)}")
+                return False
                 
             time.sleep(5)  # 5 Sekunden zwischen Pings
 
