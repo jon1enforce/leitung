@@ -482,15 +482,22 @@ class Server:
                         custom_data = msg.get('custom_data', {})
                         if custom_data.get("PING"):
                             current_time = time.time()
-                            if current_time - last_pong_time >= pong_delay:
-                                pong_msg = self.build_sip_message(
-                                    "MESSAGE",
-                                    client_name,
-                                    {"PONG": "true"}
-                                )
-                                client_socket.send(pong_msg.encode('utf-8'))
-                                last_pong_time = current_time
-                                print(f"[Server] PONG gesendet um {time.strftime('%H:%M:%S')}")
+                            if current_time - last_pong_sent >= pong_interval:
+                                try:
+                                    pong_msg = self.build_sip_message(
+                                        "MESSAGE",
+                                        client_name,
+                                        {"PONG": "true"},
+                                        headers={
+                                            "Call-ID": msg['headers'].get('Call-ID', ''),
+                                            "CSeq": msg['headers'].get('CSeq', '1')
+                                        }
+                                    )
+                                    client_socket.sendall(pong_msg.encode('utf-8'))  # sendall statt send
+                                    last_pong_sent = current_time
+                                    print(f"[Server] PONG gesendet (nächstes in {pong_interval}s)")
+                                except Exception as e:
+                                    print(f"[Server] Pong-Sendefehler: {str(e)}")
                             continue
         
                 except Exception as e:
