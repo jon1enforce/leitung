@@ -372,6 +372,9 @@ class Server:
                 client_socket.send(error_response.encode('utf-8'))
                 return
             # 2. Client-Daten verarbeiten
+            print("+++sig_msg+++")
+            print(sip_msg)
+            print("+++sip_msg+++")
             client_name = sip_msg['custom_data'].get("CLIENT_NAME", "")
             client_pubkey = sip_msg['custom_data'].get("PUBLIC_KEY", "")
             print("+++client_name+++")
