@@ -440,18 +440,18 @@ def start_connection(server_ip, server_port, client_name, client_socket):
                 # Ping-Pong Mechanismus
                 ping_msg = build_sip_message(
                     "MESSAGE",
-                    self.server_ip,
+                    server_ip,
                     {"PING": "true", "TIMESTAMP": str(time.time())}
                 )
-                self.sock.send(ping_msg.encode('utf-8'))
+                client_socket.send(ping_msg.encode('utf-8'))
     
                 # Pong-Antwort empfangen und verarbeiten
             
-                pong_response = self.sock.recv(4096)
+                pong_response = client_socket.recv(4096)
                 if not pong_response:
                     raise ValueError("Keine Pong-Antwort erhalten")
                     
-                pong_data = self.parse_sip_message(pong_response)
+                pong_data = parse_sip_message(pong_response)
                 if not pong_data:
                     raise ValueError("Ungültiges Pong-Nachrichtenformat")
                     
