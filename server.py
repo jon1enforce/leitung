@@ -322,9 +322,9 @@ class Server:
             if not sip_msg or sip_msg.get('method') != "REGISTER":
                 error_response = (
                     "SIP/2.0 400 Bad Request\r\n"
-                    "Content-Type: text/plain\r\n"
+                    "Content-Type: application/json\r\n"
+                    "CUSTOM-DATA: {\"ERROR\":\"Invalid registration data\",\"DETAILS\":\"Missing CLIENT_NAME\"}\r\n"
                     "\r\n"
-                    "Invalid registration data"
                 )
                 client_socket.send(error_response.encode('utf-8'))                
                 return
