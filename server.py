@@ -465,6 +465,9 @@ class Server:
                 print(f"Fehler beim Senden der Merkle-Root: {str(e)}")
     
             # 6. Hauptkommunikationsschleife
+            last_pong_time = 0
+            pong_delay = 60  # 60 Sekunden Verzögerung
+            
             while True:
                 try:
                     data = client_socket.recv(4096)
@@ -475,22 +478,39 @@ class Server:
                     if not msg:
                         continue
         
-                    # Verbessertes Ping-Handling
+                    # Verbessertes Ping-Handling mit Verzögerung
                     if msg.get('method') == "MESSAGE":
                         custom_data = msg.get('custom_data', {})
                         if custom_data.get("PING"):
-                            pong_msg = self.build_sip_message(
-                                "MESSAGE",
-                                client_name,
-                                {"PONG": "true"}
-                            )
-                            client_socket.send(pong_msg.encode('utf-8'))
+                            current_time = time.time()
+                            if current_time - last_pong_time >= pong_delay:
+                                # Korrekte PONG-Antwort
+                                pong_msg = (
+                                    "MESSAGE sip:{client} SIP/2.0\r\n"
+                                    "From: <sip:server@{ip}>\r\n"
+                                    "To: <sip:{client}>\r\n"
+                                    "Call-ID: {call_id}\r\n"
+                                    "CSeq: {cseq}\r\n"
+                                    "Content-Type: text/plain\r\n"
+                                    "Content-Length: {length}\r\n\r\n"
+                                    "PONG: true"
+                                ).format(
+                                    client=client_name,
+                                    ip=self.host,
+                                    call_id=msg['headers'].get('CALL-ID', ''),
+                                    cseq=msg['headers'].get('CSEQ', '1'),
+                                    length=len("PONG: true")
+                                )
+                                client_socket.send(pong_msg.encode('utf-8'))
+                                last_pong_time = current_time
+                                print(f"PONG gesendet um {time.strftime('%H:%M:%S')}")
+                            else:
+                                print(f"PING erhalten, aber PONG verzögert (nächste in {int(pong_delay - (current_time - last_pong_time))}s)")
                             continue
         
                 except Exception as e:
                     print(f"Fehler in Client-Handler: {str(e)}")
                     break
-
         except Exception as e:
             print(f"Fehler bei der Kommunikation mit {client_address}: {e}")
         finally:
