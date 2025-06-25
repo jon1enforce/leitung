@@ -367,7 +367,9 @@ def start_connection(server_ip, server_port, client_name, client_socket):
 
         sip_data = parse_sip_message(response)
         if not sip_data or sip_data.get('status_code') != "200":
-            raise ValueError(f"Ungültige Registrierungsantwort: {sip_data}")
+            print(f"Rohe Antwort: {response!r}")  # Debug-Ausgabe
+            print(f"Parsed data: {sip_data}") 
+            raise ValueError("Ungültige Server-Antwort")
 
         # 3. Server-Key speichern
         server_public_key = sip_data['custom_data'].get("SERVER_PUBLIC_KEY")
