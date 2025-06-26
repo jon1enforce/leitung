@@ -466,8 +466,8 @@ class Server:
     
             # 6. Hauptkommunikationsschleife
             last_pong_time = 0
-            pong_delay = 20  # 60 Sekunden Verzögerung
-            last_pong_time = 0
+            pong_delay = 20  # 20 Sekunden Verzögerung
+            
             while True:
                 try:
                     # Timeout für recv setzen (nicht blockierend)
@@ -492,18 +492,30 @@ class Server:
                         current_time - last_pong_time >= pong_delay):
                         
                         try:
-                            # PONG-Antwort erstellen
-                            pong_msg = self.build_sip_message(
-                                "MESSAGE",
+                            # PONG-Antwort erstellen (ohne headers Parameter)
+                            pong_msg = (
+                                "MESSAGE sip:{} SIP/2.0\r\n"
+                                "From: <sip:server@{}>\r\n"
+                                "To: <sip:{}>\r\n"
+                                "Call-ID: {}\r\n"
+                                "CSeq: {}\r\n"
+                                "Content-Type: text/plain\r\n"
+                                "Content-Length: {}\r\n\r\n"
+                                "PONG: true\r\n"
+                                "CALL_ID: {}\r\n"
+                                "CSEQ: {}"
+                            ).format(
                                 client_name,
-                                {
-                                    "PONG": "true",
-                                    "CALL_ID": msg['headers'].get('CALL-ID', ''),
-                                    "CSEQ": msg['headers'].get('CSEQ', '1')
-                                },
-                                headers={
-                                    'Content-Type': 'text/plain'
-                                }
+                                self.host,
+                                client_name,
+                                msg['headers'].get('CALL-ID', ''),
+                                msg['headers'].get('CSEQ', '1'),
+                                len("PONG: true\r\nCALL_ID: {}\r\nCSEQ: {}".format(
+                                    msg['headers'].get('CALL-ID', ''),
+                                    msg['headers'].get('CSEQ', '1')
+                                )),
+                                msg['headers'].get('CALL-ID', ''),
+                                msg['headers'].get('CSEQ', '1')
                             )
                             
                             # Antwort senden
