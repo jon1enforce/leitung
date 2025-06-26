@@ -125,45 +125,42 @@ def build_merkle_tree(data_blocks):
 
 
 def verify_merkle_integrity(all_keys, received_root_hash):
-    """Vereinfachte und robustere Verifikation"""
+    """Überprüft die Integrität aller Schlüssel mittels Merkle Tree (identisch zur Server-Logik)"""
     print("\n=== CLIENT VERIFICATION ===")
     
-    # 1. Normalisierungsfunktion (identisch zu Server)
+    # 1. Dieselbe Normalisierungsfunktion wie auf dem Server!
     def normalize_key(key):
         if not key or "-----BEGIN PUBLIC KEY-----" not in key:
-            return None  # Statt leerem String None zurückgeben
-        # Extrahiere nur den Base64-Inhalt zwischen den PEM-Markern
-        key_content = "".join(
+            return None
+        return "".join(
             key.split("-----BEGIN PUBLIC KEY-----")[1]
             .split("-----END PUBLIC KEY-----")[0]
             .strip().split()
         )
-        return key_content if key_content else None
     
-    # 2. Debug-Ausgabe der Rohkeys
+    # 2. Debug-Ausgabe
     print("\n[Client] Received keys (raw):")
     for i, key in enumerate(all_keys):
         print(f"Key {i}: {key[:50]}..." if key else f"Key {i}: None")
 
-    # 3. Normalisierung aller Keys - filtere None-Werte heraus
-    normalized_keys = [normalize_key(k) for k in all_keys if k]
-    normalized_keys = [k for k in normalized_keys if k is not None]  # Filtere None
+    # 3. Normalisierung (wie Server)
+    normalized_keys = []
+    for key in all_keys:
+        normalized = normalize_key(key)
+        if normalized:
+            normalized_keys.append(normalized)
     
-    print("\n[Client] Normalized keys:")
-    for i, key in enumerate(normalized_keys):
-        print(f"Key {i} (len={len(key)}): {key[:30]}...")
-
     if not normalized_keys:
-        print("Error: No valid keys found after normalization")
+        print("Error: No valid keys after normalization")
         return False
 
-    # 4. Zusammenführung mit Server-kompatiblem Trennzeichen
+    # 4. Zusammenführung mit IDENTISCHEM Trennzeichen ("|||")
     merged = "|||".join(normalized_keys)
-    print(f"\nMerged string (len={len(merged)}): {merged[:100]}...")
+    print(f"\n[Client] Merged keys (len={len(merged)}): {merged[:100]}...")
 
-    # 5. Hash-Berechnung und Verifikation
+    # 5. Merkle Root berechnen (identische Methode wie Server)
     calculated_hash = build_merkle_tree([merged])
-    print(f"\nCalculated hash: {calculated_hash}")
+    print(f"\n[Client] Calculated hash: {calculated_hash}")
     print(f"Received hash:   {received_root_hash}")
     
     return calculated_hash == received_root_hash
