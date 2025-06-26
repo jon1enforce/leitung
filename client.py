@@ -472,6 +472,9 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         print(f"Sende Registrierung mit: Name={client_name}, Key={pubkey[:20]}...")
         print(f"Sende Registrierung: {register_msg[:200]}...")  # Debug
         client_socket.send(register_msg.encode('utf-8'))
+        
+        # 2. Auf Antwort warten
+        response = None
         for attempt in range(3):  # Wiederholungsversuche
             try:
                 response = client_socket.recv(4096)
@@ -492,22 +495,6 @@ def start_connection(server_ip, server_port, client_name, client_socket):
             raise ValueError(f"Serverfehler {sip_data['status_code']}: {error_details.get('ERROR','')}")
 
         # 3. Server-Key speichern
-        # Extrahiere den Key aus dem Body der Nachricht
-        server_public_key = None
-        merkle_root = None
-        
-        client_public_keys = []
-        merkle_data = parse_sip_message(merkle_response)
-        if merkle_data and 'custom_data' in merkle_data:
-            if 'CLIENT_KEYS' in merkle_data['custom_data']:
-                try:
-                    client_public_keys = json.loads(merkle_data['custom_data']['CLIENT_KEYS'])
-                except json.JSONDecodeError:
-                    print("Fehler beim Parsen der Client-Keys")
-            if 'MERKLE_ROOT' in merkle_data['custom_data']:
-                merkle_root = merkle_data['custom_data']['MERKLE_ROOT']
-        
-        sip_data = parse_sip_message(response)
         server_public_key = sip_data.get('custom_data', {}).get('SERVER_PUBLIC_KEY')
         if not server_public_key:
             # Fallback für alte Formatierung
@@ -520,37 +507,52 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         if not server_public_key:
             raise ValueError("Kein Server-Key erhalten")
             
+        # 4. Merkle-Root empfangen
         try:
             client_socket.settimeout(5.0)  # Timeout für Merkle-Root
             merkle_response = client_socket.recv(4096)
             if not merkle_response:
                 raise ValueError("Keine Merkle-Root Antwort erhalten")
                 
-            if '\r\n\r\n' in merkle_response.decode('utf-8'):
-                body = merkle_response.decode('utf-8').split('\r\n\r\n')[1]
-                for line in body.split('\n'):
-                    if line.startswith('MERKLE_ROOT:'):
-                        merkle_root = line.split('MERKLE_ROOT:')[1].strip()
-                        
-                        # DEBUG: Ausgabe der empfangenen Daten
-                        print("\n=== RECEIVED DATA ===")
-                        print(f"Server Key: {server_public_key[:50]}...")
-                        print(f"Client Keys Count: {len(client_public_keys)}")
-                        print(f"Merkle Root: {merkle_root}")
-                        
-                        if not verify_merkle_integrity(server_public_key, client_public_keys, merkle_root):
-                            messagebox.showerror("Sicherheitsfehler", 
-                                "Integritätsprüfung fehlgeschlagen!\n"
-                                "Mögliche Manipulation der Schlüssel.\n"
-                                "Verbindung wird beendet.")
-                            client_socket.close()
-                            return
-                        else:
-                            print("Integrität erfolgreich verifiziert")
-                            break
-                            
+            merkle_data = parse_sip_message(merkle_response)
+            client_public_keys = []
+            merkle_root = None
+            
+            if merkle_data and 'custom_data' in merkle_data:
+                if 'CLIENT_KEYS' in merkle_data['custom_data']:
+                    try:
+                        client_public_keys = json.loads(merkle_data['custom_data']['CLIENT_KEYS'])
+                    except json.JSONDecodeError:
+                        print("Fehler beim Parsen der Client-Keys")
+                if 'MERKLE_ROOT' in merkle_data['custom_data']:
+                    merkle_root = merkle_data['custom_data']['MERKLE_ROOT']
+            
+            if not merkle_root:
+                # Fallback für alte Formatierung
+                if '\r\n\r\n' in merkle_response.decode('utf-8'):
+                    body = merkle_response.decode('utf-8').split('\r\n\r\n')[1]
+                    for line in body.split('\n'):
+                        if line.startswith('MERKLE_ROOT:'):
+                            merkle_root = line.split('MERKLE_ROOT:')[1].strip()
+            
             if not merkle_root:
                 raise ValueError("Keine Merkle-Root in der Antwort")
+                
+            # DEBUG: Ausgabe der empfangenen Daten
+            print("\n=== RECEIVED DATA ===")
+            print(f"Server Key: {server_public_key[:50]}...")
+            print(f"Client Keys Count: {len(client_public_keys)}")
+            print(f"Merkle Root: {merkle_root}")
+            
+            if not verify_merkle_integrity(server_public_key, client_public_keys, merkle_root):
+                messagebox.showerror("Sicherheitsfehler", 
+                    "Integritätsprüfung fehlgeschlagen!\n"
+                    "Mögliche Manipulation der Schlüssel.\n"
+                    "Verbindung wird beendet.")
+                client_socket.close()
+                return
+            else:
+                print("Integrität erfolgreich verifiziert")
                 
             print(f"Merkle-Root erhalten: {merkle_root}")
             
