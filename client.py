@@ -56,10 +56,17 @@ def shorten_public_key(key):
     return shortened
 
 def merge_public_keys(keys):
-    """Führt eine Liste von öffentlichen Schlüsseln in einem String zusammen."""
-    # Kürze jeden Schlüssel und füge sie mit einem Trennzeichen zusammen
-    shortened_keys = [shorten_public_key(key) for key in keys]
-    return ":".join(shortened_keys)
+    """Konsistente Schlüsselzusammenführung"""
+    normalized = []
+    for key in keys:
+        if not key:
+            continue
+        # Behalte nur den Base64-Inhalt des Schlüssels
+        key = re.sub(r'-----(BEGIN|END) PUBLIC KEY-----', '', key)
+        key = re.sub(r'\s+', '', key).strip()
+        if key:
+            normalized.append(key)
+    return ":".join(normalized)
 
 
 
@@ -90,24 +97,35 @@ def verify_merkle_integrity(server_public_key, client_public_keys, received_root
     """Korrigierte Client-Verifikation"""
     print("\n=== CLIENT VERIFICATION ===")
     
-    # Normalisierungsfunktion
+    # 1. Normalisierung aller Schlüssel
     def normalize(key):
+        if not key:
+            return ""
         key = key.replace("-----BEGIN PUBLIC KEY-----", "")
         key = key.replace("-----END PUBLIC KEY-----", "")
-        return key.strip()
+        key = key.replace("\n", "").strip()
+        return key
     
-    # Alle Schlüssel normalisieren
-    all_keys = [normalize(server_public_key)] + [normalize(k) for k in client_public_keys]
+    # 2. Alle relevanten Schlüssel sammeln
+    all_keys = []
+    if server_public_key:
+        all_keys.append(normalize(server_public_key))
+    for key in client_public_keys:
+        if key:
+            all_keys.append(normalize(key))
     
+    # 3. Debug-Ausgabe
     print("\nNormalized keys:")
     for i, key in enumerate(all_keys):
         print(f"Key {i} (len={len(key)}): {key[:30]}...")
     
-    # Zusammenfügen
+    # 4. Zusammenfügen und Hashen
+    if not all_keys:
+        return False
+        
     merged = ":".join(all_keys)
     print(f"\nMerged string (len={len(merged)}): {merged[:100]}...")
     
-    # Hash berechnen
     calculated_hash = build_merkle_tree([merged])
     print(f"\nCalculated hash: {calculated_hash}")
     print(f"Received hash:   {received_root_hash}")
@@ -467,7 +485,12 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         server_public_key = None
         merkle_root = None
         client_public_keys = []  # Initialisiere die Liste der Client-Public-Keys
-        
+            client_public_keys = []
+    if 'CLIENT_KEYS' in sip_data.get('custom_data', {}):
+        try:
+            client_public_keys = json.loads(sip_data['custom_data']['CLIENT_KEYS'])
+        except:
+            client_public_keys = []
         if '\r\n\r\n' in response.decode('utf-8'):
             body = response.decode('utf-8').split('\r\n\r\n')[1]
             for line in body.split('\n'):
