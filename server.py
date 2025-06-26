@@ -82,8 +82,20 @@ def load_server_publickey():
         return f.read().decode('utf-8')
 
 def merge_public_keys(keys):
-    """Hilfsfunktion für Merkle-Root"""
-    return ":".join([k.replace("-----BEGIN PUBLIC KEY-----", "").replace("-----END PUBLIC KEY-----", "") for k in keys])
+    """Korrigierte Version für konsistente Merkle-Root-Berechnung"""
+    normalized_keys = []
+    for key in keys:
+        # Normalisiere jeden Schlüssel gleich wie der Client
+        key = key.replace("-----BEGIN PUBLIC KEY-----", "")
+        key = key.replace("-----END PUBLIC KEY-----", "")
+        key = re.sub(r'\s+', '', key)
+        normalized_keys.append(key)
+    
+    print("\n[Server] Normalized keys for Merkle:")
+    for i, key in enumerate(normalized_keys):
+        print(f"Key {i}: {key[:30]}... (length: {len(key)})")
+    
+    return ":".join(normalized_keys)
 
 def shorten_public_key(key):
     """Kürzt die Darstellung des öffentlichen Schlüssels."""
@@ -97,20 +109,23 @@ def quantum_safe_hash(data):
 
 
 def build_merkle_tree(data_blocks):
+    """Konsistente Merkle-Tree-Implementierung"""
     data_blocks = list(data_blocks)
     if not data_blocks:
         return None
     
-    # Erstelle die Blattknoten des Merkle Trees
+    # Debug-Ausgabe
+    print(f"\n[Server] Building Merkle Tree from: {data_blocks[:100]}...")
+    
     tree = [quantum_safe_hash(block) for block in data_blocks]
-
-    # Reduziere den Baum, bis nur noch der Root-Hash übrig ist
+    
     while len(tree) > 1:
         if len(tree) % 2 != 0:
-            tree.append(tree[-1])  # Dupliziere den letzten Hash, wenn die Anzahl ungerade ist
-        tree = [quantum_safe_hash(tree[i] + tree[i + 1]) for i in range(0, len(tree), 2)]
-
-    return tree[0]  # Der Merkle Root-Hash
+            tree.append(tree[-1])
+        tree = [quantum_safe_hash(tree[i] + tree[i+1]) for i in range(0, len(tree), 2)]
+    
+    print(f"[Server] Final Merkle Root: {tree[0]}")
+    return tree[0]
 
 def parse_multiline_headers(raw_data):
     """Hilfsfunktion zum Parsen von mehrzeiligen Headern"""
@@ -462,8 +477,17 @@ class Server:
     
             try:
                 all_keys = [self.server_public_key] + [c['public_key'] for c in self.clients.values()]
-                merkle_root = build_merkle_tree(merge_public_keys(all_keys))
-        
+                
+                # Debug-Ausgabe der Rohschlüssel
+                print("\n[Server] Raw keys before processing:")
+                for i, key in enumerate(all_keys):
+                    print(f"Key {i}: {key[:50]}...")
+                
+                merged = merge_public_keys(all_keys)
+                merkle_root = build_merkle_tree([merged])  # Wichtig: Als Liste übergeben
+                
+                print(f"\n[Server] Sending Merkle Root: {merkle_root}")
+                
                 merkle_msg = self.build_sip_message(
                     "MESSAGE",
                     client_name,
