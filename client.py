@@ -98,13 +98,16 @@ def verify_merkle_integrity(server_public_key, client_public_keys, received_root
     print("\n=== CLIENT VERIFICATION ===")
     
     # 1. Normalisierung aller Schlüssel
+    
     def normalize(key):
         if not key:
             return ""
-        key = key.replace("-----BEGIN PUBLIC KEY-----", "")
-        key = key.replace("-----END PUBLIC KEY-----", "")
-        key = key.replace("\n", "").strip()
-        return key
+        # Entferne PEM-Header/Footer und alle Leerzeichen
+        key = re.sub(r'-----(BEGIN|END) PUBLIC KEY-----', '', key)
+        key = re.sub(r'\s+', '', key).strip()
+        # Extrahiere nur den Base64-Teil
+        match = re.search(r'([A-Za-z0-9+/=]+)', key)
+        return match.group(1) if match else ""
     
     # 2. Alle relevanten Schlüssel sammeln
     all_keys = []
@@ -484,17 +487,27 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         # Extrahiere den Key aus dem Body der Nachricht
         server_public_key = None
         merkle_root = None
-        client_public_keys = []  # Initialisiere die Liste der Client-Public-Keys
-        if 'CLIENT_KEYS' in sip_data.get('custom_data', {}):
-            try:
-                client_public_keys = json.loads(sip_data['custom_data']['CLIENT_KEYS'])
-            except:
-                client_public_keys = []
-        if '\r\n\r\n' in response.decode('utf-8'):
-            body = response.decode('utf-8').split('\r\n\r\n')[1]
-            for line in body.split('\n'):
-                if line.startswith('SERVER_PUBLIC_KEY:'):
-                    server_public_key = line.split('SERVER_PUBLIC_KEY:')[1].strip()
+        
+        client_public_keys = []
+        merkle_data = parse_sip_message(merkle_response)
+        if merkle_data and 'custom_data' in merkle_data:
+            if 'CLIENT_KEYS' in merkle_data['custom_data']:
+                try:
+                    client_public_keys = json.loads(merkle_data['custom_data']['CLIENT_KEYS'])
+                except json.JSONDecodeError:
+                    print("Fehler beim Parsen der Client-Keys")
+            if 'MERKLE_ROOT' in merkle_data['custom_data']:
+                merkle_root = merkle_data['custom_data']['MERKLE_ROOT']
+        
+        sip_data = parse_sip_message(response)
+        server_public_key = sip_data.get('custom_data', {}).get('SERVER_PUBLIC_KEY')
+        if not server_public_key:
+            # Fallback für alte Formatierung
+            if '\r\n\r\n' in response.decode('utf-8'):
+                body = response.decode('utf-8').split('\r\n\r\n')[1]
+                for line in body.split('\n'):
+                    if line.startswith('SERVER_PUBLIC_KEY:'):
+                        server_public_key = line.split('SERVER_PUBLIC_KEY:')[1].strip()
 
         if not server_public_key:
             raise ValueError("Kein Server-Key erhalten")
