@@ -590,7 +590,7 @@ class Server:
                 'port': client_address[1]
             }
             
-            self.save_clients()  # Speichern nach jeder Änderung
+            self.save_active_clients()  # Speichern nach jeder Änderung
     
             # Send 200 OK response with server public key
     
