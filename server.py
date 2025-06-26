@@ -578,23 +578,21 @@ class Server:
             print(f"[DEBUG] Full received data:\n{register_data}\n")
             print(f"[DEBUG] Parsed SIP message: {sip_msg}")
             # Extract public key if present in custom data
+            client_pubkey = None
             if 'custom_data' in sip_msg:
-                client_pubkey = sip_msg['custom_data'].get('PUBLIC_KEY')
-                if client_pubkey:
-                    print(f"[Server] Extracted client public key: {client_pubkey[:50]}...")
-                else:
-                    print("[Server] No PUBLIC_KEY in custom_data")
-                    
-            # Fallback: Rohe Extraktion aus Nachricht
-            if not client_pubkey:
-                client_pubkey = extract_public_key(register_data)
-                if client_pubkey:
-                    print(f"[Server] Fallback extracted key: {client_pubkey[:50]}...")
+                client_pubkey = sip_msg['custom_data'].get('PUBLIC_KEY', '').strip()
+                if not client_pubkey.startswith('-----BEGIN PUBLIC KEY-----'):
+                    # Fallback: Rohe Extraktion aus dem Body
+                    key_start = register_data.find('-----BEGIN PUBLIC KEY-----')
+                    if key_start != -1:
+                        key_end = register_data.find('-----END PUBLIC KEY-----', key_start)
+                        if key_end != -1:
+                            client_pubkey = register_data[key_start:key_end + len('-----END PUBLIC KEY-----')]
             
-            if not client_pubkey:
-                print("[Server] WARNING: No valid client public key received!")
+            if not client_pubkey or '-----END PUBLIC KEY-----' not in client_pubkey:
+                print("[Server] ERROR: Invalid client public key received!")
                 client_socket.close()
-                return            
+                return
             # Generate client ID
             client_id = self.generate_client_id()
             print(f"[Server] Zuweisung Client-ID: {client_id}")
