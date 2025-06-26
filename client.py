@@ -18,7 +18,7 @@ import base64
 import re  # Für SIP-Header-Parsing
 import tkinter as tk
 import stun  # pip install pystun3
-
+import struct
 
 #fallback für bessere kompatibilität:
 try:
@@ -44,6 +44,33 @@ ENC_METHOD = "aes_256_cbc"
 # Netzwerk-Einstellungen peer to peer:
 HOST = "0.0.0.0"  # IP des Empfängers
 PORT = 5060  # Port für die Übertragung
+
+
+def send_frame(sock, data):
+    """Verschickt Daten mit Längenprefix"""
+    if isinstance(data, str):
+        data = data.encode('utf-8')
+    header = struct.pack('!I', len(data))
+    sock.sendall(header + data)
+
+def recv_frame(sock, timeout=30):
+    """Empfängt einen Frame mit Längenprefix"""
+    sock.settimeout(timeout)
+    try:
+        header = sock.recv(4)
+        if not header: return None
+        length = struct.unpack('!I', header)[0]
+        
+        chunks = []
+        bytes_recd = 0
+        while bytes_recd < length:
+            chunk = sock.recv(min(length - bytes_recd, 4096))
+            if not chunk: raise ConnectionError("Verbindung abgebrochen")
+            chunks.append(chunk)
+            bytes_recd += len(chunk)
+        return b''.join(chunks).decode('utf-8')
+    except socket.timeout:
+        raise TimeoutError("Timeout beim Warten auf Frame")
 
 def get_public_ip():
     nat_type, public_ip, public_port = stun.get_ip_info()
@@ -460,11 +487,12 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         request = request.replace("\r\n\r\n", f"\r\nPUBLIC_KEY: {client_pubkey}\r\n\r\n")
         
         print(f"\n[Client] Sending REGISTER request:\n{request}")
-        client_socket.sendall(request.encode('utf-8'))
+        send_frame(client_socket, request.encode('utf-8'))
+        
         
         # 2. Receive server response with timeout
         client_socket.settimeout(30)  # Increased timeout to 30 seconds
-        response = client_socket.recv(4096)
+        response = recv_frame(client_socket)
         if not response:
             raise ConnectionError("Empty response from server")
 
@@ -497,7 +525,7 @@ def start_connection(server_ip, server_port, client_name, client_socket):
 
         # Wait for Merkle root message with timeout
         try:
-            merkle_response = client_socket.recv(4096)
+            merkle_response = recv_frame(client_socket)
             if not merkle_response:
                 raise ConnectionError("Empty Merkle response from server")
 
