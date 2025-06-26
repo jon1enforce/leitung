@@ -131,25 +131,31 @@ def verify_merkle_integrity(all_keys, received_root_hash):
     # 1. Normalisierungsfunktion (identisch zu Server)
     def normalize_key(key):
         if not key or "-----BEGIN PUBLIC KEY-----" not in key:
-            return ""
+            return None  # Statt leerem String None zurückgeben
         # Extrahiere nur den Base64-Inhalt zwischen den PEM-Markern
-        return "".join(
+        key_content = "".join(
             key.split("-----BEGIN PUBLIC KEY-----")[1]
             .split("-----END PUBLIC KEY-----")[0]
             .strip().split()
         )
+        return key_content if key_content else None
     
     # 2. Debug-Ausgabe der Rohkeys
     print("\n[Client] Received keys (raw):")
     for i, key in enumerate(all_keys):
         print(f"Key {i}: {key[:50]}..." if key else f"Key {i}: None")
 
-    # 3. Normalisierung aller Keys
+    # 3. Normalisierung aller Keys - filtere None-Werte heraus
     normalized_keys = [normalize_key(k) for k in all_keys if k]
+    normalized_keys = [k for k in normalized_keys if k is not None]  # Filtere None
     
     print("\n[Client] Normalized keys:")
     for i, key in enumerate(normalized_keys):
         print(f"Key {i} (len={len(key)}): {key[:30]}...")
+
+    if not normalized_keys:
+        print("Error: No valid keys found after normalization")
+        return False
 
     # 4. Zusammenführung mit Server-kompatiblem Trennzeichen
     merged = "|||".join(normalized_keys)
