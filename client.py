@@ -82,18 +82,10 @@ def shorten_public_key(key):
     shortened = key.replace("-----BEGIN PUBLIC KEY-----", "").replace("-----END PUBLIC KEY-----", "").replace("END_OF_KEYS","").replace("\n", "")
     return shortened
 
+
 def merge_public_keys(keys):
-    """Konsistente Schlüsselzusammenführung"""
-    normalized = []
-    for key in keys:
-        if not key:
-            continue
-        # Behalte nur den Base64-Inhalt des Schlüssels
-        key = re.sub(r'-----(BEGIN|END) PUBLIC KEY-----', '', key)
-        key = re.sub(r'\s+', '', key).strip()
-        if key:
-            normalized.append(key)
-    return ":".join(normalized)
+    """Identisch auf Client und Server"""
+    return "|||".join(normalize_key(k) for k in keys if k)
 
 
 
