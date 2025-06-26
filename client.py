@@ -508,10 +508,15 @@ def extract_server_public_key(sip_data, raw_response=None):
 def start_connection(server_ip, server_port, client_name, client_socket):
     try:
         client_pubkey = load_publickey()
-        request = build_sip_request("REGISTER", server_ip, client_name, server_ip, server_port)
-        request = request.replace("\r\n\r\n", f"\r\nPUBLIC_KEY: {client_pubkey}\r\n\r\n")
+        # Sicherstellen, dass der Key vollständig ist
+        if not client_pubkey or "-----BEGIN PUBLIC KEY-----" not in client_pubkey:
+            raise ValueError("Invalid client public key")
+            
+        # Key in custom_data einfügen
+        custom_data = {"PUBLIC_KEY": client_pubkey}
+        request = build_sip_message("REGISTER", server_ip, custom_data)
         
-        print(f"\n[Client] Sending REGISTER request:\n{request}")
+        print(f"\n[Client] Sending REGISTER request with public key...")
         send_frame(client_socket, request)
         
         response = recv_frame(client_socket)
