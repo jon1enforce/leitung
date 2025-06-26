@@ -194,30 +194,7 @@ def build_merkle_tree_from_keys(all_keys):
     return merkle_root
 
     
-def build_sip_message(self, method, recipient, custom_data={}):
-    """Korrigierte Version die PONG-Nachrichten korrekt formatiert"""
-    body = "\r\n".join(f"{k}: {v}" for k, v in custom_data.items())
-    content_length = len(body)
-    
-    # Unterscheide zwischen Anfragen und Antworten
-    if method.startswith("SIP/2.0"):
-        # SIP-Antwort
-        return (
-            f"{method}\r\n"
-            f"From: <sip:server@{self.host}>\r\n"
-            f"To: <sip:{recipient}>\r\n"
-            f"Content-Length: {content_length}\r\n\r\n"
-            f"{body}"
-        )
-    else:
-        # SIP-Anfrage
-        return (
-            f"{method} sip:{recipient} SIP/2.0\r\n"
-            f"From: <sip:server@{self.host}>\r\n"
-            f"To: <sip:{recipient}>\r\n"
-            f"Content-Length: {content_length}\r\n\r\n"
-            f"{body}"
-        )
+
 
 @staticmethod
 def handle_sip_message(raw_data):
