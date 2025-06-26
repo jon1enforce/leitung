@@ -171,7 +171,7 @@ def build_merkle_tree_from_keys(all_keys):
     # 2. Debug-Ausgabe der Rohkeys
     print("[Server] All keys for Merkle Tree:")
     for i, key in enumerate(all_keys):
-        print(f"Key {i}: {key[:50]}..." if key else f"Key {i}: None")
+        print(f"Key {i}: {key}" if key else f"Key {i}: None")
 
     # 3. Normalisierung aller Keys
     normalized_keys = []
@@ -544,7 +544,7 @@ class Server:
                 
                 print("\n[Server] All keys for Merkle Tree:")
                 for i, key in enumerate(all_keys):
-                    print(f"Key {i}: {key[:50]}..." if key else f"Key {i}: (Invalid/None)")
+                    print(f"Key {i}: {key}" if key else f"Key {i}: (Invalid/None)")
             
                 # 2. Normalisierung und Merkle-Berechnung
                 normalized_keys = []
