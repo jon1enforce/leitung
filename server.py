@@ -108,6 +108,16 @@ def load_server_publickey():
     with open("server_public_key.pem", "rb") as f:
         return f.read().decode('utf-8')
 
+def normalize_key(key):
+    if not key:
+        return ""
+    # Behalte nur den Base64-Innenbereich
+    key = key.replace("-----BEGIN PUBLIC KEY-----", "")
+    key = key.replace("-----END PUBLIC KEY-----", "")
+    # Entferne alle Leerzeichen/Zeilenumbrüche
+    key = "".join(key.split())
+    return key
+
 def merge_public_keys(keys):
     """Konsistente Schlüsselzusammenführung mit garantierter Reihenfolge"""
     normalized = []
