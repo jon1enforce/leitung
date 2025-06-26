@@ -465,6 +465,8 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         # Extrahiere den Key aus dem Body der Nachricht
         server_public_key = None
         merkle_root = None
+        client_public_keys = []  # Initialisiere die Liste der Client-Public-Keys
+        
         if '\r\n\r\n' in response.decode('utf-8'):
             body = response.decode('utf-8').split('\r\n\r\n')[1]
             for line in body.split('\n'):
@@ -473,24 +475,27 @@ def start_connection(server_ip, server_port, client_name, client_socket):
 
         if not server_public_key:
             raise ValueError("Kein Server-Key erhalten")
+            
         try:
             client_socket.settimeout(5.0)  # Timeout für Merkle-Root
             merkle_response = client_socket.recv(4096)
             if not merkle_response:
                 raise ValueError("Keine Merkle-Root Antwort erhalten")
                 
-    
             if '\r\n\r\n' in merkle_response.decode('utf-8'):
                 body = merkle_response.decode('utf-8').split('\r\n\r\n')[1]
                 for line in body.split('\n'):
                     if line.startswith('MERKLE_ROOT:'):
                         merkle_root = line.split('MERKLE_ROOT:')[1].strip()
+                        
+                        # Hier die Integritätsprüfung durchführen
                         if not verify_merkle_integrity(server_public_key, client_public_keys, merkle_root):
                             messagebox.showerror("Sicherheitsfehler", "Integritätsprüfung fehlgeschlagen! Verbindung wird beendet.")
                             client_socket.close()
                             return
                         else:
-                            print("Integrität durch identischem merkle_root bestätigt: Die öffentlichen Schlüssel wurden quantensicher verifiziert")
+                            print("Integrität durch identischen merkle_root bestätigt: Die öffentlichen Schlüssel wurden quantensicher verifiziert")
+                            
             if not merkle_root:
                 raise ValueError("Keine Merkle-Root in der Antwort")
                 
@@ -501,11 +506,6 @@ def start_connection(server_ip, server_port, client_name, client_socket):
 
         # 5. Hauptkommunikationsschleife
         connection_loop(client_socket, server_ip)
-
-
-    except Exception as e:
-        print(f"[Client] Kritischer Fehler: {str(e)}")
-        raise
 
     except Exception as e:
         print(f"[Client] Kritischer Fehler: {str(e)}")
