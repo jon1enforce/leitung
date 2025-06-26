@@ -141,7 +141,7 @@ def verify_merkle_integrity(all_keys, received_root_hash):
     # 2. Debug-Ausgabe
     print("\n[Client] Received keys (raw):")
     for i, key in enumerate(all_keys):
-        print(f"Key {i}: {key[:50]}..." if key else f"Key {i}: None")
+        print(f"Key {i}: {key}" if key else f"Key {i}: None")
 
     # 3. Normalisierung (wie Server)
     normalized_keys = []
