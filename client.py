@@ -45,7 +45,20 @@ ENC_METHOD = "aes_256_cbc"
 HOST = "0.0.0.0"  # IP des Empfängers
 PORT = 5060  # Port für die Übertragung
 
-
+def load_client_name():
+    """Lädt den Client-Namen aus einer lokalen Datei oder fordert den Benutzer zur Eingabe auf."""
+    if os.path.exists("client_name.txt"):
+        with open("client_name.txt", "r") as file:
+            return file.read().strip()
+    else:
+        client_name = simpledialog.askstring("Name", "Gib deinen Namen ein:")
+        if client_name:
+            with open("client_name.txt", "w") as file:
+                file.write(client_name)
+            return client_name
+        else:
+            messagebox.showerror("Fehler", "Kein Name eingegeben. Abbruch.")
+            return None
 def send_frame(sock, data):
     """Verschickt Daten mit Längenprefix"""
     if isinstance(data, str):
