@@ -485,12 +485,11 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         server_public_key = None
         merkle_root = None
         client_public_keys = []  # Initialisiere die Liste der Client-Public-Keys
-            client_public_keys = []
-    if 'CLIENT_KEYS' in sip_data.get('custom_data', {}):
-        try:
-            client_public_keys = json.loads(sip_data['custom_data']['CLIENT_KEYS'])
-        except:
-            client_public_keys = []
+        if 'CLIENT_KEYS' in sip_data.get('custom_data', {}):
+            try:
+                client_public_keys = json.loads(sip_data['custom_data']['CLIENT_KEYS'])
+            except:
+                client_public_keys = []
         if '\r\n\r\n' in response.decode('utf-8'):
             body = response.decode('utf-8').split('\r\n\r\n')[1]
             for line in body.split('\n'):
