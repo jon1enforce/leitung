@@ -510,7 +510,7 @@ def start_connection(server_ip, server_port, client_name, client_socket):
             print(f"Invalid server key format: {server_public_key[:100]}...")
             raise ValueError("Invalid server public key format")
 
-        print(f"\n[Client] Extracted Server Key:\n{server_public_key[:100]}...")
+        print(f"\n[Client] Extracted Server Key:\n{server_public_key}")
 
         # Wait for Merkle root message with timeout
         try:
