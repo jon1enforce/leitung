@@ -416,7 +416,6 @@ class Server:
         
         try:
             client_socket.settimeout(300.0)
-            print("Neue Client-Verbindung")
             register_data = client_socket.recv(4096)
             
             if not register_data:
@@ -424,7 +423,7 @@ class Server:
                 client_socket.close()
                 return
         
-            print(f"Vollständige empfangene Daten:\n{register_data.decode('utf-8')}")  # Debug
+            print(f"Vollständige empfangene Daten:\n{register_data.decode('utf-8')}")
             
             sip_msg = self.parse_sip_message(register_data)
             if not sip_msg:
@@ -432,14 +431,8 @@ class Server:
                 client_socket.close()
                 return
                 
-            print(f"Geparste Nachricht - Headers: {sip_msg.get('headers', {})}")  # Debug
-            print(f"Geparste Nachricht - Custom Data: {sip_msg.get('custom_data', {})}")  # Debug
-    
-            # Check if this is a REGISTER request
-            if sip_msg.get('method') != 'REGISTER':
-                print("Keine REGISTER-Anfrage")
-                client_socket.close()
-                return
+            print(f"Geparste Nachricht - Headers: {sip_msg.get('headers', {})}")
+            print(f"Geparste Nachricht - Custom Data: {sip_msg.get('custom_data', {})}")
     
             # Extract client name from From header
             from_header = sip_msg['headers'].get('FROM', '')
@@ -452,12 +445,16 @@ class Server:
                 client_socket.close()
                 return
     
+            # Extract public key if present in custom data
+            client_pubkey = sip_msg.get('custom_data', {}).get('PUBLIC_KEY')
+            
             # Generate client ID
             client_id = self.generate_client_id()
             
             # Store client info
             self.clients[client_id] = {
                 'name': client_name,
+                'public_key': client_pubkey,  # Store the public key if available
                 'socket': client_socket,
                 'ip': client_address[0],
                 'port': client_address[1]
@@ -473,38 +470,43 @@ class Server:
                 }
             )
             client_socket.sendall(response.encode('utf-8'))
-            time.sleep(0.1)
-    
+            
+            # Prepare Merkle tree data
             try:
-                # 1. Sammle alle öffentlichen Schlüssel (Server + alle Clients)
+                # 1. Collect all public keys (server + all clients with public keys)
                 all_keys = [self.server_public_key]
                 for c in self.clients.values():
-                    if 'public_key' in c and c['public_key']:
+                    if c.get('public_key'):
                         all_keys.append(c['public_key'])
                 
-                # Debug-Ausgabe
+                # Debug output
                 print("\n[Server] Keys for Merkle Tree:")
                 for i, key in enumerate(all_keys):
                     print(f"Key {i}: {key[:50]}... (len={len(key)})")
                 
-                # 2. Merge und Merkle-Berechnung
-                merged_keys = merge_public_keys(all_keys)
-                print(f"Merged keys (len={len(merged_keys)}): {merged_keys[:100]}...")
-                
-                merkle_root = build_merkle_tree([merged_keys])  # Als Liste übergeben
-                
-                # 3. Sende zusätzlich alle Client-Public-Keys zur Verifikation
-                merkle_msg = self.build_sip_message(
-                    "MESSAGE",
-                    client_name,
-                    {
-                        "MERKLE_ROOT": merkle_root,
-                        "CLIENT_KEYS": json.dumps([c['public_key'] for c in self.clients.values()])
-                    }
-                )
-                client_socket.send(merkle_msg.encode('utf-8'))
+                # 2. Merge and calculate Merkle root
+                if len(all_keys) > 0:
+                    merged_keys = merge_public_keys(all_keys)
+                    print(f"Merged keys (len={len(merged_keys)}): {merged_keys[:100]}...")
+                    
+                    merkle_root = build_merkle_tree([merged_keys])
+                    
+                    # 3. Send Merkle root and client public keys
+                    merkle_msg = self.build_sip_message(
+                        "MESSAGE",
+                        client_name,
+                        {
+                            "MERKLE_ROOT": merkle_root,
+                            "CLIENT_KEYS": json.dumps([c['public_key'] for c in self.clients.values() if c.get('public_key')])
+                        }
+                    )
+                    client_socket.sendall(merkle_msg.encode('utf-8'))
+                else:
+                    print("No keys available for Merkle tree")
+                    
             except Exception as e:
                 print(f"Fehler beim Senden der Merkle-Root: {str(e)}")
+                raise
     
             # 6. Hauptkommunikationsschleife
             last_pong_time = 0
