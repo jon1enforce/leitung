@@ -108,7 +108,15 @@ def verify_merkle_integrity(server_public_key, client_public_keys, received_root
         # Extrahiere nur den Base64-Teil
         match = re.search(r'([A-Za-z0-9+/=]+)', key)
         return match.group(1) if match else ""
+    print(f"\n[Client] Server Key Raw: {server_public_key}")
+    print(f"[Client] Client Keys Raw: {client_public_keys}")
     
+    normalized_server = normalize(server_public_key)
+    print(f"\n[Client] Normalized Server Key: {normalized_server[:30]}... (len={len(normalized_server)})")
+    
+    normalized_clients = [normalize(k) for k in client_public_keys]
+    for i, k in enumerate(normalized_clients):
+        print(f"[Client] Normalized Client {i}: {k[:30]}... (len={len(k)})")
     # 2. Alle relevanten Schlüssel sammeln
     all_keys = []
     if server_public_key:
