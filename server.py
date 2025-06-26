@@ -8,8 +8,35 @@ import random
 import time
 import uuid
 import re
-
+import struct
 BUFFER_SIZE = 4096
+
+def send_frame(sock, data):
+    """Verschickt Daten mit Längenprefix"""
+    if isinstance(data, str):
+        data = data.encode('utf-8')
+    header = struct.pack('!I', len(data))
+    sock.sendall(header + data)
+
+def recv_frame(sock, timeout=30):
+    """Empfängt einen Frame mit Längenprefix"""
+    sock.settimeout(timeout)
+    try:
+        header = sock.recv(4)
+        if not header: return None
+        length = struct.unpack('!I', header)[0]
+        
+        chunks = []
+        bytes_recd = 0
+        while bytes_recd < length:
+            chunk = sock.recv(min(length - bytes_recd, 4096))
+            if not chunk: raise ConnectionError("Verbindung abgebrochen")
+            chunks.append(chunk)
+            bytes_recd += len(chunk)
+        return b''.join(chunks).decode('utf-8')
+    except socket.timeout:
+        raise TimeoutError("Timeout beim Warten auf Frame")
+        
 def extract_public_key(raw_data):
     """
     Extrahiert den vollständigen Public Key aus SIP-Nachrichten
@@ -416,7 +443,7 @@ class Server:
         
         try:
             client_socket.settimeout(300.0)
-            register_data = client_socket.recv(4096)
+            register_data = recv_frame(client_socket)
             
             if not register_data:
                 print("Leere Anfrage - Verbindung geschlossen")
@@ -469,7 +496,7 @@ class Server:
                     "CLIENT_ID": client_id
                 }
             )
-            client_socket.sendall(response.encode('utf-8'))
+            send_frame(client_socket, response)
             
             # Prepare Merkle tree data
             try:
@@ -566,13 +593,13 @@ class Server:
             try:
                 encrypted_phonebook = self.encrypt_phonebook(decrypted_secret)
                 if encrypted_phonebook:
-                    data["socket"].send(f"PHONEBOOK:{encrypted_phonebook}".encode('utf-8'))
+                    send_frame(data["socket"], f"PHONEBOOK:{encrypted_phonebook}".encode('utf-8'))
                     #secret
                     time.sleep(1)
                     rsa_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(data["public_key"].encode('utf-8')))
                     secret = rsa_key.public_encrypt(decrypted_secret, RSA.pkcs1_padding).hex()
                     print(secret)
-                    data["socket"].send(f"SECRET:{secret}".encode('utf-8'))
+                    send_frame(data["socket"], f"SECRET:{secret}".encode('utf-8'))
             except Exception as e:
                 print(f"Fehler beim Senden des Telefonbuchs an {data['name']} (ID: {client_id}): {e}")
                 if client_id in self.clients:
