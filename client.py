@@ -478,29 +478,20 @@ def connection_loop(client_socket, server_ip):
             continue
 def start_connection(server_ip, server_port, client_name, client_socket):
     try:
-        # Load client public key
         client_pubkey = load_publickey()
-        
-        # 1. Build and send initial connection request with public key
         request = build_sip_request("REGISTER", server_ip, client_name, server_ip, server_port)
-        # Add public key to the request
         request = request.replace("\r\n\r\n", f"\r\nPUBLIC_KEY: {client_pubkey}\r\n\r\n")
         
         print(f"\n[Client] Sending REGISTER request:\n{request}")
-        send_frame(client_socket, request.encode('utf-8'))
+        send_frame(client_socket, request)  # Kein .encode() mehr!
         
-        
-        # 2. Receive server response with timeout
-        client_socket.settimeout(30)  # Increased timeout to 30 seconds
         response = recv_frame(client_socket)
         if not response:
             raise ConnectionError("Empty response from server")
 
-        response_str = response.decode('utf-8')
-        print(f"\n[Client] Raw Server Response:\n{response_str}\n")
-
-        # Parse the response
-        sip_data = parse_sip_message(response_str)
+        print(f"\n[Client] Raw Server Response:\n{response}\n")  # Kein .decode() mehr!
+        
+        sip_data = parse_sip_message(response)
         if not sip_data:
             raise ValueError("Invalid SIP response format")
 
