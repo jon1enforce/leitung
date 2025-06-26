@@ -509,14 +509,15 @@ def start_connection(server_ip, server_port, client_name, client_socket):
     try:
         client_pubkey = load_publickey()
         # Sicherstellen, dass der Key vollständig ist
-        if not client_pubkey or "-----BEGIN PUBLIC KEY-----" not in client_pubkey:
-            raise ValueError("Invalid client public key")
-            
-        # Key in custom_data einfügen
-        custom_data = {"PUBLIC_KEY": client_pubkey}
-        request = build_sip_message("REGISTER", server_ip, custom_data)
+        if not client_pubkey or "-----END PUBLIC KEY-----" not in client_pubkey:
+            raise ValueError("Invalid client public key format")
+
+        # Key in den Body der Nachricht einfügen
+        request = build_sip_message("REGISTER", server_ip, {
+            "PUBLIC_KEY": client_pubkey  # Vollständiger PEM-formatierter Key
+        })
         
-        print(f"\n[Client] Sending REGISTER request with public key...")
+        print(f"\n[Client] Sending full public key...")
         send_frame(client_socket, request)
         
         response = recv_frame(client_socket)
