@@ -479,10 +479,6 @@ def start_connection(server_ip, server_port, client_name, client_socket):
             raise ValueError(f"Server returned error: {sip_data.get('status_code', 'Unknown')}")
 
         # Extract server public key
-
-        server_public_key = sip_data.get('custom_data', {}).get('SERVER_PUBLIC_KEY')
-        
-        # Besser:
         server_public_key = None
         if 'custom_data' in sip_data:
             if 'SERVER_PUBLIC_KEY' in sip_data['custom_data']:
@@ -501,32 +497,31 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         print(f"\n[Client] Extracted Server Key:\n{server_public_key[:100]}...")
 
         # Wait for Merkle root message with timeout
-
         try:
             merkle_response = recv_frame(client_socket)
             if not merkle_response:
                 raise ConnectionError("Empty Merkle response from server")
         
-            print(f"\n[Client] Raw Merkle Response:\n{merkle_response}\n")  # Kein .decode() mehr!
+            print(f"\n[Client] Raw Merkle Response:\n{merkle_response}\n")
         
             merkle_data = parse_sip_message(merkle_response)
-            client_public_keys = []
+            all_keys = []
             merkle_root = None
             
             if merkle_data and 'custom_data' in merkle_data:
-                if 'CLIENT_KEYS' in merkle_data['custom_data']:
+                if 'ALL_KEYS' in merkle_data['custom_data']:
                     try:
-                        client_public_keys = json.loads(merkle_data['custom_data']['CLIENT_KEYS'])
-                        print(f"[Client] Received Client Keys: {len(client_public_keys)} keys")
+                        all_keys = json.loads(merkle_data['custom_data']['ALL_KEYS'])
+                        print(f"[Client] Received All Keys: {len(all_keys)} keys")
                     except json.JSONDecodeError as e:
-                        print(f"[Client] Error parsing client keys: {e}")
+                        print(f"[Client] Error parsing keys: {e}")
         
                 if 'MERKLE_ROOT' in merkle_data['custom_data']:
                     merkle_root = merkle_data['custom_data']['MERKLE_ROOT']
             
             if not merkle_root:
-                if '\r\n\r\n' in merkle_response:  # Kein .decode() mehr!
-                    body = merkle_response.split('\r\n\r\n')[1]  # Kein .decode() mehr!
+                if '\r\n\r\n' in merkle_response:
+                    body = merkle_response.split('\r\n\r\n')[1]
                     for line in body.split('\n'):
                         if line.startswith('MERKLE_ROOT:'):
                             merkle_root = line.split('MERKLE_ROOT:')[1].strip()
@@ -534,9 +529,17 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         
             if not merkle_root:
                 raise ValueError("No Merkle root in response")
+            
+            # Add server public key to the list of all keys if not already included
+            if server_public_key not in all_keys:
+                all_keys.append(server_public_key)
+            
+            # Add client public key to the list if not already included
+            if client_pubkey not in all_keys:
+                all_keys.append(client_pubkey)
         
-            # Verify Merkle integrity
-            if not verify_merkle_integrity(server_public_key, client_public_keys, merkle_root):
+            # Verify Merkle integrity with just all_keys and merkle_root
+            if not verify_merkle_integrity(all_keys, merkle_root):
                 messagebox.showerror("Security Error", 
                     "Integrity check failed!\n"
                     "Possible key manipulation detected.\n"
@@ -558,20 +561,6 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         if client_socket:
             client_socket.close()
         raise
-def load_client_name():
-    """Lädt den Client-Namen aus einer lokalen Datei oder fordert den Benutzer zur Eingabe auf."""
-    if os.path.exists("client_name.txt"):
-        with open("client_name.txt", "r") as file:
-            return file.read().strip()
-    else:
-        client_name = simpledialog.askstring("Name", "Gib deinen Namen ein:")
-        if client_name:
-            with open("client_name.txt", "w") as file:
-                file.write(client_name)
-            return client_name
-        else:
-            messagebox.showerror("Fehler", "Kein Name eingegeben. Abbruch.")
-            return None
 
 def save_client_id(client_id):
     """Speichert die Client-ID in einer lokalen Datei."""
