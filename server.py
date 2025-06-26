@@ -511,32 +511,55 @@ class Server:
             
             # Prepare Merkle tree data
             try:
-                # 1. Collect all public keys (server + all clients with public keys)
-
-                all_keys = [self.server_public_key] + [
-                    c['public_key'] for c in sorted(
-                        self.clients.values(), 
-                        key=lambda x: x['public_key'] if x.get('public_key') else ""
-                    )
+                # 1. Sammle alle öffentlichen Schlüssel (Server + Clients)
+                all_keys = [self.server_public_key]  # Server-Key immer zuerst
+                
+                # Füge Client-Keys in konsistenter Reihenfolge hinzu (sortiert nach Key-Inhalt)
+                client_keys = [
+                    c['public_key'] for c in self.clients.values() 
+                    if c.get('public_key') and "-----BEGIN PUBLIC KEY-----" in c['public_key']
                 ]
+                all_keys.extend(sorted(client_keys))  # Sortierung für deterministische Reihenfolge
                 
                 print("\n[Server] All keys for Merkle Tree:")
                 for i, key in enumerate(all_keys):
-                    print(f"Key {i}: {key[:50]}..." if key else f"Key {i}: None")
+                    print(f"Key {i}: {key[:50]}..." if key else f"Key {i}: (Invalid/None)")
             
-                # 2. Merkle Root berechnen
-                merged_keys = merge_public_keys(all_keys)
-                merkle_root = build_merkle_tree([merged_keys])
+                # 2. Normalisierung und Merkle-Berechnung
+                def normalize_key(key):
+                    """Identische Normalisierungsfunktion wie beim Client"""
+                    if not key or "-----BEGIN PUBLIC KEY-----" not in key:
+                        return None
+                    return "".join(
+                        key.split("-----BEGIN PUBLIC KEY-----")[1]
+                        .split("-----END PUBLIC KEY-----")[0]
+                        .strip().split()
+                    )
                 
-                # 3. ALLE Keys + Merkle Root senden
+                normalized_keys = [k for k in map(normalize_key, all_keys) if k]
+                if len(normalized_keys) < len(all_keys):
+                    print(f"Warnung: {len(all_keys) - len(normalized_keys)} ungültige Schlüssel gefiltert")
+                
+                if not normalized_keys:
+                    raise ValueError("Keine gültigen Schlüssel für Merkle-Tree")
+            
+                # 3. Zusammenführung mit Trennzeichen (|||)
+                merged = "|||".join(normalized_keys)
+                print(f"[Server] Merged keys ({len(merged)} chars): {merged[:100]}...")
+                
+                # 4. Merkle Root berechnen
+                merkle_root = build_merkle_tree([merged])
+                print(f"[Server] Merkle Root: {merkle_root}")
+            
+                # 5. ALLE Original-Keys + Merkle Root senden
                 merkle_msg = self.build_sip_message("MESSAGE", client_name, {
                     "MERKLE_ROOT": merkle_root,
-                    "ALL_KEYS": json.dumps(all_keys)  # Einheitliche Schlüsselreihenfolge
+                    "ALL_KEYS": json.dumps(all_keys)  # Unveränderte Original-Keys
                 })
                 send_frame(client_socket, merkle_msg)
                     
             except Exception as e:
-                print(f"Fehler beim Senden der Merkle-Root: {str(e)}")
+                print(f"Fehler beim Merkle-Root-Handling: {str(e)}")
                 raise
     
             # 6. Hauptkommunikationsschleife
