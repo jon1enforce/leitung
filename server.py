@@ -82,20 +82,25 @@ def load_server_publickey():
         return f.read().decode('utf-8')
 
 def merge_public_keys(keys):
-    """Korrigierte Version für konsistente Merkle-Root-Berechnung"""
+    """Korrigierte Version mit vollständiger Schlüsselverarbeitung"""
     normalized_keys = []
     for key in keys:
-        # Normalisiere jeden Schlüssel gleich wie der Client
+        # 1. PEM-Header/Footer entfernen
         key = key.replace("-----BEGIN PUBLIC KEY-----", "")
         key = key.replace("-----END PUBLIC KEY-----", "")
-        key = re.sub(r'\s+', '', key)
+        
+        # 2. Base64-Inhalt extrahieren (zwischen den Headern)
+        key = key.strip()
+        
+        # 3. Debug-Ausgabe
+        print(f"Processing key (len={len(key)}): {key[:30]}...")
+        
         normalized_keys.append(key)
     
-    print("\n[Server] Normalized keys for Merkle:")
-    for i, key in enumerate(normalized_keys):
-        print(f"Key {i}: {key[:30]}... (length: {len(key)})")
-    
-    return ":".join(normalized_keys)
+    # Zusammenfügen mit Trennzeichen
+    merged = ":".join(normalized_keys)
+    print(f"Merged keys string (len={len(merged)}): {merged[:100]}...")
+    return merged
 
 def shorten_public_key(key):
     """Kürzt die Darstellung des öffentlichen Schlüssels."""
