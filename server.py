@@ -36,6 +36,23 @@ def recv_frame(sock, timeout=30):
         return b''.join(chunks).decode('utf-8')
     except socket.timeout:
         raise TimeoutError("Timeout beim Warten auf Frame")
+
+def build_merkle_tree(data_blocks):
+    data_blocks = list(data_blocks)
+    if not data_blocks:
+        return None
+    
+    # Erstelle die Blattknoten des Merkle Trees
+    tree = [quantum_safe_hash(block) for block in data_blocks]
+
+    # Reduziere den Baum, bis nur noch der Root-Hash übrig ist
+    while len(tree) > 1:
+        if len(tree) % 2 != 0:
+            tree.append(tree[-1])  # Dupliziere den letzten Hash, wenn die Anzahl ungerade ist
+        tree = [quantum_safe_hash(tree[i] + tree[i + 1]) for i in range(0, len(tree), 2)]
+
+    return tree[0]  # Der Merkle Root-Hash
+
         
 def extract_public_key(raw_data):
     """
