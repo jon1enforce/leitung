@@ -628,27 +628,32 @@ def load_publickey():
         bits = 4096
         new_key = RSA.gen_key(bits, 65537)
 
-        # Speichere den öffentlichen Schlüssel
+        # Speichere den öffentlichen Schlüssel im PEM-Format
         pub_memory = BIO.MemoryBuffer()
         new_key.save_pub_key_bio(pub_memory)
-        public_key = pub_memory.getvalue()
+        public_key_pem = pub_memory.getvalue().decode('utf-8')  # Als String
 
-        with open("public_key.pem", "wb") as pubHandle:
-            pubHandle.write(public_key)
+        with open("public_key.pem", "w") as pubHandle:
+            pubHandle.write(public_key_pem)
 
         # Speichere den privaten Schlüssel
         priv_memory = BIO.MemoryBuffer()
         new_key.save_key_bio(priv_memory, cipher=None)
-        private_key = priv_memory.getvalue()
-
         with open("private_key.pem", "wb") as privHandle:
-            privHandle.write(private_key)
+            privHandle.write(priv_memory.getvalue())
+        
+        return public_key_pem
     else:
-        # Lade den öffentlichen Schlüssel
-        with open("public_key.pem", "rb") as load_pub_key:
-            public_key = load_pub_key.read()
-
-    return public_key.decode('utf-8')  # Rückgabe als String
+        # Lade den öffentlichen Schlüssel als kompletten PEM-String
+        with open("public_key.pem", "r") as f:
+            public_key = f.read().strip()
+        
+        # Validierung des Keys
+        if not public_key.startswith('-----BEGIN PUBLIC KEY-----') or \
+           not public_key.endswith('-----END PUBLIC KEY-----'):
+            raise ValueError("Invalid public key format in file")
+        
+        return public_key
 
 
 def load_privatekey():
