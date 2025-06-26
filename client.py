@@ -126,15 +126,15 @@ def verify_merkle_integrity(server_public_key, client_public_keys, received_root
     
     # 1. Normalisierung aller Schlüssel
     
-    def normalize(key):
+    def normalize_key(key):
         if not key:
             return ""
-        # Entferne PEM-Header/Footer und alle Leerzeichen
-        key = re.sub(r'-----(BEGIN|END) PUBLIC KEY-----', '', key)
-        key = re.sub(r'\s+', '', key).strip()
-        # Extrahiere nur den Base64-Teil
-        match = re.search(r'([A-Za-z0-9+/=]+)', key)
-        return match.group(1) if match else ""
+        # Behalte nur den Base64-Innenbereich
+        key = key.replace("-----BEGIN PUBLIC KEY-----", "")
+        key = key.replace("-----END PUBLIC KEY-----", "")
+        # Entferne alle Leerzeichen/Zeilenumbrüche
+        key = "".join(key.split())
+        return key
     print(f"\n[Client] Server Key Raw: {server_public_key}")
     print(f"[Client] Client Keys Raw: {client_public_keys}")
     
