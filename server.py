@@ -108,16 +108,18 @@ def load_server_publickey():
     with open("server_public_key.pem", "rb") as f:
         return f.read().decode('utf-8')
 
+
 def normalize_key(key):
-    """Identisch auf Client und Server"""
     if not key or "-----BEGIN PUBLIC KEY-----" not in key:
-        return ""
-    # Extrahiere nur den Base64-Inhalt zwischen den Markern
-    return "".join(
+        return None  # Statt leerem String None zurückgeben
+    # Extrahiere nur den Base64-Inhalt zwischen den PEM-Markern
+    key_content = "".join(
         key.split("-----BEGIN PUBLIC KEY-----")[1]
         .split("-----END PUBLIC KEY-----")[0]
-        .split()
+        .strip().split()
     )
+    return key_content if key_content else None
+
 
 def merge_public_keys(keys):
     """Identisch auf Client und Server"""
