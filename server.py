@@ -443,14 +443,13 @@ class Server:
         
         try:
             client_socket.settimeout(300.0)
+
             register_data = recv_frame(client_socket)
-            
             if not register_data:
-                print("Leere Anfrage - Verbindung geschlossen")
-                client_socket.close()
+                print("Empty frame received")
                 return
-        
-            print(f"Vollständige empfangene Daten:\n{register_data.decode('utf-8')}")
+                
+            print(f"Raw received data:\n{register_data}")  # Kein .decode() mehr!
             
             sip_msg = self.parse_sip_message(register_data)
             if not sip_msg:
@@ -488,15 +487,12 @@ class Server:
             }
     
             # Send 200 OK response with server public key
-            response = self.build_sip_message(
-                "SIP/2.0 200 OK",
-                client_name,
-                {
-                    "SERVER_PUBLIC_KEY": self.server_public_key,
-                    "CLIENT_ID": client_id
-                }
-            )
-            send_frame(client_socket, response)
+    
+            response = self.build_sip_message("SIP/2.0 200 OK", client_name, {
+                "SERVER_PUBLIC_KEY": self.server_public_key,
+                "CLIENT_ID": client_id
+            })
+            send_frame(client_socket, response)  # Direkt als String senden
             
             # Prepare Merkle tree data
             try:
@@ -519,15 +515,11 @@ class Server:
                     merkle_root = build_merkle_tree([merged_keys])
                     
                     # 3. Send Merkle root and client public keys
-                    merkle_msg = self.build_sip_message(
-                        "MESSAGE",
-                        client_name,
-                        {
-                            "MERKLE_ROOT": merkle_root,
-                            "CLIENT_KEYS": json.dumps([c['public_key'] for c in self.clients.values() if c.get('public_key')])
-                        }
-                    )
-                    client_socket.sendall(merkle_msg.encode('utf-8'))
+                    merkle_msg = self.build_sip_message("MESSAGE", client_name, {
+                        "MERKLE_ROOT": merkle_root,
+                        "CLIENT_KEYS": json.dumps([c['public_key'] for c in self.clients.values() if c.get('public_key')])
+                    })
+                    send_frame(client_socket, merkle_msg)  # Direkt als String senden
                 else:
                     print("No keys available for Merkle tree")
                     
