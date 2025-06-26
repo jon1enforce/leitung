@@ -413,54 +413,57 @@ class Server:
         client_name = None
         client_pubkey = None
         client_id = None
+        
         try:
             client_socket.settimeout(300.0)
             print("Neue Client-Verbindung")
             register_data = client_socket.recv(4096)
-            print(f"Vollständige empfangene Daten:\n{register_data.decode('utf-8')}")  # Debug
             
             if not register_data:
                 print("Leere Anfrage - Verbindung geschlossen")
                 client_socket.close()
                 return
         
+            print(f"Vollständige empfangene Daten:\n{register_data.decode('utf-8')}")  # Debug
+            
             sip_msg = self.parse_sip_message(register_data)
+            if not sip_msg:
+                print("Ungültige SIP-Nachricht")
+                client_socket.close()
+                return
+                
             print(f"Geparste Nachricht - Headers: {sip_msg.get('headers', {})}")  # Debug
             print(f"Geparste Nachricht - Custom Data: {sip_msg.get('custom_data', {})}")  # Debug
-        
-
-            # 2. Client-Daten verarbeiten
-            # Extrahiere Body-Daten
-            body_data = {}
-            if '\r\n\r\n' in register_data.decode('utf-8'):
-                body = register_data.decode('utf-8').split('\r\n\r\n')[1]
-                body_data = parse_multiline_headers(body)
-             
-            # Kombiniere Header und Body-Daten
-            client_name = (sip_msg['headers'].get('CLIENT_NAME') or 
-                          sip_msg['custom_data'].get('CLIENT_NAME') or
-                          body_data.get('CLIENT_NAME', ''))
-             
-            client_pubkey = extract_public_key(register_data)
-             
-            # Entferne eventuelle doppelten Zeilenumbrüche
-            client_pubkey = re.sub(r'\n+', '\n', client_pubkey).strip()
-             
-            print(f"Extrahierter CLIENT_NAME: {client_name}")
-            print(f"Extrahierter PUBLIC_KEY: {client_pubkey}")
-            if not client_name or not client_pubkey:
-                raise ValueError("Unvollständige Client-Daten")
     
-            # 3. Client registrieren
-            client_id = f"client_{len(self.clients)+1}"
+            # Check if this is a REGISTER request
+            if sip_msg.get('method') != 'REGISTER':
+                print("Keine REGISTER-Anfrage")
+                client_socket.close()
+                return
+    
+            # Extract client name from From header
+            from_header = sip_msg['headers'].get('FROM', '')
+            client_name_match = re.search(r'<sip:(.*?)@', from_header)
+            if client_name_match:
+                client_name = client_name_match.group(1)
+            
+            if not client_name:
+                print("Kein Client-Name gefunden")
+                client_socket.close()
+                return
+    
+            # Generate client ID
+            client_id = self.generate_client_id()
+            
+            # Store client info
             self.clients[client_id] = {
                 'name': client_name,
-                'public_key': client_pubkey,
                 'socket': client_socket,
-                'ip': client_address[0]
+                'ip': client_address[0],
+                'port': client_address[1]
             }
     
-            # 4. 200 OK mit Server-Key senden
+            # Send 200 OK response with server public key
             response = self.build_sip_message(
                 "SIP/2.0 200 OK",
                 client_name,
@@ -469,7 +472,7 @@ class Server:
                     "CLIENT_ID": client_id
                 }
             )
-            client_socket.send(response.encode('utf-8'))
+            client_socket.sendall(response.encode('utf-8'))
             time.sleep(0.1)
     
             try:
@@ -542,7 +545,7 @@ class Server:
             print(f"Fehler bei der Kommunikation mit {client_address}: {e}")
         finally:
             client_socket.close()
-
+    
 
 
     def update_phonebook(self):
