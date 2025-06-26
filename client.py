@@ -483,13 +483,13 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         request = request.replace("\r\n\r\n", f"\r\nPUBLIC_KEY: {client_pubkey}\r\n\r\n")
         
         print(f"\n[Client] Sending REGISTER request:\n{request}")
-        send_frame(client_socket, request)  # Kein .encode() mehr!
+        send_frame(client_socket, request)
         
         response = recv_frame(client_socket)
         if not response:
             raise ConnectionError("Empty response from server")
 
-        print(f"\n[Client] Raw Server Response:\n{response}\n")  # Kein .decode() mehr!
+        print(f"\n[Client] Raw Server Response:\n{response}\n")
         
         sip_data = parse_sip_message(response)
         if not sip_data:
@@ -502,8 +502,8 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         # Extract server public key
         server_public_key = sip_data.get('custom_data', {}).get('SERVER_PUBLIC_KEY')
         if not server_public_key:
-            if '\r\n\r\n' in response_str:
-                body = response_str.split('\r\n\r\n')[1]
+            if '\r\n\r\n' in response:  # Hier wurde response_str zu response geändert
+                body = response.split('\r\n\r\n')[1]
                 for line in body.split('\n'):
                     if line.startswith('SERVER_PUBLIC_KEY:'):
                         server_public_key = line.split('SERVER_PUBLIC_KEY:')[1].strip()
