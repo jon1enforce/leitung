@@ -485,7 +485,12 @@ def start_connection(server_ip, server_port, client_name, client_socket):
                 for line in body.split('\n'):
                     if line.startswith('MERKLE_ROOT:'):
                         merkle_root = line.split('MERKLE_ROOT:')[1].strip()
-            
+                        if not verify_merkle_integrity(server_public_key, client_public_keys, merkle_root):
+                            messagebox.showerror("Sicherheitsfehler", "Integritätsprüfung fehlgeschlagen! Verbindung wird beendet.")
+                            client_socket.close()
+                            return
+                        else:
+                            print("Integrität durch identischem merkle_root bestätigt: Die öffentlichen Schlüssel wurden quantensicher verifiziert")
             if not merkle_root:
                 raise ValueError("Keine Merkle-Root in der Antwort")
                 
