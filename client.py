@@ -119,53 +119,38 @@ def build_merkle_tree(data_blocks):
 
 
 
-
-def verify_merkle_integrity(server_public_key, client_public_keys, received_root_hash):
-    """Korrigierte Client-Verifikation"""
+def verify_merkle_integrity(all_keys, received_root_hash):
+    """Vereinfachte und robustere Verifikation"""
     print("\n=== CLIENT VERIFICATION ===")
     
-    # 1. Normalisierung aller Schlüssel
-    
+    # 1. Normalisierungsfunktion (identisch zu Server)
     def normalize_key(key):
-        if not key:
+        if not key or "-----BEGIN PUBLIC KEY-----" not in key:
             return ""
-        # Behalte nur den Base64-Innenbereich
-        key = key.replace("-----BEGIN PUBLIC KEY-----", "")
-        key = key.replace("-----END PUBLIC KEY-----", "")
-        # Entferne alle Leerzeichen/Zeilenumbrüche
-        key = "".join(key.split())
-        return key
-        
-    print(f"\n[Client] Server Key Raw: {server_public_key}")
-    print(f"[Client] Client Keys Raw: {client_public_keys}")
+        # Extrahiere nur den Base64-Inhalt zwischen den PEM-Markern
+        return "".join(
+            key.split("-----BEGIN PUBLIC KEY-----")[1]
+            .split("-----END PUBLIC KEY-----")[0]
+            .strip().split()
+        )
     
-    normalized_server = normalize_key(server_public_key)  # Hier wurde normalize zu normalize_key geändert
-    print(f"\n[Client] Normalized Server Key: {normalized_server[:30]}... (len={len(normalized_server)})")
-    
-    normalized_clients = [normalize_key(k) for k in client_public_keys]  # Auch hier normalize zu normalize_key
-    for i, k in enumerate(normalized_clients):
-        print(f"[Client] Normalized Client {i}: {k[:30]}... (len={len(k)})")
-        
-    # 2. Alle relevanten Schlüssel sammeln
-    all_keys = []
-    if server_public_key:
-        all_keys.append(normalize_key(server_public_key))  # Und hier
-    for key in client_public_keys:
-        if key:
-            all_keys.append(normalize_key(key))  # Und hier
-    
-    # 3. Debug-Ausgabe
-    print("\nNormalized keys:")
+    # 2. Debug-Ausgabe der Rohkeys
+    print("\n[Client] Received keys (raw):")
     for i, key in enumerate(all_keys):
+        print(f"Key {i}: {key[:50]}..." if key else f"Key {i}: None")
+
+    # 3. Normalisierung aller Keys
+    normalized_keys = [normalize_key(k) for k in all_keys if k]
+    
+    print("\n[Client] Normalized keys:")
+    for i, key in enumerate(normalized_keys):
         print(f"Key {i} (len={len(key)}): {key[:30]}...")
-    
-    # 4. Zusammenfügen und Hashen
-    if not all_keys:
-        return False
-        
-    merged = ":".join(all_keys)
+
+    # 4. Zusammenführung mit Server-kompatiblem Trennzeichen
+    merged = "|||".join(normalized_keys)
     print(f"\nMerged string (len={len(merged)}): {merged[:100]}...")
-    
+
+    # 5. Hash-Berechnung und Verifikation
     calculated_hash = build_merkle_tree([merged])
     print(f"\nCalculated hash: {calculated_hash}")
     print(f"Received hash:   {received_root_hash}")
