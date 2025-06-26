@@ -497,10 +497,12 @@ class Server:
             # Prepare Merkle tree data
             try:
                 # 1. Collect all public keys (server + all clients with public keys)
-                all_keys = [self.server_public_key]
-                for c in self.clients.values():
-                    if c.get('public_key'):
-                        all_keys.append(c['public_key'])
+
+                all_keys = [self.server_public_key]  # Server-Key immer zuerst
+                # Dann alle Client-Keys in der Reihenfolge ihrer Registrierung
+                for client_id in sorted(self.clients.keys()):
+                    if self.clients[client_id].get('public_key'):
+                        all_keys.append(self.clients[client_id]['public_key'])
                 
                 # Debug output
                 print("\n[Server] Keys for Merkle Tree:")
