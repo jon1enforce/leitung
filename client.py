@@ -451,11 +451,19 @@ def connection_loop(client_socket, server_ip):
             continue
 def start_connection(server_ip, server_port, client_name, client_socket):
     try:
-        # ... (vorheriger Code bis zur Server-Antwort)
+        # 1. Build and send initial connection request
+        request = build_sip_request("REGISTER", server_ip, client_name, server_ip, server_port)
+        client_socket.sendall(request.encode('utf-8'))
+        
+        # 2. Receive server response
+        response = client_socket.recv(4096)
+        if not response:
+            raise ConnectionError("Empty response from server")
 
         # Debug: Rohdaten der Server-Antwort anzeigen
         print(f"\n[Client] Raw Server Response:\n{response.decode('utf-8')}\n")
 
+        # Rest of the existing code...
         # Server-Key extrahieren
         sip_data = parse_sip_message(response)
         server_public_key = sip_data.get('custom_data', {}).get('SERVER_PUBLIC_KEY')
@@ -469,9 +477,6 @@ def start_connection(server_ip, server_port, client_name, client_socket):
                     if line.startswith('SERVER_PUBLIC_KEY:'):
                         server_public_key = line.split('SERVER_PUBLIC_KEY:')[1].strip()
                         break
-
-        if not server_public_key:
-            raise ValueError("Kein Server-Key erhalten")
 
         print(f"\n[Client] Extrahierter Server Key:\n{server_public_key[:100]}...")
 
