@@ -135,22 +135,24 @@ def verify_merkle_integrity(server_public_key, client_public_keys, received_root
         # Entferne alle Leerzeichen/Zeilenumbrüche
         key = "".join(key.split())
         return key
+        
     print(f"\n[Client] Server Key Raw: {server_public_key}")
     print(f"[Client] Client Keys Raw: {client_public_keys}")
     
-    normalized_server = normalize(server_public_key)
+    normalized_server = normalize_key(server_public_key)  # Hier wurde normalize zu normalize_key geändert
     print(f"\n[Client] Normalized Server Key: {normalized_server[:30]}... (len={len(normalized_server)})")
     
-    normalized_clients = [normalize(k) for k in client_public_keys]
+    normalized_clients = [normalize_key(k) for k in client_public_keys]  # Auch hier normalize zu normalize_key
     for i, k in enumerate(normalized_clients):
         print(f"[Client] Normalized Client {i}: {k[:30]}... (len={len(k)})")
+        
     # 2. Alle relevanten Schlüssel sammeln
     all_keys = []
     if server_public_key:
-        all_keys.append(normalize(server_public_key))
+        all_keys.append(normalize_key(server_public_key))  # Und hier
     for key in client_public_keys:
         if key:
-            all_keys.append(normalize(key))
+            all_keys.append(normalize_key(key))  # Und hier
     
     # 3. Debug-Ausgabe
     print("\nNormalized keys:")
