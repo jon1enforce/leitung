@@ -123,21 +123,30 @@ def parse_multiline_headers(raw_data):
     return headers
 
     
-@staticmethod
-def build_sip_message(method, recipient, custom_data={}):
-    """Generiert SIP-Nachrichten mit Custom-Daten"""
+def build_sip_message(self, method, recipient, custom_data={}):
+    """Korrigierte Version die PONG-Nachrichten korrekt formatiert"""
     body = "\r\n".join(f"{k}: {v}" for k, v in custom_data.items())
+    content_length = len(body)
     
-    return (
-        f"{method} sip:{recipient} SIP/2.0\r\n"
-        f"From: <sip:server@{socket.gethostbyname(socket.gethostname())}>\r\n"
-        f"To: <sip:{recipient}>\r\n"
-        f"Call-ID: {uuid.uuid4()}\r\n"
-        f"CSeq: 1 {method}\r\n"
-        f"Content-Type: text/custom\r\n"
-        f"Content-Length: {len(body)}\r\n\r\n"
-        f"{body}"
-    )
+    # Unterscheide zwischen Anfragen und Antworten
+    if method.startswith("SIP/2.0"):
+        # SIP-Antwort
+        return (
+            f"{method}\r\n"
+            f"From: <sip:server@{self.host}>\r\n"
+            f"To: <sip:{recipient}>\r\n"
+            f"Content-Length: {content_length}\r\n\r\n"
+            f"{body}"
+        )
+    else:
+        # SIP-Anfrage
+        return (
+            f"{method} sip:{recipient} SIP/2.0\r\n"
+            f"From: <sip:server@{self.host}>\r\n"
+            f"To: <sip:{recipient}>\r\n"
+            f"Content-Length: {content_length}\r\n\r\n"
+            f"{body}"
+        )
 
 @staticmethod
 def handle_sip_message(raw_data):
