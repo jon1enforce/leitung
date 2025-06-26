@@ -82,25 +82,17 @@ def load_server_publickey():
         return f.read().decode('utf-8')
 
 def merge_public_keys(keys):
-    """Korrigierte Version mit vollständiger Schlüsselverarbeitung"""
-    normalized_keys = []
+    """Konsistente Schlüsselzusammenführung"""
+    normalized = []
     for key in keys:
-        # 1. PEM-Header/Footer entfernen
-        key = key.replace("-----BEGIN PUBLIC KEY-----", "")
-        key = key.replace("-----END PUBLIC KEY-----", "")
-        
-        # 2. Base64-Inhalt extrahieren (zwischen den Headern)
-        key = key.strip()
-        
-        # 3. Debug-Ausgabe
-        print(f"Processing key (len={len(key)}): {key[:30]}...")
-        
-        normalized_keys.append(key)
-    
-    # Zusammenfügen mit Trennzeichen
-    merged = ":".join(normalized_keys)
-    print(f"Merged keys string (len={len(merged)}): {merged[:100]}...")
-    return merged
+        if not key:
+            continue
+        # Behalte nur den Base64-Inhalt des Schlüssels
+        key = re.sub(r'-----(BEGIN|END) PUBLIC KEY-----', '', key)
+        key = re.sub(r'\s+', '', key).strip()
+        if key:
+            normalized.append(key)
+    return ":".join(normalized)
 
 def shorten_public_key(key):
     """Kürzt die Darstellung des öffentlichen Schlüssels."""
@@ -481,22 +473,31 @@ class Server:
             time.sleep(0.1)
     
             try:
-                all_keys = [self.server_public_key] + [c['public_key'] for c in self.clients.values()]
+                # 1. Sammle alle öffentlichen Schlüssel (Server + alle Clients)
+                all_keys = [self.server_public_key]
+                for c in self.clients.values():
+                    if 'public_key' in c and c['public_key']:
+                        all_keys.append(c['public_key'])
                 
-                # Debug-Ausgabe der Rohschlüssel
-                print("\n[Server] Raw keys before processing:")
+                # Debug-Ausgabe
+                print("\n[Server] Keys for Merkle Tree:")
                 for i, key in enumerate(all_keys):
-                    print(f"Key {i}: {key[:50]}...")
+                    print(f"Key {i}: {key[:50]}... (len={len(key)})")
                 
-                merged = merge_public_keys(all_keys)
-                merkle_root = build_merkle_tree([merged])  # Wichtig: Als Liste übergeben
+                # 2. Merge und Merkle-Berechnung
+                merged_keys = merge_public_keys(all_keys)
+                print(f"Merged keys (len={len(merged_keys)}): {merged_keys[:100]}...")
                 
-                print(f"\n[Server] Sending Merkle Root: {merkle_root}")
+                merkle_root = build_merkle_tree([merged_keys])  # Als Liste übergeben
                 
+                # 3. Sende zusätzlich alle Client-Public-Keys zur Verifikation
                 merkle_msg = self.build_sip_message(
                     "MESSAGE",
                     client_name,
-                    {"MERKLE_ROOT": merkle_root}
+                    {
+                        "MERKLE_ROOT": merkle_root,
+                        "CLIENT_KEYS": json.dumps([c['public_key'] for c in self.clients.values()])
+                    }
                 )
                 client_socket.send(merkle_msg.encode('utf-8'))
             except Exception as e:
