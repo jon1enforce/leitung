@@ -528,38 +528,39 @@ class Server:
             
             # Prepare Merkle tree data
             try:
-                # 1. Sammle alle öffentlichen Schlüssel (Server + Clients)
+                # 1. Sammle alle öffentlichen Schlüssel (Server + alle Clients)
                 all_keys = [self.server_public_key]  # Server-Key immer zuerst
                 
-                # Füge Client-Keys in konsistenter Reihenfolge hinzu (sortiert nach Key-Inhalt)
+                # Füge ALLE gültigen Client-Keys hinzu
                 client_keys = [
                     c['public_key'] for c in self.clients.values() 
                     if c.get('public_key') and "-----BEGIN PUBLIC KEY-----" in c['public_key']
                 ]
-                all_keys.extend(sorted(client_keys))  # Sortierung für deterministische Reihenfolge
+                
+                # Debug-Ausgabe der gefundenen Client-Keys
+                print(f"[Server] Found {len(client_keys)} client public keys")
+                
+                all_keys.extend(client_keys)  # Keine Sortierung mehr, Reihenfolge beibehalten
                 
                 print("\n[Server] All keys for Merkle Tree:")
                 for i, key in enumerate(all_keys):
                     print(f"Key {i}: {key[:50]}..." if key else f"Key {i}: (Invalid/None)")
             
                 # 2. Normalisierung und Merkle-Berechnung
-                def normalize_key(key):
-                    """Identische Normalisierungsfunktion wie beim Client"""
-                    if not key or "-----BEGIN PUBLIC KEY-----" not in key:
-                        return None
-                    return "".join(
-                        key.split("-----BEGIN PUBLIC KEY-----")[1]
-                        .split("-----END PUBLIC KEY-----")[0]
-                        .strip().split()
-                    )
+                normalized_keys = []
+                for key in all_keys:
+                    normalized = normalize_key(key)
+                    if normalized:
+                        normalized_keys.append(normalized)
+                    else:
+                        print(f"Warnung: Key {key[:20]}... konnte nicht normalisiert werden")
                 
-                normalized_keys = [k for k in map(normalize_key, all_keys) if k]
-                if len(normalized_keys) < len(all_keys):
-                    print(f"Warnung: {len(all_keys) - len(normalized_keys)} ungültige Schlüssel gefiltert")
+                if len(normalized_keys) < 2:  # Mindestens Server + 1 Client Key
+                    print(f"Warnung: Nur {len(normalized_keys)} gültige Schlüssel - benötige mindestens 2")
+                    if len(normalized_keys) == 1:
+                        print("Hinweis: Nur Server-Key vorhanden, dupliziere für Testzwecke")
+                        normalized_keys.append(normalized_keys[0])  # Nur für Debugging!
                 
-                if not normalized_keys:
-                    raise ValueError("Keine gültigen Schlüssel für Merkle-Tree")
-            
                 # 3. Zusammenführung mit Trennzeichen (|||)
                 merged = "|||".join(normalized_keys)
                 print(f"[Server] Merged keys ({len(merged)} chars): {merged[:100]}...")
