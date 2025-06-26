@@ -87,45 +87,32 @@ def build_merkle_tree(data_blocks):
 
 
 def verify_merkle_integrity(server_public_key, client_public_keys, received_root_hash):
-    """
-    Endgültige korrigierte Version der Integritätsprüfung
-    """
-    print("\n=== MERKLE VERIFICATION DEBUG ===")
+    """Korrigierte Client-Verifikation"""
+    print("\n=== CLIENT VERIFICATION ===")
     
-    # 1. Schlüssel normalisieren
-    def normalize_key(key):
-        # Behalte nur den Base64-Inneren Teil des Schlüssels
+    # Normalisierungsfunktion
+    def normalize(key):
         key = key.replace("-----BEGIN PUBLIC KEY-----", "")
         key = key.replace("-----END PUBLIC KEY-----", "")
-        # Entferne alle Leerzeichen und Zeilenumbrüche
-        key = re.sub(r'\s+', '', key)
-        return key
+        return key.strip()
     
-    # 2. Alle Schlüssel normalisieren
-    all_keys = [server_public_key] + client_public_keys
-    normalized_keys = [normalize_key(key) for key in all_keys]
+    # Alle Schlüssel normalisieren
+    all_keys = [normalize(server_public_key)] + [normalize(k) for k in client_public_keys]
     
-    print("Normalized keys:")
-    for i, key in enumerate(normalized_keys):
-        print(f"Key {i}: {key[:30]}... (length: {len(key)})")
+    print("\nNormalized keys:")
+    for i, key in enumerate(all_keys):
+        print(f"Key {i} (len={len(key)}): {key[:30]}...")
     
-    # 3. Schlüssel zusammenführen
-    merged_keys = ":".join(normalized_keys)
-    print(f"\nMerged keys string length: {len(merged_keys)}")
-    print(f"First 100 chars: {merged_keys[:100]}...")
+    # Zusammenfügen
+    merged = ":".join(all_keys)
+    print(f"\nMerged string (len={len(merged)}): {merged[:100]}...")
     
-    # 4. Hash berechnen
-    calculated_root_hash = build_merkle_tree([merged_keys])
-    print(f"\nCalculated hash: {calculated_root_hash}")
+    # Hash berechnen
+    calculated_hash = build_merkle_tree([merged])
+    print(f"\nCalculated hash: {calculated_hash}")
     print(f"Received hash:   {received_root_hash}")
     
-    # 5. Vergleich
-    if calculated_root_hash == received_root_hash:
-        print("VERIFICATION SUCCESSFUL")
-        return True
-    else:
-        print("VERIFICATION FAILED")
-        return False
+    return calculated_hash == received_root_hash
 def get_disk_entropy(size):
     """
     Lese zufällige Daten von der Festplatte (z. B. /dev/urandom).
