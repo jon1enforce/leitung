@@ -470,73 +470,34 @@ class Server:
             
             while True:
                 try:
-                    # Timeout für recv setzen (nicht blockierend)
                     client_socket.settimeout(1.0)
                     data = client_socket.recv(4096)
                     
-                    # Verbindung geschlossen?
                     if not data:
-                        print("[Server] Client hat Verbindung getrennt")
                         break
                     
-                    # Nachricht parsen
                     msg = self.parse_sip_message(data)
                     if not msg:
                         continue
                     
                     current_time = time.time()
                     
-                    # Ping-Nachricht erhalten?
-                    if (msg.get('method') == "MESSAGE" and 
-                        msg.get('custom_data', {}).get("PING") and
-                        current_time - last_pong_time >= pong_delay):
-                        
-                        try:
-                            # PONG-Antwort erstellen (ohne headers Parameter)
-                            pong_msg = (
-                                "MESSAGE sip:{} SIP/2.0\r\n"
-                                "From: <sip:server@{}>\r\n"
-                                "To: <sip:{}>\r\n"
-                                "Call-ID: {}\r\n"
-                                "CSeq: {}\r\n"
-                                "Content-Type: text/plain\r\n"
-                                "Content-Length: {}\r\n\r\n"
-                                "PONG: true\r\n"
-                                "CALL_ID: {}\r\n"
-                                "CSEQ: {}"
-                            ).format(
+                    # Einfache, zuverlässige Zeitprüfung
+                    if msg.get('method') == "MESSAGE" and msg.get('custom_data', {}).get("PING"):
+                        if last_pong_time == 0 or current_time - last_pong_time >= pong_delay:
+                            pong_msg = self.build_sip_message(
+                                "MESSAGE",
                                 client_name,
-                                self.host,
-                                client_name,
-                                msg['headers'].get('CALL-ID', ''),
-                                msg['headers'].get('CSEQ', '1'),
-                                len("PONG: true\r\nCALL_ID: {}\r\nCSEQ: {}".format(
-                                    msg['headers'].get('CALL-ID', ''),
-                                    msg['headers'].get('CSEQ', '1')
-                                )),
-                                msg['headers'].get('CALL-ID', ''),
-                                msg['headers'].get('CSEQ', '1')
+                                {"PONG": "true"}
                             )
-                            
-                            # Antwort senden
                             client_socket.sendall(pong_msg.encode('utf-8'))
                             last_pong_time = current_time
-                            print(f"[Server] PONG gesendet (nächster in {pong_delay}s)")
-                            
-                        except Exception as e:
-                            print(f"[Server] Pong-Sendefehler: {str(e)}")
-                            continue
+                            print(f"[Server] PONG gesendet um {time.strftime('%H:%M:%S')}")
                 
                 except socket.timeout:
-                    # Timeout ist normal, weitermachen
                     continue
-                    
-                except ConnectionResetError:
-                    print("[Server] Verbindung vom Client zurückgesetzt")
-                    break
-                    
                 except Exception as e:
-                    print(f"[Server] Unerwarteter Fehler: {str(e)}")
+                    print(f"[Server] Fehler: {str(e)}")
                     break
         except Exception as e:
             print(f"Fehler bei der Kommunikation mit {client_address}: {e}")
