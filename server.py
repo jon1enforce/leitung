@@ -467,42 +467,64 @@ class Server:
             # 6. Hauptkommunikationsschleife
             last_pong_time = 0
             pong_delay = 20  # 60 Sekunden Verzögerung
-            last_pong_sent = time.time()
+            last_pong_time = 0
             while True:
-                time.sleep(1)
                 try:
+                    # Timeout für recv setzen (nicht blockierend)
+                    client_socket.settimeout(1.0)
                     data = client_socket.recv(4096)
+                    
+                    # Verbindung geschlossen?
                     if not data:
+                        print("[Server] Client hat Verbindung getrennt")
                         break
-        
+                    
+                    # Nachricht parsen
                     msg = self.parse_sip_message(data)
                     if not msg:
                         continue
-        
-                    if msg.get('method') == "MESSAGE":
-                        custom_data = msg.get('custom_data', {})
-                        if custom_data.get("PING"):
-                            current_time = time.time()
-                            if current_time - last_pong_sent >= pong_delay:
-                                try:
-                                    pong_msg = self.build_sip_message(
-                                        "MESSAGE",
-                                        client_name,
-                                        {
-                                            "PONG": "true",
-                                            "CALL_ID": msg['headers'].get('CALL-ID', ''),
-                                            "CSEQ": msg['headers'].get('CSEQ', '1')
-                                        }
-                                    )
-                                    client_socket.sendall(pong_msg.encode('utf-8'))  # sendall statt send
-                                    last_pong_sent = current_time
-                                    print(f"[Server] PONG gesendet")
-                                except Exception as e:
-                                    print(f"[Server] Pong-Sendefehler: {str(e)}")
+                    
+                    current_time = time.time()
+                    
+                    # Ping-Nachricht erhalten?
+                    if (msg.get('method') == "MESSAGE" and 
+                        msg.get('custom_data', {}).get("PING") and
+                        current_time - last_pong_time >= pong_delay):
+                        
+                        try:
+                            # PONG-Antwort erstellen
+                            pong_msg = self.build_sip_message(
+                                "MESSAGE",
+                                client_name,
+                                {
+                                    "PONG": "true",
+                                    "CALL_ID": msg['headers'].get('CALL-ID', ''),
+                                    "CSEQ": msg['headers'].get('CSEQ', '1')
+                                },
+                                headers={
+                                    'Content-Type': 'text/plain'
+                                }
+                            )
+                            
+                            # Antwort senden
+                            client_socket.sendall(pong_msg.encode('utf-8'))
+                            last_pong_time = current_time
+                            print(f"[Server] PONG gesendet (nächster in {pong_delay}s)")
+                            
+                        except Exception as e:
+                            print(f"[Server] Pong-Sendefehler: {str(e)}")
                             continue
-        
+                
+                except socket.timeout:
+                    # Timeout ist normal, weitermachen
+                    continue
+                    
+                except ConnectionResetError:
+                    print("[Server] Verbindung vom Client zurückgesetzt")
+                    break
+                    
                 except Exception as e:
-                    print(f"[Server] Fehler: {str(e)}")
+                    print(f"[Server] Unerwarteter Fehler: {str(e)}")
                     break
         except Exception as e:
             print(f"Fehler bei der Kommunikation mit {client_address}: {e}")
