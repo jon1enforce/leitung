@@ -367,8 +367,8 @@ def parse_sip_message(message):
 
     return result
 def connection_loop(client_socket, server_ip):
-    ping_interval = 5  # Sekunden zwischen Pings
-    pong_timeout = 130  # Sekunden auf Pong warten
+    ping_interval = 60  # Sekunden zwischen Pings (angepasst an Server-Intervall)
+    pong_timeout = 70   # Sekunden auf Pong warten
     
     while True:
         try:
@@ -379,7 +379,7 @@ def connection_loop(client_socket, server_ip):
                 {"PING": "true"}
             )
             client_socket.sendall(ping_msg.encode('utf-8'))
-            print("Ping gesendet")
+            print(f"Ping gesendet um {time.strftime('%H:%M:%S')}")
 
             # 2. Auf Pong warten
             client_socket.settimeout(pong_timeout)
@@ -387,27 +387,28 @@ def connection_loop(client_socket, server_ip):
                 pong_response = client_socket.recv(4096)
                 if not pong_response:
                     print("Warnung: Leere Pong-Antwort")
-                    continue  # Weiter versuchen statt abbrechen
+                    continue
 
                 pong_data = parse_sip_message(pong_response)
                 if not pong_data:
                     print("Warnung: Unparsebare Pong-Antwort - Rohdaten:", pong_response[:100])
-                    continue                                
-                # Robustere PONG-Validierung
-                pong_value = str(pong_data.get('custom_data', {}).get("PONG", "")).strip().lower()
-                if re.match(r'^(true|1|yes)$', pong_value):
-                    print("Pong erfolgreich validiert")
-                    return True
+                    continue
+                
+                # Überprüfe sowohl custom_data als auch headers für PONG
+                pong_value = (pong_data.get('custom_data', {}).get("PONG", "") or 
+                             pong_data.get('headers', {}).get("PONG", ""))
+                
+                if str(pong_value).strip().lower() in ("true", "1", "yes"):
+                    print(f"Pong erfolgreich empfangen um {time.strftime('%H:%M:%S')}")
                 else:
                     print(f"Warnung: Ungültiges Pong-Format - Empfangen: '{pong_value}'")
                     print("Vollständige Pong-Daten:")
                     print(f"Method: {pong_data.get('method')}")
                     print(f"Headers: {pong_data.get('headers')}")
                     print(f"Custom Data: {pong_data.get('custom_data')}")
-                    continue
                     
             except socket.timeout:
-                print("Info: Kein Pong innerhalb von 70s (normal bei 60s Server-Intervall)")
+                print(f"Timeout: Kein Pong innerhalb von {pong_timeout}s empfangen")
             
             # 3. Warten bis zum nächsten Ping
             time.sleep(ping_interval)
