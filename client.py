@@ -453,26 +453,33 @@ def start_connection(server_ip, server_port, client_name, client_socket):
     try:
         # 1. Build and send initial connection request
         request = build_sip_request("REGISTER", server_ip, client_name, server_ip, server_port)
+        print(f"\n[Client] Sending REGISTER request:\n{request}")
         client_socket.sendall(request.encode('utf-8'))
         
-        # 2. Receive server response
+        # 2. Receive server response with timeout
+        client_socket.settimeout(10)  # 10 second timeout
         response = client_socket.recv(4096)
         if not response:
             raise ConnectionError("Empty response from server")
 
-        # Debug: Rohdaten der Server-Antwort anzeigen
-        print(f"\n[Client] Raw Server Response:\n{response.decode('utf-8')}\n")
+        response_str = response.decode('utf-8')
+        print(f"\n[Client] Raw Server Response:\n{response_str}\n")
 
-        # Rest of the existing code...
-        # Server-Key extrahieren
-        sip_data = parse_sip_message(response)
+        # Parse the response
+        sip_data = parse_sip_message(response_str)
+        if not sip_data:
+            raise ValueError("Invalid SIP response format")
+
+        # Check if this is a 200 OK response
+        if sip_data.get('status_code') != '200':
+            raise ValueError(f"Server returned error: {sip_data.get('status_code', 'Unknown')}")
+
+        # Extract server public key
         server_public_key = sip_data.get('custom_data', {}).get('SERVER_PUBLIC_KEY')
-        
         if not server_public_key:
-            print("[Client] Kein Server-Key in custom_data, versuche Body-Parsing")
-            if '\r\n\r\n' in response.decode('utf-8'):
-                body = response.decode('utf-8').split('\r\n\r\n')[1]
-                print(f"[Client] Response Body:\n{body}")
+            # Alternative way to extract if not in custom_data
+            if '\r\n\r\n' in response_str:
+                body = response_str.split('\r\n\r\n')[1]
                 for line in body.split('\n'):
                     if line.startswith('SERVER_PUBLIC_KEY:'):
                         server_public_key = line.split('SERVER_PUBLIC_KEY:')[1].strip()
