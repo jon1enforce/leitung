@@ -136,34 +136,45 @@ def quantum_safe_hash(data):
     return hashlib.sha3_256(data.encode('utf-8')).hexdigest()
 
 
-def build_merkle_tree(data_blocks):
-    """Konsistente Merkle-Tree-Implementierung"""
-    data_blocks = list(data_blocks)
-    if not data_blocks:
-        return None
+def build_merkle_tree_from_keys(all_keys):
+    """Baut einen Merkle Tree aus allen öffentlichen Schlüsseln"""
+    print("\n[Server] Building Merkle Tree from all keys")
     
-    # Debug-Ausgabe
-    print(f"\n[Server] Building Merkle Tree from: {data_blocks[:100]}...")
+    # 1. Normalisierungsfunktion
+    def normalize_key(key):
+        if not key or "-----BEGIN PUBLIC KEY-----" not in key:
+            return None
+        # Extrahiere nur den Base64-Teil zwischen den PEM-Markern
+        return "".join(
+            key.split("-----BEGIN PUBLIC KEY-----")[1]
+            .split("-----END PUBLIC KEY-----")[0]
+            .strip().split()
+        )
     
-    tree = [quantum_safe_hash(block) for block in data_blocks]
-    
-    while len(tree) > 1:
-        if len(tree) % 2 != 0:
-            tree.append(tree[-1])
-        tree = [quantum_safe_hash(tree[i] + tree[i+1]) for i in range(0, len(tree), 2)]
-    
-    print(f"[Server] Final Merkle Root: {tree[0]}")
-    return tree[0]
+    # 2. Debug-Ausgabe der Rohkeys
+    print("[Server] All keys for Merkle Tree:")
+    for i, key in enumerate(all_keys):
+        print(f"Key {i}: {key[:50]}..." if key else f"Key {i}: None")
 
-def parse_multiline_headers(raw_data):
-    """Hilfsfunktion zum Parsen von mehrzeiligen Headern"""
-    headers = {}
-    lines = raw_data.split('\n')
-    for line in lines:
-        if ': ' in line:
-            key, val = line.split(': ', 1)
-            headers[key.strip()] = val.strip()
-    return headers
+    # 3. Normalisierung aller Keys
+    normalized_keys = []
+    for key in all_keys:
+        normalized = normalize_key(key)
+        if normalized:
+            normalized_keys.append(normalized)
+    
+    if len(normalized_keys) < 1:
+        raise ValueError("No valid keys found for Merkle tree")
+    
+    # 4. Zusammenführung mit Trennzeichen
+    merged = "|||".join(normalized_keys)
+    print(f"[Server] Merged keys (len={len(merged)}): {merged[:100]}...")
+    
+    # 5. Merkle Root berechnen
+    merkle_root = build_merkle_tree([merged])
+    print(f"[Server] Final Merkle Root: {merkle_root}")
+    
+    return merkle_root
 
     
 def build_sip_message(self, method, recipient, custom_data={}):
