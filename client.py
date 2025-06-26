@@ -88,37 +88,37 @@ def build_merkle_tree(data_blocks):
 
 def verify_merkle_integrity(server_public_key, client_public_keys, received_root_hash):
     """
-    Korrigierte Version der Integritätsprüfung mit Debug-Ausgaben
+    Endgültige korrigierte Version der Integritätsprüfung
     """
     print("\n=== MERKLE VERIFICATION DEBUG ===")
-    print(f"Server Public Key: {server_public_key[:50]}...")
-    print(f"Number of client keys: {len(client_public_keys)}")
     
-    # 1. Schlüssel in konsistenter Reihenfolge zusammenführen
-    all_keys = [server_public_key] + client_public_keys
-    print("\nRaw keys before processing:")
-    for i, key in enumerate(all_keys):
-        print(f"Key {i}: {key[:50]}...")
-
-    # 2. Schlüssel vereinheitlichen
-    processed_keys = []
-    for key in all_keys:
+    # 1. Schlüssel normalisieren
+    def normalize_key(key):
+        # Behalte nur den Base64-Inneren Teil des Schlüssels
+        key = key.replace("-----BEGIN PUBLIC KEY-----", "")
+        key = key.replace("-----END PUBLIC KEY-----", "")
         # Entferne alle Leerzeichen und Zeilenumbrüche
-        clean_key = re.sub(r'\s+', '', key)
-        # Entferne BEGIN/END Markierungen falls vorhanden
-        clean_key = clean_key.replace("-----BEGINPUBLICKEY-----", "").replace("-----ENDPUBLICKEY-----", "")
-        processed_keys.append(clean_key)
-        print(f"Processed key: {clean_key[:50]}...")
-
+        key = re.sub(r'\s+', '', key)
+        return key
+    
+    # 2. Alle Schlüssel normalisieren
+    all_keys = [server_public_key] + client_public_keys
+    normalized_keys = [normalize_key(key) for key in all_keys]
+    
+    print("Normalized keys:")
+    for i, key in enumerate(normalized_keys):
+        print(f"Key {i}: {key[:30]}... (length: {len(key)})")
+    
     # 3. Schlüssel zusammenführen
-    merged_keys = ":".join(processed_keys)
-    print(f"\nMerged keys string (first 100 chars): {merged_keys[:100]}...")
-
+    merged_keys = ":".join(normalized_keys)
+    print(f"\nMerged keys string length: {len(merged_keys)}")
+    print(f"First 100 chars: {merged_keys[:100]}...")
+    
     # 4. Hash berechnen
     calculated_root_hash = build_merkle_tree([merged_keys])
     print(f"\nCalculated hash: {calculated_root_hash}")
     print(f"Received hash:   {received_root_hash}")
-
+    
     # 5. Vergleich
     if calculated_root_hash == received_root_hash:
         print("VERIFICATION SUCCESSFUL")
@@ -126,7 +126,6 @@ def verify_merkle_integrity(server_public_key, client_public_keys, received_root
     else:
         print("VERIFICATION FAILED")
         return False
-
 def get_disk_entropy(size):
     """
     Lese zufällige Daten von der Festplatte (z. B. /dev/urandom).
