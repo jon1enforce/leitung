@@ -109,23 +109,19 @@ def load_server_publickey():
         return f.read().decode('utf-8')
 
 def normalize_key(key):
-    if not key:
+    """Identisch auf Client und Server"""
+    if not key or "-----BEGIN PUBLIC KEY-----" not in key:
         return ""
-    # Behalte nur den Base64-Innenbereich
-    key = key.replace("-----BEGIN PUBLIC KEY-----", "")
-    key = key.replace("-----END PUBLIC KEY-----", "")
-    # Entferne alle Leerzeichen/Zeilenumbrüche
-    key = "".join(key.split())
-    return key
+    # Extrahiere nur den Base64-Inhalt zwischen den Markern
+    return "".join(
+        key.split("-----BEGIN PUBLIC KEY-----")[1]
+        .split("-----END PUBLIC KEY-----")[0]
+        .split()
+    )
 
 def merge_public_keys(keys):
-    """Konsistente Schlüsselzusammenführung mit garantierter Reihenfolge"""
-    normalized = []
-    for key in keys:
-        norm_key = normalize_key(key)
-        if norm_key:
-            normalized.append(norm_key)
-    return ":".join(normalized)  # Trennzeichen das nicht in Base64 vorkommt
+    """Identisch auf Client und Server"""
+    return "|||".join(normalize_key(k) for k in keys if k)
 
 def shorten_public_key(key):
     """Kürzt die Darstellung des öffentlichen Schlüssels."""
