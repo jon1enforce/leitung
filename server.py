@@ -504,32 +504,27 @@ class Server:
             try:
                 # 1. Collect all public keys (server + all clients with public keys)
 
-                all_keys = [self.server_public_key]  # Server-Key immer zuerst
-                # Dann alle Client-Keys in der Reihenfolge ihrer Registrierung
-                for client_id in sorted(self.clients.keys()):
-                    if self.clients[client_id].get('public_key'):
-                        all_keys.append(self.clients[client_id]['public_key'])
+                all_keys = [self.server_public_key] + [
+                    c['public_key'] for c in sorted(
+                        self.clients.values(), 
+                        key=lambda x: x['public_key'] if x.get('public_key') else ""
+                    )
+                ]
                 
-                # Debug output
-                print("\n[Server] Keys for Merkle Tree:")
+                print("\n[Server] All keys for Merkle Tree:")
                 for i, key in enumerate(all_keys):
-                    print(f"Key {i}: {key[:50]}... (len={len(key)})")
+                    print(f"Key {i}: {key[:50]}..." if key else f"Key {i}: None")
+            
+                # 2. Merkle Root berechnen
+                merged_keys = merge_public_keys(all_keys)
+                merkle_root = build_merkle_tree([merged_keys])
                 
-                # 2. Merge and calculate Merkle root
-                if len(all_keys) > 0:
-                    merged_keys = merge_public_keys(all_keys)
-                    print(f"Merged keys (len={len(merged_keys)}): {merged_keys[:100]}...")
-                    
-                    merkle_root = build_merkle_tree([merged_keys])
-                    
-                    # 3. Send Merkle root and client public keys
-                    merkle_msg = self.build_sip_message("MESSAGE", client_name, {
-                        "MERKLE_ROOT": merkle_root,
-                        "CLIENT_KEYS": json.dumps([c['public_key'] for c in self.clients.values() if c.get('public_key')])
-                    })
-                    send_frame(client_socket, merkle_msg)  # Direkt als String senden
-                else:
-                    print("No keys available for Merkle tree")
+                # 3. ALLE Keys + Merkle Root senden
+                merkle_msg = self.build_sip_message("MESSAGE", client_name, {
+                    "MERKLE_ROOT": merkle_root,
+                    "ALL_KEYS": json.dumps(all_keys)  # Einheitliche Schlüsselreihenfolge
+                })
+                send_frame(client_socket, merkle_msg)
                     
             except Exception as e:
                 print(f"Fehler beim Senden der Merkle-Root: {str(e)}")
