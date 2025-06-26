@@ -508,6 +508,8 @@ def extract_server_public_key(sip_data, raw_response=None):
 def start_connection(server_ip, server_port, client_name, client_socket):
     try:
         client_pubkey = load_publickey()
+        print("+++client_pubkey+++")
+        print(client_pubkey)
         # Sicherstellen, dass der Key vollständig ist
         if not client_pubkey or "-----END PUBLIC KEY-----" not in client_pubkey:
             raise ValueError("Invalid client public key format")
