@@ -513,67 +513,125 @@ class Server:
             if 'public_key' in self.clients[client_id]
         ]
         return [server_key] + client_keys
-
+    def process_merkle_tree(self, client_name, client_socket):
+        try:
+            all_keys = [self.server_public_key] + [
+                c['public_key'] for c in self.clients.values() 
+                if c.get('public_key')
+            ]
+            
+            if len(all_keys) < 2:
+                print("Warnung: Nicht genug Keys für Merkle Tree")
+                return
+    
+            normalized_keys = []
+            for key in all_keys:
+                normalized = normalize_key(key)
+                if normalized:
+                    normalized_keys.append(normalized)
+                else:
+                    print(f"Warnung: Key konnte nicht normalisiert werden: {key[:50]}...")
+    
+            if len(normalized_keys) < 2:
+                normalized_keys.append(normalized_keys[0])  # Fallback
+    
+            merged = "|||".join(normalized_keys)
+            merkle_root = build_merkle_tree([merged])
+            
+            merkle_msg = self.build_sip_message("MESSAGE", client_name, {
+                "MERKLE_ROOT": merkle_root,
+                "ALL_KEYS": json.dumps(all_keys)
+            })
+            send_frame(client_socket, merkle_msg)
+    
+        except Exception as e:
+            print(f"Fehler beim Merkle-Tree: {str(e)}")
+            raise
+    
+    def handle_communication_loop(self, client_name, client_socket):
+        last_pong_time = 0
+        pong_delay = 20
+        
+        while True:
+            try:
+                client_socket.settimeout(1.0)
+                data = client_socket.recv(4096)
+                
+                if not data:
+                    break
+                    
+                msg = self.parse_sip_message(data)
+                if not msg:
+                    continue
+                    
+                if msg.get('method') == "MESSAGE" and msg.get('custom_data', {}).get("PING"):
+                    if time.time() - last_pong_time >= pong_delay:
+                        pong_msg = self.build_sip_message("MESSAGE", client_name, {"PONG": "true"})
+                        client_socket.sendall(pong_msg.encode('utf-8'))
+                        last_pong_time = time.time()
+                        
+            except socket.timeout:
+                continue
+            except Exception as e:
+                print(f"Kommunikationsfehler: {str(e)}")
+                break
     def handle_client(self, client_socket):
         client_address = client_socket.getpeername()
         print(f"\n[Server] Neue Verbindung von {client_address}")
-        client_name = None
-        client_pubkey = None
-        client_id = None
-        self.key_registry = {}  # Neu: {client_id: public_key}
         
         try:
             client_socket.settimeout(300.0)
-
             register_data = recv_frame(client_socket)
+            
             if not register_data:
                 print("Empty frame received")
                 return
-                
-            print(f"Raw received data:\n{register_data}")  # Kein .decode() mehr!
-            
+    
+            print(f"[DEBUG] Raw received data:\n{register_data[:500]}...")  # Begrenzte Ausgabe
+    
+            # Phase 1: SIP-Nachricht parsen
             sip_msg = self.parse_sip_message(register_data)
             if not sip_msg:
                 print("Ungültige SIP-Nachricht")
                 client_socket.close()
                 return
-                
-            print(f"Geparste Nachricht - Headers: {sip_msg.get('headers', {})}")
-            print(f"Geparste Nachricht - Custom Data: {sip_msg.get('custom_data', {})}")
     
-            # Extract client name from From header
+            print(f"Geparste Nachricht:\nHeaders: {sip_msg.get('headers', {})}\nCustom Data: {sip_msg.get('custom_data', {})}")
+    
+            # Phase 2: Client-Name extrahieren
             from_header = sip_msg['headers'].get('FROM', '')
             client_name_match = re.search(r'<sip:(.*?)@', from_header)
-            if client_name_match:
-                client_name = client_name_match.group(1)
-            
-            if not client_name:
+            if not client_name_match:
                 print("Kein Client-Name gefunden")
                 client_socket.close()
                 return
-            
-            print(f"[DEBUG] Full received data:\n{register_data}\n")
-            print(f"[DEBUG] Parsed SIP message: {sip_msg}")
-            # Extract public key if present in custom data
+            client_name = client_name_match.group(1)
+    
+            # Phase 3: Public Key extrahieren (mit Prioritäten)
             client_pubkey = None
+            
+            # 1. Versuch: Aus custom_data
             if 'custom_data' in sip_msg:
                 client_pubkey = sip_msg['custom_data'].get('PUBLIC_KEY', '').strip()
-                if not client_pubkey.startswith('-----BEGIN PUBLIC KEY-----'):
-                    # Fallback: Rohe Extraktion aus dem Body
-                    key_start = register_data.find('-----BEGIN PUBLIC KEY-----')
-                    if key_start != -1:
-                        key_end = register_data.find('-----END PUBLIC KEY-----', key_start)
-                        if key_end != -1:
-                            client_pubkey = register_data[key_start:key_end + len('-----END PUBLIC KEY-----')]
             
+            # 2. Versuch: Rohe Extraktion aus Body
             if not client_pubkey or '-----END PUBLIC KEY-----' not in client_pubkey:
-                print("[Server] ERROR: Invalid client public key received!")
+                key_start = register_data.find('-----BEGIN PUBLIC KEY-----')
+                if key_start != -1:
+                    key_end = register_data.find('-----END PUBLIC KEY-----', key_start)
+                    if key_end != -1:
+                        client_pubkey = register_data[key_start:key_end + len('-----END PUBLIC KEY-----')]
+    
+            # 3. Validierung
+            if not client_pubkey or '-----END PUBLIC KEY-----' not in client_pubkey:
+                print(f"[ERROR] Ungültiger Client-Key erhalten:\n{client_pubkey[:100]}...")
                 client_socket.close()
                 return
-            # Generate client ID
+    
+            print(f"[DEBUG] Validierter Client-Key (Länge: {len(client_pubkey)}):\n{client_pubkey[:50]}...")
+    
+            # Phase 4: Client-Registrierung
             client_id = self.generate_client_id()
-            print(f"[Server] Zuweisung Client-ID: {client_id}")
-            
             self.clients[client_id] = {
                 'name': client_name,
                 'public_key': client_pubkey,
@@ -581,103 +639,26 @@ class Server:
                 'ip': client_address[0],
                 'port': client_address[1]
             }
-            
-            self.save_active_clients()  # Speichern nach jeder Änderung
+            self.save_active_clients()
     
-            # Send 200 OK response with server public key
-    
+            # Phase 5: Server-Antwort senden
             response = self.build_sip_message("SIP/2.0 200 OK", client_name, {
                 "SERVER_PUBLIC_KEY": self.server_public_key,
                 "CLIENT_ID": client_id
             })
-            send_frame(client_socket, response)  # Direkt als String senden
-            
-            # Prepare Merkle tree data
-            try:
-
-                all_keys = self.get_ordered_keys()
-                if len(all_keys) < 2:
-                    print("[Server] Warte auf mehr Clients für Merkle-Tree...")
-                    return
-                
-                print("\n[Server] All keys for Merkle Tree:")
-                for i, key in enumerate(all_keys):
-                    print(f"Key {i}: {key}" if key else f"Key {i}: (Invalid/None)")
-            
-                # 2. Normalisierung und Merkle-Berechnung
-                normalized_keys = []
-                for key in all_keys:
-                    normalized = normalize_key(key)
-                    if normalized:
-                        normalized_keys.append(normalized)
-                    else:
-                        print(f"Warnung: Key {key[:20]}... konnte nicht normalisiert werden")
-                
-                if len(normalized_keys) < 2:  # Mindestens Server + 1 Client Key
-                    print(f"Warnung: Nur {len(normalized_keys)} gültige Schlüssel - benötige mindestens 2")
-                    if len(normalized_keys) == 1:
-                        print("Hinweis: Nur Server-Key vorhanden, dupliziere für Testzwecke")
-                        normalized_keys.append(normalized_keys[0])  # Nur für Debugging!
-                
-                # 3. Zusammenführung mit Trennzeichen (|||)
-                merged = "|||".join(normalized_keys)
-                print(f"[Server] Merged keys ({len(merged)} chars): {merged[:100]}...")
-                
-                # 4. Merkle Root berechnen
-                merkle_root = build_merkle_tree([merged])
-                print(f"[Server] Merkle Root: {merkle_root}")
-            
-                # 5. ALLE Original-Keys + Merkle Root senden
-                merkle_msg = self.build_sip_message("MESSAGE", client_name, {
-                    "MERKLE_ROOT": merkle_root,
-                    "ALL_KEYS": json.dumps(all_keys)  # Unveränderte Original-Keys
-                })
-                send_frame(client_socket, merkle_msg)
-                    
-            except Exception as e:
-                print(f"Fehler beim Merkle-Root-Handling: {str(e)}")
-                raise
+            send_frame(client_socket, response)
     
-            # 6. Hauptkommunikationsschleife
-            last_pong_time = 0
-            pong_delay = 20  # 20 Sekunden Verzögerung
-            
-            while True:
-                try:
-                    client_socket.settimeout(1.0)
-                    data = client_socket.recv(4096)
-                    
-                    if not data:
-                        break
-                    
-                    msg = self.parse_sip_message(data)
-                    if not msg:
-                        continue
-                    
-                    current_time = time.time()
-                    
-                    # Einfache, zuverlässige Zeitprüfung
-                    if msg.get('method') == "MESSAGE" and msg.get('custom_data', {}).get("PING"):
-                        if last_pong_time == 0 or current_time - last_pong_time >= pong_delay:
-                            pong_msg = self.build_sip_message(
-                                "MESSAGE",
-                                client_name,
-                                {"PONG": "true"}
-                            )
-                            client_socket.sendall(pong_msg.encode('utf-8'))
-                            last_pong_time = current_time
-                            print(f"[Server] PONG gesendet um {time.strftime('%H:%M:%S')}")
-                
-                except socket.timeout:
-                    continue
-                except Exception as e:
-                    print(f"[Server] Fehler: {str(e)}")
-                    break
+            # Phase 6: Merkle Tree verarbeiten
+            self.process_merkle_tree(client_name, client_socket)
+    
+            # Phase 7: Hauptkommunikationsschleife
+            self.handle_communication_loop(client_name, client_socket)
+    
         except Exception as e:
-            print(f"Fehler bei der Kommunikation mit {client_address}: {e}")
+            print(f"Fehler bei der Kommunikation mit {client_address}: {str(e)}")
         finally:
             client_socket.close()
-    
+        
 
 
     def update_phonebook(self):
