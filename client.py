@@ -357,17 +357,14 @@ def build_sip_request(method, recipient, client_name, server_ip, server_port):
     )
 
 def build_sip_message(method, recipient, custom_data={}):
-    """Baut eine vollständige SIP-Nachricht mit Custom-Daten"""
+    """Kompatible SIP-Nachrichtenerstellung"""
     local_ip = socket.gethostbyname(socket.gethostname())
-    body = "\r\n".join(f"{k}: {json.dumps(v) if isinstance(v, (dict, list)) else v}" for k, v in custom_data.items())
+    body = "\r\n".join(f"{k}: {v}" for k, v in custom_data.items())
     
     return (
         f"{method} sip:{recipient} SIP/2.0\r\n"
         f"From: <sip:{load_client_name()}@{local_ip}>\r\n"
         f"To: <sip:{recipient}>\r\n"
-        f"Call-ID: {uuid.uuid4()}\r\n"
-        f"CSeq: 1 {method}\r\n"
-        f"Content-Type: application/sip-custom\r\n"
         f"Content-Length: {len(body)}\r\n\r\n"
         f"{body}"
     )
