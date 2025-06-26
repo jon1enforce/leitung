@@ -576,8 +576,23 @@ class Server:
                 return
     
             # Extract public key if present in custom data
-            client_pubkey = sip_msg.get('custom_data', {}).get('PUBLIC_KEY')
+            if 'custom_data' in sip_msg:
+                client_pubkey = sip_msg['custom_data'].get('PUBLIC_KEY')
+                if client_pubkey:
+                    print(f"[Server] Extracted client public key: {client_pubkey[:50]}...")
+                else:
+                    print("[Server] No PUBLIC_KEY in custom_data")
+                    
+            # Fallback: Rohe Extraktion aus Nachricht
+            if not client_pubkey:
+                client_pubkey = extract_public_key(register_data)
+                if client_pubkey:
+                    print(f"[Server] Fallback extracted key: {client_pubkey[:50]}...")
             
+            if not client_pubkey:
+                print("[Server] WARNING: No valid client public key received!")
+                client_socket.close()
+                return            
             # Generate client ID
             client_id = self.generate_client_id()
             print(f"[Server] Zuweisung Client-ID: {client_id}")
