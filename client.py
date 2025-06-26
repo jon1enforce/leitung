@@ -88,28 +88,43 @@ def build_merkle_tree(data_blocks):
 
 def verify_merkle_integrity(server_public_key, client_public_keys, received_root_hash):
     """
-    Überprüft die Integrität der Datenblöcke, indem der Merkle Root-Hash berechnet
-    und mit dem empfangenen Hash verglichen wird.
+    Korrigierte Version der Integritätsprüfung mit Debug-Ausgaben
     """
-    # Füge die öffentlichen Schlüssel in der festgelegten Reihenfolge zusammen
-    public_key_list = []
-    public_key_list.append(server_public_key)
-    for key0 in client_public_keys:
-        public_key_list.append(key0)
-    data_blocks = merge_public_keys(public_key_list)#key_string
-            # Generiere und sende den Merkle Root Hash an alle Clients
-            
-    # Berechne den Merkle Root-Hash
-    calculated_root_hash = build_merkle_tree(data_blocks)
-    print('+++STRING+++')
-    print(data_blocks)
+    print("\n=== MERKLE VERIFICATION DEBUG ===")
+    print(f"Server Public Key: {server_public_key[:50]}...")
+    print(f"Number of client keys: {len(client_public_keys)}")
+    
+    # 1. Schlüssel in konsistenter Reihenfolge zusammenführen
+    all_keys = [server_public_key] + client_public_keys
+    print("\nRaw keys before processing:")
+    for i, key in enumerate(all_keys):
+        print(f"Key {i}: {key[:50]}...")
 
-    # Vergleiche die Hash-Werte
+    # 2. Schlüssel vereinheitlichen
+    processed_keys = []
+    for key in all_keys:
+        # Entferne alle Leerzeichen und Zeilenumbrüche
+        clean_key = re.sub(r'\s+', '', key)
+        # Entferne BEGIN/END Markierungen falls vorhanden
+        clean_key = clean_key.replace("-----BEGINPUBLICKEY-----", "").replace("-----ENDPUBLICKEY-----", "")
+        processed_keys.append(clean_key)
+        print(f"Processed key: {clean_key[:50]}...")
+
+    # 3. Schlüssel zusammenführen
+    merged_keys = ":".join(processed_keys)
+    print(f"\nMerged keys string (first 100 chars): {merged_keys[:100]}...")
+
+    # 4. Hash berechnen
+    calculated_root_hash = build_merkle_tree([merged_keys])
+    print(f"\nCalculated hash: {calculated_root_hash}")
+    print(f"Received hash:   {received_root_hash}")
+
+    # 5. Vergleich
     if calculated_root_hash == received_root_hash:
-        print("Integrität der Daten bestätigt: Die Daten sind unverändert.")
+        print("VERIFICATION SUCCESSFUL")
         return True
     else:
-        print("Integritätsprüfung fehlgeschlagen: Die Daten wurden manipuliert.")
+        print("VERIFICATION FAILED")
         return False
 
 def get_disk_entropy(size):
@@ -488,13 +503,22 @@ def start_connection(server_ip, server_port, client_name, client_socket):
                     if line.startswith('MERKLE_ROOT:'):
                         merkle_root = line.split('MERKLE_ROOT:')[1].strip()
                         
-                        # Hier die Integritätsprüfung durchführen
+                        # DEBUG: Ausgabe der empfangenen Daten
+                        print("\n=== RECEIVED DATA ===")
+                        print(f"Server Key: {server_public_key[:50]}...")
+                        print(f"Client Keys Count: {len(client_public_keys)}")
+                        print(f"Merkle Root: {merkle_root}")
+                        
                         if not verify_merkle_integrity(server_public_key, client_public_keys, merkle_root):
-                            messagebox.showerror("Sicherheitsfehler", "Integritätsprüfung fehlgeschlagen! Verbindung wird beendet.")
+                            messagebox.showerror("Sicherheitsfehler", 
+                                "Integritätsprüfung fehlgeschlagen!\n"
+                                "Mögliche Manipulation der Schlüssel.\n"
+                                "Verbindung wird beendet.")
                             client_socket.close()
                             return
                         else:
-                            print("Integrität durch identischen merkle_root bestätigt: Die öffentlichen Schlüssel wurden quantensicher verifiziert")
+                            print("Integrität erfolgreich verifiziert")
+                            break
                             
             if not merkle_root:
                 raise ValueError("Keine Merkle-Root in der Antwort")
