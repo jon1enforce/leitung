@@ -502,17 +502,24 @@ def start_connection(server_ip, server_port, client_name, client_socket):
             raise ValueError(f"Server returned error: {sip_data.get('status_code', 'Unknown')}")
 
         # Extract server public key
+
         server_public_key = sip_data.get('custom_data', {}).get('SERVER_PUBLIC_KEY')
-        if not server_public_key:
-            if '\r\n\r\n' in response:  # Hier wurde response_str zu response geändert
+        
+        # Besser:
+        server_public_key = None
+        if 'custom_data' in sip_data:
+            if 'SERVER_PUBLIC_KEY' in sip_data['custom_data']:
+                server_public_key = sip_data['custom_data']['SERVER_PUBLIC_KEY']
+            elif '\r\n\r\n' in response:
                 body = response.split('\r\n\r\n')[1]
                 for line in body.split('\n'):
                     if line.startswith('SERVER_PUBLIC_KEY:'):
-                        server_public_key = line.split('SERVER_PUBLIC_KEY:')[1].strip()
+                        server_public_key = line[len('SERVER_PUBLIC_KEY:'):].strip()
                         break
-
-        if not server_public_key:
-            raise ValueError("No server public key in response")
+        
+        if not server_public_key or not server_public_key.startswith('-----BEGIN'):
+            print(f"Invalid server key format: {server_public_key[:100]}...")
+            raise ValueError("Invalid server public key format")
 
         print(f"\n[Client] Extracted Server Key:\n{server_public_key[:100]}...")
 
