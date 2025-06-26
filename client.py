@@ -515,13 +515,14 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         print(f"\n[Client] Extracted Server Key:\n{server_public_key[:100]}...")
 
         # Wait for Merkle root message with timeout
+
         try:
             merkle_response = recv_frame(client_socket)
             if not merkle_response:
                 raise ConnectionError("Empty Merkle response from server")
-
-            print(f"\n[Client] Raw Merkle Response:\n{merkle_response.decode('utf-8')}\n")
-
+        
+            print(f"\n[Client] Raw Merkle Response:\n{merkle_response}\n")  # Kein .decode() mehr!
+        
             merkle_data = parse_sip_message(merkle_response)
             client_public_keys = []
             merkle_root = None
@@ -533,21 +534,21 @@ def start_connection(server_ip, server_port, client_name, client_socket):
                         print(f"[Client] Received Client Keys: {len(client_public_keys)} keys")
                     except json.JSONDecodeError as e:
                         print(f"[Client] Error parsing client keys: {e}")
-
+        
                 if 'MERKLE_ROOT' in merkle_data['custom_data']:
                     merkle_root = merkle_data['custom_data']['MERKLE_ROOT']
             
             if not merkle_root:
-                if '\r\n\r\n' in merkle_response.decode('utf-8'):
-                    body = merkle_response.decode('utf-8').split('\r\n\r\n')[1]
+                if '\r\n\r\n' in merkle_response:  # Kein .decode() mehr!
+                    body = merkle_response.split('\r\n\r\n')[1]  # Kein .decode() mehr!
                     for line in body.split('\n'):
                         if line.startswith('MERKLE_ROOT:'):
                             merkle_root = line.split('MERKLE_ROOT:')[1].strip()
                             break
-
+        
             if not merkle_root:
                 raise ValueError("No Merkle root in response")
-
+        
             # Verify Merkle integrity
             if not verify_merkle_integrity(server_public_key, client_public_keys, merkle_root):
                 messagebox.showerror("Security Error", 
@@ -558,10 +559,10 @@ def start_connection(server_ip, server_port, client_name, client_socket):
                 return
             else:
                 print("Integrity successfully verified")
-
+        
             # Start main communication loop
             connection_loop(client_socket, server_ip)
-
+        
         except socket.timeout:
             print("Timeout waiting for Merkle root message")
             raise ConnectionError("Timeout waiting for Merkle verification")
