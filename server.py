@@ -398,6 +398,14 @@ class Server:
         except Exception as e:
             print(f"Kritischer Fehler: {e}")
         finally:
+            # Beim Herunterfahren: Speichere nur noch aktive Clients
+            active_clients = {
+                k: v for k, v in self.clients.items()
+                if v.get('socket') is not None
+            }
+            with open("active_clients.json", "w") as f:
+                json.dump(active_clients, f)
+            
             self.server_socket.close()
             print("Server beendet")
     def get_disk_entropy(self,size):
@@ -439,11 +447,63 @@ class Server:
         return secret
 
     def generate_client_id(self):
-        """Generiert eine eindeutige 3- oder 4-stellige ID für den Client."""
-        while True:
-            client_id = str(random.randint(100, 9999))  # 3- oder 4-stellige ID
-            if client_id not in self.clients:
-                return client_id
+        """Generiert sequentielle Client-IDs (0,1,2,...) mit Nachrücklogik"""
+        if not self.clients:
+            return "0"
+        
+        # Finde alle vorhandenen IDs
+        existing_ids = sorted(int(k) for k in self.clients.keys() if k.isdigit())
+        
+        # Finde Lücken oder nächste freie ID
+        for i, expected_id in enumerate(range(len(existing_ids) + 1)):
+            if i >= len(existing_ids) or str(expected_id) != existing_ids[i]:
+                return str(expected_id)
+        
+        return str(len(existing_ids))
+    def save_active_clients(self):
+        """Speichert NUR aktuell verbundene Clients auf Festplatte"""
+        try:
+            active_clients = {
+                client_id: {
+                    'name': data['name'],
+                    'public_key': data['public_key'],
+                    'ip': data['ip'],
+                    'port': data['port']
+                }
+                for client_id, data in self.clients.items()
+                if data.get('socket') is not None  # Nur Clients mit aktiver Verbindung
+            }
+            
+            with open("active_clients.json", "w") as f:
+                json.dump(active_clients, f)
+        except Exception as e:
+            print(f"Fehler beim Speichern aktiver Clients: {e}")
+    
+    def load_active_clients(self):
+        """Lädt nur die zuletzt aktiven Clients"""
+        try:
+            if os.path.exists("active_clients.json"):
+                with open("active_clients.json", "r") as f:
+                    return json.load(f)
+            return {}
+        except Exception as e:
+            print(f"Fehler beim Laden aktiver Clients: {e}")
+            return {}
+
+    def remove_client(self, client_id):
+        """Entfernt Client und aktualisiert Speicher"""
+        if client_id in self.clients:
+            del self.clients[client_id]
+            
+            # Nachrücklogik für IDs
+            sorted_ids = sorted(int(k) for k in self.clients.keys() if k.isdigit())
+            self.clients = {
+                str(new_id): self.clients[str(old_id)]
+                for new_id, old_id in enumerate(sorted_ids)
+            }
+            
+            self.save_active_clients()  # Sofort speichern
+
 
     def load_or_generate_server_publickey(self):
         """
@@ -466,12 +526,24 @@ class Server:
                 pubHandle.write(public_key)
 
                 return public_key
+
+    def get_ordered_keys(self):
+        """Gibt Server-Key + geordnete Client-Keys zurück"""
+        server_key = self.server_public_key
+        client_keys = [
+            self.clients[client_id]['public_key']
+            for client_id in sorted(self.clients.keys(), key=int)
+            if 'public_key' in self.clients[client_id]
+        ]
+        return [server_key] + client_keys
+
     def handle_client(self, client_socket):
         client_address = client_socket.getpeername()
         print(f"\n[Server] Neue Verbindung von {client_address}")
         client_name = None
         client_pubkey = None
         client_id = None
+        self.key_registry = {}  # Neu: {client_id: public_key}
         
         try:
             client_socket.settimeout(300.0)
@@ -508,15 +580,17 @@ class Server:
             
             # Generate client ID
             client_id = self.generate_client_id()
+            print(f"[Server] Zuweisung Client-ID: {client_id}")
             
-            # Store client info
             self.clients[client_id] = {
                 'name': client_name,
-                'public_key': client_pubkey,  # Store the public key if available
+                'public_key': client_pubkey,
                 'socket': client_socket,
                 'ip': client_address[0],
                 'port': client_address[1]
             }
+            
+            self.save_clients()  # Speichern nach jeder Änderung
     
             # Send 200 OK response with server public key
     
@@ -528,19 +602,11 @@ class Server:
             
             # Prepare Merkle tree data
             try:
-                # 1. Sammle alle öffentlichen Schlüssel (Server + alle Clients)
-                all_keys = [self.server_public_key]  # Server-Key immer zuerst
-                
-                # Füge ALLE gültigen Client-Keys hinzu
-                client_keys = [
-                    c['public_key'] for c in self.clients.values() 
-                    if c.get('public_key') and "-----BEGIN PUBLIC KEY-----" in c['public_key']
-                ]
-                
-                # Debug-Ausgabe der gefundenen Client-Keys
-                print(f"[Server] Found {len(client_keys)} client public keys")
-                
-                all_keys.extend(client_keys)  # Keine Sortierung mehr, Reihenfolge beibehalten
+
+                all_keys = self.get_ordered_keys()
+                if len(all_keys) < 2:
+                    print("[Server] Warte auf mehr Clients für Merkle-Tree...")
+                    return
                 
                 print("\n[Server] All keys for Merkle Tree:")
                 for i, key in enumerate(all_keys):
