@@ -471,6 +471,40 @@ def connection_loop(client_socket, server_ip):
         except Exception as e:
             print(f"Unerwarteter Fehler: {str(e)}")
             continue
+
+def extract_server_public_key(sip_data, raw_response=None):
+    """
+    Extrahiert den Server-Public-Key aus SIP-Daten mit mehreren Fallbacks
+    Gibt den vollständigen PEM-formatierten Key oder None zurück
+    """
+    # Variante 1: Aus custom_data
+    if isinstance(sip_data, dict) and sip_data.get('custom_data'):
+        if 'SERVER_PUBLIC_KEY' in sip_data['custom_data']:
+            key = sip_data['custom_data']['SERVER_PUBLIC_KEY']
+            if '-----BEGIN PUBLIC KEY-----' in key:
+                return key
+    
+    # Variante 2: Aus dem Body der rohen Response
+    if raw_response:
+        # Suche nach dem Key mit flexibler Position
+        key_start = raw_response.find('-----BEGIN PUBLIC KEY-----')
+        if key_start != -1:
+            key_end = raw_response.find('-----END PUBLIC KEY-----', key_start)
+            if key_end != -1:
+                key_end += len('-----END PUBLIC KEY-----')
+                return raw_response[key_start:key_end]
+    
+    # Variante 3: Aus Header-Zeilen
+    if isinstance(sip_data, dict) and sip_data.get('headers'):
+        for header in sip_data['headers'].values():
+            if '-----BEGIN PUBLIC KEY-----' in header:
+                key_start = header.find('-----BEGIN PUBLIC KEY-----')
+                key_end = header.find('-----END PUBLIC KEY-----', key_start)
+                if key_end != -1:
+                    key_end += len('-----END PUBLIC KEY-----')
+                    return header[key_start:key_end]
+    
+    return None            
 def start_connection(server_ip, server_port, client_name, client_socket):
     try:
         client_pubkey = load_publickey()
@@ -486,7 +520,7 @@ def start_connection(server_ip, server_port, client_name, client_socket):
 
         print(f"\n[Client] Raw Server Response:\n{response}\n")
         
-        sip_data = parse_sip_message(response)
+        sip_data = parse_sip_message(response)  # Diese Variable wird verwendet
         if not sip_data:
             raise ValueError("Invalid SIP response format")
 
@@ -494,17 +528,8 @@ def start_connection(server_ip, server_port, client_name, client_socket):
         if sip_data.get('status_code') != '200':
             raise ValueError(f"Server returned error: {sip_data.get('status_code', 'Unknown')}")
 
-        # Extract server public key
-        server_public_key = None
-        if 'custom_data' in sip_data:
-            if 'SERVER_PUBLIC_KEY' in sip_data['custom_data']:
-                server_public_key = sip_data['custom_data']['SERVER_PUBLIC_KEY']
-            elif '\r\n\r\n' in response:
-                body = response.split('\r\n\r\n')[1]
-                for line in body.split('\n'):
-                    if line.startswith('SERVER_PUBLIC_KEY:'):
-                        server_public_key = line[len('SERVER_PUBLIC_KEY:'):].strip()
-                        break
+        # Extract server public key - KORREKTE Variablenverwendung
+        server_public_key = extract_server_public_key(sip_data, response)  # sip_data statt sip_msg
         
         if not server_public_key or not server_public_key.startswith('-----BEGIN'):
             print(f"Invalid server key format: {server_public_key[:100]}...")
