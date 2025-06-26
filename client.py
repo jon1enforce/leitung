@@ -512,9 +512,14 @@ def start_connection(server_ip, server_port, client_name, client_socket):
             raise ValueError("Invalid client public key format")
 
         # Key in den Body der Nachricht einfügen
-        request = build_sip_message("REGISTER", server_ip, {
-            "PUBLIC_KEY": client_pubkey  # Vollständiger PEM-formatierter Key
-        })
+        request = (
+            f"REGISTER sip:{server_ip} SIP/2.0\r\n"
+            f"From: <sip:{client_name}@{socket.gethostbyname(socket.gethostname())}>\r\n"
+            f"To: <sip:{server_ip}>\r\n"
+            f"Content-Type: text/plain\r\n"
+            f"Content-Length: {len(client_pubkey)}\r\n\r\n"
+            f"{client_pubkey}"  # Rohdaten ohne zusätzliche Formatierung
+        )
         
         print(f"\n[Client] Sending full public key...")
         send_frame(client_socket, request)
