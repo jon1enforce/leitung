@@ -574,7 +574,9 @@ class Server:
                 print("Kein Client-Name gefunden")
                 client_socket.close()
                 return
-    
+            
+            print(f"[DEBUG] Full received data:\n{register_data}\n")
+            print(f"[DEBUG] Parsed SIP message: {sip_msg}")
             # Extract public key if present in custom data
             if 'custom_data' in sip_msg:
                 client_pubkey = sip_msg['custom_data'].get('PUBLIC_KEY')
