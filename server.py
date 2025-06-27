@@ -161,37 +161,33 @@ def build_merkle_tree_from_keys(all_keys):
     """Baut einen Merkle Tree aus allen öffentlichen Schlüsseln"""
     print("\n[Server] Building Merkle Tree from all keys")
     
-    # 1. Normalisierungsfunktion
-    def normalize_key(key):
-        if not key or "-----BEGIN PUBLIC KEY-----" not in key:
-            return None
-        # Extrahiere nur den Base64-Teil zwischen den PEM-Markern
-        return "".join(
-            key.split("-----BEGIN PUBLIC KEY-----")[1]
-            .split("-----END PUBLIC KEY-----")[0]
-            .strip().split()
-        )
-    
-    # 2. Debug-Ausgabe der Rohkeys
+    # 1. Debug-Ausgabe der Rohkeys
     print("[Server] All keys for Merkle Tree:")
     for i, key in enumerate(all_keys):
         print(f"Key {i}: {key}" if key else f"Key {i}: None")
 
-    # 3. Normalisierung aller Keys
+    # 2. Normalisierung aller Keys
     normalized_keys = []
     for key in all_keys:
-        normalized = normalize_key(key)
+        if not key or "-----BEGIN PUBLIC KEY-----" not in key:
+            continue
+        # Extrahiere nur den Base64-Teil zwischen den PEM-Markern
+        normalized = "".join(
+            key.split("-----BEGIN PUBLIC KEY-----")[1]
+            .split("-----END PUBLIC KEY-----")[0]
+            .strip().split()
+        )
         if normalized:
             normalized_keys.append(normalized)
     
     if len(normalized_keys) < 1:
         raise ValueError("No valid keys found for Merkle tree")
     
-    # 4. Zusammenführung mit Trennzeichen
+    # 3. Zusammenführung mit Trennzeichen
     merged = "|||".join(normalized_keys)
     print(f"[Server] Merged keys (len={len(merged)}): {merged[:100]}...")
     
-    # 5. Merkle Root berechnen
+    # 4. Merkle Root berechnen
     merkle_root = build_merkle_tree([merged])
     print(f"[Server] Final Merkle Root: {merkle_root}")
     
