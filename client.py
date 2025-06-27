@@ -1013,40 +1013,28 @@ class PHONEBOOK(ctk.CTk):
 #threading
     def on_connect_click(self):
         if self.client_socket:
-            messagebox.showerror("Fehler", "Es besteht bereits eine Verbindung zum Server.")
+            messagebox.showerror("Fehler", "Bereits verbunden")
             return
     
-        server_ip = self.server_ip_input.get()
+        self.server_ip = self.server_ip_input.get()
         server_port = self.server_port_input.get()
-        client_name = load_client_name()
         
-        if not server_ip or not server_port or not client_name:
-            messagebox.showerror("Fehler", "Keine Server-IP, Port oder Name angegeben.")
-            return
-    
-        self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            self.client_socket.connect((server_ip, int(server_port)))
+            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.client_socket.connect((self.server_ip, int(server_port)))
             
-            # Starte den Thread für die Verbindung
-            message_thread = threading.Thread(
-                target=start_connection, 
-                args=(server_ip, server_port, client_name, self.client_socket)
-            )
-            message_thread.daemon = True
-            message_thread.start()
+            # Starte connection_loop mit Message-Handler
+            threading.Thread(
+                target=self.start_connection_wrapper,
+                daemon=True
+            ).start()
             
-            # Speichere den Server Public Key
-            self.server_public_key = load_server_publickey()
-            
-            # Sende das Client-Geheimnis
-            self.send_client_secret()
-            
-            self.connection_window.after(1000, self.connection_window.destroy)
-            
+            messagebox.showinfo("Erfolg", "Verbunden mit Server")
+            self.connection_window.destroy()
+    
         except Exception as e:
-            messagebox.showerror("Fehler", f"Verbindung zum Server fehlgeschlagen: {e}")
-            self.client_socket = None
+            messagebox.showerror("Fehler", f"Verbindung fehlgeschlagen: {e}")
+            self.cleanup_connection()
 
     def on_entry_click(self, entry):
         print(f"Selected entry: {entry['id']}: {entry['name']}")
