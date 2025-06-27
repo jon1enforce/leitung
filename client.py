@@ -744,38 +744,8 @@ class PHONEBOOK(ctk.CTk):
         self.geometry("600x1000")
         self.configure(fg_color='black')
         ctk.set_appearance_mode("dark")
-        # Stile für die UI-Elemente
-        self.style = ttk.Style(self)
-        self.style.theme_use('alt')
-        self.style.configure('TFrame', background='black')
-        self.style.configure('TLabel', background='black', foreground='white')
-        self.style.configure('TButton', background='black', foreground='white')
-        self.style.configure('TEntry', background='gray', foreground='white')
-        self.style.configure('TCombobox', background='gray', foreground='white')
-        self.style.configure('TNotebook', background='black')
-        self.style.configure('TNotebook.Tab', background='black', foreground='white')
-
-        # Menüleiste
-        self.menu_bar = tk.Menu(self)
-        self.config(menu=self.menu_bar)
-
-        file_menu = tk.Menu(self.menu_bar, tearoff=0)
-        file_menu.add_command(label="Schließen", command=self.quit)
-        self.menu_bar.add_cascade(label="Datei", menu=file_menu)
-
-        settings_menu = tk.Menu(self.menu_bar, tearoff=0)
-        settings_menu.add_command(label="Tastatur", command=self.open_keyboard_settings)
-        settings_menu.add_command(label="Sprache", command=self.open_language_settings)
-        self.menu_bar.add_cascade(label="Einstellungen", menu=settings_menu)
-
-        # Notebook für Tabs
-        self.notebook = ttk.Notebook(self)
-        self.notebook.pack(fill='both', expand=True)
-
-        # Telefonbuch-Tab
-        self.phonebook_tab = ctk.CTkFrame(self.notebook,fg_color='black')
-        self.notebook.add(self.phonebook_tab, text="Telefonbuch")
-        self.create_phonebook_tab()
+        
+        # Nur setup_ui aufrufen, nicht beide!
         self.setup_ui()
 
     def setup_ui(self):
