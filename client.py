@@ -946,11 +946,7 @@ class PHONEBOOK(ctk.CTk):
         self.scrollbar.pack(side="right", fill="y")
         
         # Beispiel-Daten (später durch echte Daten ersetzen)
-        self.phonebook_entries = [
-            {"id": "0", "name": "jon"},
-            {"id": "1", "name": "alice"},
-            {"id": "2", "name": "bob"}
-        ]
+        self.phonebook_entries = []
         
         # Phonebook Einträge erstellen
         self.entry_buttons = []
