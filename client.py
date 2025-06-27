@@ -865,9 +865,16 @@ class PHONEBOOK(ctk.CTk):
             return False
         # 1. Input Validation
         REQUIRED_KEYS = ['MESSAGE_TYPE', 'ENCRYPTED_SECRET', 'ENCRYPTED_PHONEBOOK']
-        if not all(key in data for key in REQUIRED_KEYS):
-            print("[CLIENT] Invalid phonebook message format! Missing required fields.")
+        if not all(key in data for key in ['MESSAGE_TYPE', 'ENCRYPTED_SECRET', 'ENCRYPTED_PHONEBOOK']):
+            print("[CLIENT] Invalid phonebook message format!")
             return False
+    
+        try:
+            print(f"[CLIENT] Processing phonebook update (Timestamp: {data.get('TIMESTAMP', 'unknown')})")
+            
+            # 1. Base64 Decoding
+            encrypted_secret = base64.b64decode(data['ENCRYPTED_SECRET'])
+            encrypted_phonebook = base64.b64decode(data['ENCRYPTED_PHONEBOOK'])
     
         if data.get('MESSAGE_TYPE') != 'PHONEBOOK_UPDATE':
             print("[CLIENT] Invalid message type received")
@@ -1303,35 +1310,29 @@ class PHONEBOOK(ctk.CTk):
             return False
     
     def handle_server_message(self, raw_data):
+        """Verarbeitet eingehende Nachrichten mit verbesserter Phonebook-Integration"""
         try:
-            # First try as proper SIP message
+            # 1. Versuche als SIP-Nachricht zu parsen
             message = raw_data.decode('utf-8')
             sip_data = parse_sip_message(message)
             
             if not sip_data:
                 return False
                 
-            # Handle PONG responses
+            # 2. Handle PONG responses
             if sip_data.get('headers', {}).get('PONG'):
                 print("[CLIENT] Received PONG response")
                 return True
                 
-            # Handle phonebook updates
-            if sip_data.get('method') == "MESSAGE":
-                content_type = sip_data.get('headers', {}).get('CONTENT-TYPE', '').lower()
-                
-                if 'phonebook_update' in sip_data.get('custom_data', {}).get('MESSAGE_TYPE', '').lower():
-                    return self._process_phonebook_update(sip_data['custom_data'])
-                    
-                elif 'application/json' in content_type:
-                    # Process JSON body directly
-                    body = message.split('\r\n\r\n')[1] if '\r\n\r\n' in message else ''
-                    return self._process_json_body(body)
+            # 3. Handle phonebook updates
+            if 'body' in sip_data and isinstance(sip_data['body'], dict):
+                if sip_data['body'].get('MESSAGE_TYPE') == 'PHONEBOOK_UPDATE':
+                    return self._process_phonebook_update(sip_data['body'])
                     
             return self._handle_standard_sip(sip_data)
             
         except UnicodeDecodeError:
-            print("[CLIENT] Received non-UTF8 data, cannot process as SIP")
+            print("[CLIENT] Received non-UTF8 data")
             return False
         except Exception as e:
             print(f"[CLIENT] Message handling failed: {str(e)}")
