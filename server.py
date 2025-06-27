@@ -756,26 +756,22 @@ class Server:
                 encrypted_phonebook = cipher.update(plaintext) + cipher.final()
                 
                 # 5. Baue SIP-Nachricht
-# 5. Build SIP message with proper structure
+                phonebook_data = {
+                    'MESSAGE_TYPE': 'PHONEBOOK_UPDATE',
+                    'TIMESTAMP': str(int(time.time())),
+                    'ENCRYPTED_SECRET': base64.b64encode(encrypted_secret).decode(),
+                    'ENCRYPTED_PHONEBOOK': base64.b64encode(encrypted_phonebook).decode(),
+                    'CLIENT_ID': client_id
+                }
+                json_body = json.dumps(phonebook_data)
+                
                 response = (
                     f"MESSAGE sip:{client_data['name']} SIP/2.0\r\n"
                     f"From: <sip:server@{self.host}>\r\n"
                     f"To: <sip:{client_data['name']}@{client_data['ip']}>\r\n"
                     f"Content-Type: application/json\r\n"
-                    f"Content-Length: {len(json.dumps({
-                        'MESSAGE_TYPE': 'PHONEBOOK_UPDATE',
-                        'TIMESTAMP': str(int(time.time())),
-                        'ENCRYPTED_SECRET': base64.b64encode(encrypted_secret).decode(),
-                        'ENCRYPTED_PHONEBOOK': base64.b64encode(encrypted_phonebook).decode(),
-                        'CLIENT_ID': client_id
-                    }))}\r\n\r\n"
-                    f"{json.dumps({
-                        'MESSAGE_TYPE': 'PHONEBOOK_UPDATE',
-                        'TIMESTAMP': str(int(time.time())),
-                        'ENCRYPTED_SECRET': base64.b64encode(encrypted_secret).decode(),
-                        'ENCRYPTED_PHONEBOOK': base64.b64encode(encrypted_phonebook).decode(),
-                        'CLIENT_ID': client_id
-                    })}"
+                    f"Content-Length: {len(json_body)}\r\n\r\n"
+                    f"{json_body}"
                 )
                 
                 # 6. Synchroner Versand mit Timeout
