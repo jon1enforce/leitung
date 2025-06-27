@@ -382,25 +382,28 @@ def build_sip_message(method, recipient, custom_data={}):
         f"{body}"
     )
 def parse_sip_message(message):
-    """Korrigierte SIP-Nachrichtenparser"""
+    """Improved SIP message parser that properly handles JSON bodies"""
     if isinstance(message, bytes):
         message = message.decode('utf-8')
     
-    if not message.strip():
-        return None
-
-    lines = [line.strip() for line in message.splitlines() if line.strip()]
-    if not lines:
-        return None
-
     result = {
         'method': None,
         'headers': {},
         'custom_data': {}
     }
-
-    # Erste Zeile (Request/Status-Line)
-    first_line = lines[0]
+    
+    # Split headers and body
+    parts = message.split('\r\n\r\n', 1)
+    headers = parts[0]
+    
+    # Parse headers
+    for line in headers.split('\r\n'):
+        if ': ' in line:
+            key, val = line.split(': ', 1)
+            result['headers'][key.strip().upper()] = val.strip()
+    
+    # Parse first line
+    first_line = headers.split('\r\n')[0]
     if first_line.startswith(('SIP/2.0', 'REGISTER', 'INVITE', 'MESSAGE')):
         if first_line.startswith('SIP/2.0'):
             parts = first_line.split()
@@ -408,25 +411,20 @@ def parse_sip_message(message):
                 result['status_code'] = parts[1]
         else:
             result['method'] = first_line.split()[0]
-
-    # Header parsen
-    body_start = len(lines)
-    for i, line in enumerate(lines[1:], 1):
-        if not line:
-            body_start = i
-            break
-        if ':' in line:
-            key, val = line.split(':', 1)
-            result['headers'][key.strip().upper()] = val.strip()
-
-    # Body parsen (custom data)
-    if len(lines) > body_start:
-        body_lines = lines[body_start:]
-        for line in body_lines:
-            if ':' in line:
-                key, val = line.split(':', 1)
-                result['custom_data'][key.strip()] = val.strip()
-
+    
+    # Parse body if present
+    if len(parts) > 1 and 'CONTENT-TYPE' in result['headers']:
+        body = parts[1]
+        content_type = result['headers']['CONTENT-TYPE'].lower()
+        
+        if 'application/json' in content_type:
+            try:
+                result['body'] = json.loads(body)
+            except json.JSONDecodeError:
+                result['body'] = body
+        else:
+            result['body'] = body
+    
     return result
 def connection_loop(client_socket, server_ip, message_handler=None):
     """
@@ -854,6 +852,17 @@ class PHONEBOOK(ctk.CTk):
         Returns:
             bool: True bei Erfolg, False bei Fehler
         """
+        """Processes phonebook update from parsed message"""
+        if not isinstance(message, dict):
+            print("[CLIENT] Invalid message format")
+            return False
+        
+        # Check if we have a JSON body
+        if 'body' in message and isinstance(message['body'], dict):
+            data = message['body']
+        else:
+            print("[CLIENT] No valid JSON body found")
+            return False
         # 1. Input Validation
         REQUIRED_KEYS = ['MESSAGE_TYPE', 'ENCRYPTED_SECRET', 'ENCRYPTED_PHONEBOOK']
         if not all(key in data for key in REQUIRED_KEYS):
