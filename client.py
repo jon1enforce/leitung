@@ -426,53 +426,46 @@ def parse_sip_message(message):
                 result['custom_data'][key.strip()] = val.strip()
 
     return result
-def connection_loop(client_socket, server_ip):
-    ping_interval = 60  # Sekunden zwischen Pings (angepasst an Server-Intervall)
-    pong_timeout = 70   # Sekunden auf Pong warten
+def connection_loop(client_socket, server_ip, message_handler=None):
+    """
+    Erweiterte Verbindungsschleife mit:
+    - Ping/Pong-Mechanismus (bestehende Funktionalität)
+    - Nachrichtenweiterleitung an optionalen Handler
+    """
+    ping_interval = 60
+    pong_timeout = 70
     
     while True:
         try:
-            # 1. Ping senden
-            ping_msg = build_sip_message(
-                "MESSAGE",
-                server_ip,
-                {"PING": "true"}
-            )
+            # 1. Ping senden (bestehende Logik)
+            ping_msg = build_sip_message("MESSAGE", server_ip, {"PING": "true"})
             client_socket.sendall(ping_msg.encode('utf-8'))
-            print(f"Ping gesendet um {time.strftime('%H:%M:%S')}")
-
-            # 2. Auf Pong warten
+            
+            # 2. Auf Antwort warten mit erweiterter Verarbeitung
             client_socket.settimeout(pong_timeout)
             try:
-                pong_response = client_socket.recv(4096)
-                if not pong_response:
-                    print("Warnung: Leere Pong-Antwort")
+                response = client_socket.recv(4096)
+                if not response:
+                    print("Leere Antwort vom Server")
                     continue
-
-                pong_data = parse_sip_message(pong_response)
-                if not pong_data:
-                    print("Warnung: Unparsebare Pong-Antwort - Rohdaten:", pong_response[:100])
-                    continue
-                
-                # Überprüfe sowohl custom_data als auch headers für PONG
-                pong_value = (pong_data.get('custom_data', {}).get("PONG", "") or 
-                             pong_data.get('headers', {}).get("PONG", ""))
-                
-                if str(pong_value).strip().lower() in ("true", "1", "yes"):
-                    print(f"Pong erfolgreich empfangen um {time.strftime('%H:%M:%S')}")
-                else:
-                    print(f"Warnung: Ungültiges Pong-Format - Empfangen: '{pong_value}'")
-                    print("Vollständige Pong-Daten:")
-                    print(f"Method: {pong_data.get('method')}")
-                    print(f"Headers: {pong_data.get('headers')}")
-                    print(f"Custom Data: {pong_data.get('custom_data')}")
                     
+                # Falls ein Message-Handler existiert, Nachricht weiterleiten
+                if message_handler:
+                    message_handler(response)
+                else:
+                    # Originale Ping/Pong-Verarbeitung
+                    pong_data = parse_sip_message(response)
+                    if pong_data:
+                        pong_value = (pong_data.get('custom_data', {}).get("PONG", "") or 
+                                     pong_data.get('headers', {}).get("PONG", ""))
+                        if str(pong_value).lower() in ("true", "1", "yes"):
+                            print(f"Pong erhalten um {time.strftime('%H:%M:%S')}")
+                            
             except socket.timeout:
-                print(f"Timeout: Kein Pong innerhalb von {pong_timeout}s empfangen")
-            
-            # 3. Warten bis zum nächsten Ping
+                print(f"Timeout: Kein Pong innerhalb von {pong_timeout}s")
+                
             time.sleep(ping_interval)
-
+            
         except ConnectionError as e:
             print(f"Verbindungsfehler: {str(e)}")
             return False
@@ -612,7 +605,7 @@ def start_connection(server_ip, server_port, client_name, client_socket):
                 print("Integrity successfully verified")
         
             # Start main communication loop
-            connection_loop(client_socket, server_ip)
+            connection_loop(client_socket, server_ip, message_handler)
         
         except socket.timeout:
             print("Timeout waiting for Merkle root message")
@@ -1224,6 +1217,41 @@ class PHONEBOOK(ctk.CTk):
         except Exception as e:
             messagebox.showerror("Anruf fehlgeschlagen", str(e))
             self.current_secret = None
+
+    def handle_server_message(self, raw_data):
+        """Verarbeitet rohe SIP-Nachrichten"""
+        sip_data = parse_sip_message(raw_data)
+        if not sip_data:
+            return
+
+        # 1. Ping/Pong
+        if sip_data.get('custom_data', {}).get("PING"):
+            pong_msg = build_sip_message(
+                "MESSAGE",
+                self.server_ip,
+                {"PONG": "true"}
+            )
+            self.client_socket.sendall(pong_msg.encode())
+
+        # 2. Anrufbehandlung
+        elif sip_data.get('method') == "INVITE":
+            self.handle_incoming_call(sip_data)
+        elif sip_data.get('status_code') == "200":
+            print("Anruf bestätigt")
+
+        # 3. Telefonbuch-Updates
+        elif "PHONEBOOK" in sip_data.get('custom_data', {}):
+            self.handle_phonebook_message(sip_data['custom_data'])
+
+    def start_connection_wrapper(self):
+        """Wrapper für start_connection mit Message-Handler"""
+        start_connection(
+            self.server_ip,
+            int(self.server_port_input.get()),
+            load_client_name(),
+            self.client_socket,
+            self.handle_server_message
+        )
 
 def main():
     global app
