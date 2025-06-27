@@ -650,14 +650,14 @@ class Server:
                 "CLIENT_ID": client_id
             })
             send_frame(client_socket, response)
-            time.sleep(0.1)
-            self.broadcast_phonebook()  
             # Phase 6: Merkle Tree verarbeiten
             self.process_merkle_tree(client_name, client_socket)
-    
+            time.sleep(0.1)
+            self.broadcast_phonebook()  
             # Phase 7: Hauptkommunikationsschleife
             self.handle_communication_loop(client_name, client_socket)
-    
+
+            
         except Exception as e:
             print(f"Fehler bei der Kommunikation mit {client_address}: {str(e)}")
         finally:
