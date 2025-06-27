@@ -660,35 +660,57 @@ class Server:
             client_socket.close()
         
 
-
     def update_phonebook(self):
-        """Aktualisiert das Telefonbuch mit den aktuellen Client-Daten."""
-        self.phonebook = [f"{data['name']}: {client_id}: {data['ip']}: {data['public_key']}" for client_id, data in self.clients.items()]
-        print("Telefonbuch aktualisiert:", self.phonebook)
-
-    def broadcast_phonebook(self,decrypted_secret):
-        """Sendet das aktualisierte Telefonbuch an alle Clients."""
-        clients_copy = self.clients.copy()
-        for client_id, data in clients_copy.items():
-            print("+++PUBLIC_KEY+++")
-            print(data)
-            print("+++OWNER+++")
-            print(client_id)
-            try:
-                encrypted_phonebook = self.encrypt_phonebook(decrypted_secret)
-                if encrypted_phonebook:
-                    send_frame(data["socket"], f"PHONEBOOK:{encrypted_phonebook}".encode('utf-8'))
-                    #secret
-                    time.sleep(1)
-                    rsa_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(data["public_key"].encode('utf-8')))
-                    secret = rsa_key.public_encrypt(decrypted_secret, RSA.pkcs1_padding).hex()
-                    print(secret)
-                    send_frame(data["socket"], f"SECRET:{secret}".encode('utf-8'))
-            except Exception as e:
-                print(f"Fehler beim Senden des Telefonbuchs an {data['name']} (ID: {client_id}): {e}")
-                if client_id in self.clients:
-                    del self.clients[client_id]
-                    self.update_phonebook()
+        """Aktualisiert das Telefonbuch mit sortierten Client-Daten"""
+        self.phonebook = sorted(
+            [(int(cid), data) for cid, data in self.clients.items() if cid.isdigit()],
+            key=lambda x: x[0]
+        )
+        print("Telefonbuch aktualisiert:")
+        for cid, data in self.phonebook:
+            print(f"{cid}: {data['name']}")
+    
+    def broadcast_phonebook(self):
+        """Sendet verschlüsseltes Telefonbuch an alle Clients"""
+        try:
+            # 1. Generiere temporären AES-Schlüssel
+            temp_secret = os.urandom(32)  # 256-bit Schlüssel
+            iv = os.urandom(16)  # Initialisierungsvektor
+            
+            # 2. Prepare phonebook data
+            phonebook_data = {
+                'entries': [
+                    {'id': cid, 'name': data['name']} 
+                    for cid, data in self.phonebook
+                ],
+                'timestamp': time.time()
+            }
+            
+            # 3. Verschlüsseln mit AES
+            cipher = EVP.Cipher("aes_256_cbc", temp_secret, iv, 1)
+            encrypted_data = cipher.update(json.dumps(phonebook_data).encode()) + cipher.final()
+            
+            # 4. An alle Clients senden
+            for cid, client_data in self.phonebook:
+                try:
+                    # 4a. RSA-verschlüsselten AES-Schlüssel senden
+                    pubkey = RSA.load_pub_key_bio(BIO.MemoryBuffer(client_data['public_key'].encode()))
+                    encrypted_secret = pubkey.public_encrypt(temp_secret + iv, RSA.pkcs1_padding)
+                    
+                    # 4b. Paket zusammenstellen
+                    packet = {
+                        'encrypted_data': encrypted_data.hex(),
+                        'encrypted_secret': encrypted_secret.hex()
+                    }
+                    
+                    send_frame(client_data['socket'], json.dumps(packet).encode())
+                    
+                except Exception as e:
+                    print(f"Fehler bei Client {cid}: {str(e)}")
+                    continue
+                    
+        except Exception as e:
+            print(f"Broadcast-Fehler: {str(e)}")
 
     def encrypt_phonebook(self, secret):
         """Verschlüsselt das Telefonbuch mit dem öffentlichen Schlüssel des Clients."""
