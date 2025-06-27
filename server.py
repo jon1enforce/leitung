@@ -9,6 +9,7 @@ import time
 import uuid
 import re
 import struct
+import base64
 BUFFER_SIZE = 4096
 
 def send_frame(sock, data):
