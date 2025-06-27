@@ -1211,6 +1211,14 @@ class PHONEBOOK(ctk.CTk):
 
     def handle_server_message(self, raw_data):
         """Verarbeitet rohe SIP-Nachrichten"""
+        try:
+            sip_data = parse_sip_message(raw_data.decode('utf-8'))
+        except UnicodeDecodeError:
+            # If UTF-8 fails, treat as binary phonebook data
+            self.handle_phonebook_message({'ENCRYPTED_PHONEBOOK': base64.b64encode(raw_data).decode('utf-8')})
+            return
+            
+
         sip_data = parse_sip_message(raw_data)
         if not sip_data:
             return
