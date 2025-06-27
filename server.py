@@ -723,10 +723,10 @@ class Server:
             print(f"Fehler bei der Verschlüsselung des Telefonbuchs: {e}")
             return ""
     def broadcast_phonebook(self):
-        """Thread-sichere Version des Broadcasts"""
+        """Thread-sichere Version des Broadcasts mit verbesserter Fehlerbehandlung"""
         def _broadcast():
             try:
-                # Prepare phonebook data
+                # 1. Vorbereitung der Telefonbuchdaten
                 phonebook_data = [
                     {
                         'id': client_id,
@@ -739,45 +739,61 @@ class Server:
                     if data.get('socket') is not None
                 ]
                 
+                print(f"[DEBUG] Preparing to broadcast to {len(self.clients)} clients")
+                
                 for client_id, client_data in self.clients.items():
                     if not client_data.get('socket'):
+                        print(f"[DEBUG] Skipping client {client_id} - no active socket")
                         continue
                     
                     try:
-                        # Generate and encrypt secret
+                        print(f"[DEBUG] Processing client {client_id}")
+                        
+                        # 2. Generiere und verschlüssele das Geheimnis
                         secret = self.generate_secret()
+                        print(f"[DEBUG] Generated secret: {secret[:10]}...")
+                        
                         client_pubkey = RSA.load_pub_key_bio(
                             BIO.MemoryBuffer(client_data['public_key'].encode()))
+                        
                         encrypted_secret = client_pubkey.public_encrypt(
                             b"+++secret+++" + secret,
                             RSA.pkcs1_padding
                         )
+                        print(f"[DEBUG] Encrypted secret: {encrypted_secret[:10]}...")
                         
-                        # Encrypt phonebook data
+                        # 3. Verschlüssele die Telefonbuchdaten
                         iv = secret[:16]
                         aes_key = secret[16:]
                         cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 1)
                         plaintext = json.dumps(phonebook_data).encode('utf-8')
                         encrypted_phonebook = cipher.update(plaintext) + cipher.final()
                         
-                        # Send as binary frame (not text)
+                        # 4. Erstelle die Nachricht
                         response = self.build_sip_message(
                             "MESSAGE",
                             client_data['name'],
                             {
+                                "TYPE": "PHONEBOOK_UPDATE",
                                 "ENCRYPTED_SECRET": base64.b64encode(encrypted_secret).decode(),
                                 "ENCRYPTED_PHONEBOOK": base64.b64encode(encrypted_phonebook).decode()
                             }
                         )
+                        
+                        # 5. Sende die Nachricht
+                        print(f"[DEBUG] Sending phonebook to client {client_id}")
                         send_frame(client_data['socket'], response.encode('utf-8'))
+                        print(f"[DEBUG] Successfully sent phonebook to client {client_id}")
                         
                     except Exception as e:
-                        print(f"Broadcast error for client {client_id}: {str(e)}")
+                        print(f"[ERROR] Broadcast error for client {client_id}: {str(e)}")
+                        traceback.print_exc()
                         
             except Exception as e:
-                print(f"Critical broadcast error: {str(e)}")
+                print(f"[CRITICAL] Broadcast error: {str(e)}")
+                traceback.print_exc()
     
-        # Start broadcast in new thread
+        # Starte den Broadcast in einem neuen Thread
         threading.Thread(target=_broadcast, daemon=True).start()
 def load_server_publickey():
     if not os.path.exists("server_public_key.pem"):
