@@ -744,7 +744,7 @@ class Server:
                     try:
                         secret = self.generate_secret()
                         client_pubkey = RSA.load_pub_key_bio(
-                            BIO.MemoryBuffer(client_data['public_key'].encode())
+                            BIO.MemoryBuffer(client_data['public_key'].encode()))
                         encrypted_secret = client_pubkey.public_encrypt(
                             b"+++secret+++" + secret,
                             RSA.pkcs1_padding
