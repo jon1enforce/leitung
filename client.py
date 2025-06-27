@@ -21,6 +21,7 @@ import stun  # pip install pystun3
 import struct
 import ctypes
 import platform
+import traceback
 from typing import Optional
 #fallback für bessere kompatibilität:
 try:
