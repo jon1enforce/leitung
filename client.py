@@ -1246,12 +1246,15 @@ class PHONEBOOK(ctk.CTk):
                     # Phonebook Update erkennen
                     if sip_data.get('custom_data', {}).get('MESSAGE_TYPE') == "PHONEBOOK_UPDATE":
                         print("[CLIENT] Processing phonebook update")
-                        return self._process_phonebook_update(sip_data['custom_data'])
+                        success = self._process_phonebook_update(sip_data['custom_data'])
+                        if not success:
+                            print("[CLIENT] Phonebook update failed")
+                        return success
                     
                     # Pong verarbeiten
-                    elif sip_data.get('headers', {}).get('PONG'):
+                    elif sip_data.get('custom_data', {}).get('PONG'):
                         print("[CLIENT] Received PONG response")
-                        return
+                        return True
                     
                     # Andere SIP-Nachrichten
                     return self._handle_standard_sip(sip_data)
@@ -1259,19 +1262,13 @@ class PHONEBOOK(ctk.CTk):
                 pass
                 
             # 2. Fallback für binäre Daten
-            print("[CLIENT] Received binary data, attempting phonebook processing")
-            try:
-                return self._process_phonebook_update({
-                    'MESSAGE_TYPE': 'PHONEBOOK_UPDATE',
-                    'ENCRYPTED_SECRET': base64.b64encode(os.urandom(256)).decode(),
-                    'ENCRYPTED_PHONEBOOK': base64.b64encode(raw_data).decode()
-                })
-            except Exception as e:
-                print(f"[CLIENT] Binary processing failed: {str(e)}")
+            print("[CLIENT] Received binary data, ignoring as phonebook update failed")
+            return False
                 
         except Exception as e:
             print(f"[CLIENT] Message handling failed: {str(e)}")
             traceback.print_exc()
+            return False
 
     def start_connection_wrapper(self):
         """Wrapper für start_connection mit Message-Handler"""
