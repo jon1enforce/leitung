@@ -650,12 +650,16 @@ class Server:
                 "SERVER_PUBLIC_KEY": self.server_public_key,
                 "CLIENT_ID": client_id
             })
+                        
             send_frame(client_socket, response)
-            # Phase 6: Merkle Tree verarbeiten
+            
+            # Phase 6: Merkle Tree verarbeiten (synchron)
             self.process_merkle_tree(client_name, client_socket)
-            time.sleep(0.1)
-            self.broadcast_phonebook()  
-            # Phase 7: Hauptkommunikationsschleife
+            
+            # Phase 7: Phonebook asynchron broadcasten (nicht blockierend)
+            threading.Thread(target=self.broadcast_phonebook, daemon=True).start()
+            
+            # Phase 8: Hauptkommunikationsschleife starten (blockierend)
             self.handle_communication_loop(client_name, client_socket)
 
             
