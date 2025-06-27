@@ -1,5 +1,5 @@
 # sichere leitung
 
-screenshot
+screenshot, setup:
 
 ![Screenshot](./ausgeschnitten.png)
