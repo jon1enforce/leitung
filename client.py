@@ -130,28 +130,24 @@ def build_merkle_tree(data_blocks):
 
 
 def verify_merkle_integrity(all_keys, received_root_hash):
-    """Überprüft die Integrität aller Schlüssel mittels Merkle Tree (identisch zur Server-Logik)"""
+    """Überprüft die Integrität aller Schlüssel mittels Merkle Tree"""
     print("\n=== CLIENT VERIFICATION ===")
     
-    # 1. Dieselbe Normalisierungsfunktion wie auf dem Server!
-    def normalize_key(key):
-        if not key or "-----BEGIN PUBLIC KEY-----" not in key:
-            return None
-        return "".join(
-            key.split("-----BEGIN PUBLIC KEY-----")[1]
-            .split("-----END PUBLIC KEY-----")[0]
-            .strip().split()
-        )
-    
-    # 2. Debug-Ausgabe
+    # 1. Debug-Ausgabe
     print("\n[Client] Received keys (raw):")
     for i, key in enumerate(all_keys):
         print(f"Key {i}: {key}" if key else f"Key {i}: None")
 
-    # 3. Normalisierung (wie Server)
+    # 2. Normalisierung (wie Server)
     normalized_keys = []
     for key in all_keys:
-        normalized = normalize_key(key)
+        if not key or "-----BEGIN PUBLIC KEY-----" not in key:
+            continue
+        normalized = "".join(
+            key.split("-----BEGIN PUBLIC KEY-----")[1]
+            .split("-----END PUBLIC KEY-----")[0]
+            .strip().split()
+        )
         if normalized:
             normalized_keys.append(normalized)
     
@@ -159,11 +155,11 @@ def verify_merkle_integrity(all_keys, received_root_hash):
         print("Error: No valid keys after normalization")
         return False
 
-    # 4. Zusammenführung mit IDENTISCHEM Trennzeichen ("|||")
+    # 3. Zusammenführung mit Trennzeichen
     merged = "|||".join(normalized_keys)
     print(f"\n[Client] Merged keys (len={len(merged)}): {merged[:100]}...")
 
-    # 5. Merkle Root berechnen (identische Methode wie Server)
+    # 4. Merkle Root berechnen
     calculated_hash = build_merkle_tree([merged])
     print(f"\n[Client] Calculated hash: {calculated_hash}")
     print(f"Received hash:   {received_root_hash}")
