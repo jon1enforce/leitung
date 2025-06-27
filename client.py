@@ -507,7 +507,7 @@ def extract_server_public_key(sip_data, raw_response=None):
                     return header[key_start:key_end]
     
     return None            
-def start_connection(server_ip, server_port, client_name, client_socket):
+def start_connection(server_ip, server_port, client_name, client_socket, message_handler=None):
     try:
         client_pubkey = load_publickey()
         print("+++client_pubkey+++")
@@ -1251,7 +1251,7 @@ class PHONEBOOK(ctk.CTk):
             int(self.server_port_input.get()),
             load_client_name(),
             self.client_socket,
-            self.handle_server_message
+            self.handle_server_message  # Dies ist der message_handler
         )
 
 def main():
