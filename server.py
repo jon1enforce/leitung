@@ -243,8 +243,9 @@ class Server:
         print("init2")
         self.server_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         print(("init3"))
-        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)  # Wichtig für Port-Reuse
+        self.server_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         print("init4")
+        self.client_send_lock = Lock()  # Add this line for thread safety
     def debug_socket(self,sock):
         """Hilfsfunktion zur Socket-Diagnose"""
         if sock is None:
@@ -768,13 +769,25 @@ class Server:
                 )
                 
                 # 6. Synchroner Versand mit Timeout
-                with self.client_send_lock:  # Thread-Sicherheit
-                    client_socket = client_data['socket']
-                    client_socket.settimeout(5.0)  # 5 Sekunden Timeout
-                    send_frame(client_socket, response.encode('utf-8'))
-                    
-                print(f"[SERVER] Successfully sent phonebook to {client_id}")
-                return True
+                try:
+                    with self.client_send_lock:
+                        client_socket = client_data['socket']
+                        if client_socket:
+                            client_socket.settimeout(5.0)
+                            try:
+                                send_frame(client_socket, response)
+                                print(f"[SERVER] Successfully sent phonebook to {client_id}")
+                                return True
+                            except (socket.timeout, ConnectionError) as e:
+                                print(f"[SERVER] Error sending to {client_id}: {str(e)}")
+                                return False
+                        else:
+                            print(f"[SERVER] No socket for client {client_id}")
+                            return False
+                except Exception as e:
+                    print(f"[SERVER] Critical error sending to {client_id}: {str(e)}")
+                    traceback.print_exc()
+                    return False
                 
             except socket.timeout:
                 print(f"[SERVER] Timeout sending to {client_id}")
