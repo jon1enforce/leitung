@@ -1169,8 +1169,7 @@ class PHONEBOOK(ctk.CTk):
             self.current_secret = secret
             
             # 2. Verschlüssele mit Public Key des Empfängers
-            recipient_pubkey = RSA.load_pub_key_bio(
-                BIO.MemoryBuffer(recipient['public_key'].encode())
+            recipient_pubkey = RSA.load_pub_key_bio(BIO.MemoryBuffer(recipient['public_key'].encode()))
             
             # Mit Overhead verschlüsseln
             secret_with_overhead = b"+++secret+++" + secret
