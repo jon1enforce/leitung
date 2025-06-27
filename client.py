@@ -19,6 +19,7 @@ import re  # Für SIP-Header-Parsing
 import tkinter as tk
 import stun  # pip install pystun3
 import struct
+import ctypes
 
 #fallback für bessere kompatibilität:
 try:
@@ -731,7 +732,53 @@ def receive_audio_stream(key, seed):
             stream.stop_stream()
             stream.close()
             audio.terminate()
-
+class SecretVault:
+    """Sichere Speicherung für 48-Byte-Geheimnisse mit auslagern.c"""
+    def __init__(self):
+        self.lib = self._load_library()
+        
+    def _load_library(self):
+        try:
+            lib = ctypes.CDLL('./auslagern.so')
+            lib.store_secret.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
+            lib.store_secret.restype = ctypes.c_int
+            lib.retrieve_secret.argtypes = []
+            lib.retrieve_secret.restype = ctypes.POINTER(ctypes.c_byte * 48)
+            lib.wipe_secret.argtypes = []
+            lib.wipe_secret.restype = None
+            return lib
+        except Exception as e:
+            print(f"Warnung: Sichere Speicherung nicht verfügbar: {e}")
+            return None
+    
+    def store(self, secret):
+        """Sichert ein 48-Byte-Geheimnis"""
+        if len(secret) != 48:
+            raise ValueError("Geheimnis muss 48 Bytes lang sein")
+        
+        if self.lib:
+            result = self.lib.store_secret(secret, 48)
+            if result != 0:
+                raise RuntimeError("Fehler beim Speichern des Geheimnisses")
+        else:
+            # Fallback: In Memory behalten (unsicher)
+            self._fallback_secret = secret
+    
+    def retrieve(self):
+        """Holt das Geheimnis zurück"""
+        if self.lib:
+            secret_ptr = self.lib.retrieve_secret()
+            return bytes(secret_ptr.contents)
+        elif hasattr(self, '_fallback_secret'):
+            return self._fallback_secret
+        return None
+    
+    def wipe(self):
+        """Löscht das Geheimnis sicher"""
+        if self.lib:
+            self.lib.wipe_secret()
+        elif hasattr(self, '_fallback_secret'):
+            self._fallback_secret = b'\x00'*48
 class PHONEBOOK(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -745,6 +792,8 @@ class PHONEBOOK(ctk.CTk):
         self.configure(fg_color='black')
         ctk.set_appearance_mode("dark")
         
+        self.secret_vault = SecretVault()  # Neue Instanz für Geheimnis-Speicherung
+        self.current_secret = None  # Aktuelles 48-Byte-Geheimnis für laufende Kommunikation
         # Nur setup_ui aufrufen, nicht beide!
         self.setup_ui()
 
@@ -781,32 +830,55 @@ class PHONEBOOK(ctk.CTk):
         self.phonebook_tab = ctk.CTkFrame(self.notebook, fg_color='black')
         self.notebook.add(self.phonebook_tab, text="Telefonbuch")
         self.create_phonebook_tab()
-
+    
     def handle_phonebook_message(self, encrypted_data):
         """Entschlüsselt das empfangene Telefonbuch"""
         try:
-            # 1. Lade privaten Schlüssel
+            # 1. Extrahiere verschlüsselte Teile
+            encrypted_secret = base64.b64decode(encrypted_data['ENCRYPTED_SECRET'])
+            encrypted_phonebook = base64.b64decode(encrypted_data['ENCRYPTED_PHONEBOOK'])
+            
+            # 2. Lade privaten Schlüssel
             with open("private_key.pem", "rb") as f:
                 priv_key = RSA.load_key_string(f.read())
             
-            # 2. Entschlüssele das Geheimnis (IV + AES Key)
-            decrypted_secret = priv_key.private_decrypt(
-                self.encrypted_secret,  # Das zuvor an den Server gesendete Geheimnis
-                RSA.pkcs1_padding
-            )
-            iv = decrypted_secret[:16]
-            aes_key = decrypted_secret[16:48]
+            # 3. Entschlüssele das Geheimnis
+            decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
             
-            # 3. Entschlüssele die Telefonbuch-Daten
+            # 4. Überprüfe Overhead
+            if not decrypted_secret.startswith(b"+++secret+++"):
+                print("Integritätsfehler: Falscher Overhead im entschlüsselten Geheimnis")
+                return
+                
+            secret = decrypted_secret[11:]  # 59 - 11 = 48 Bytes
+            iv = secret[:16]
+            aes_key = secret[16:]
+            
+            # 5. Speichere Geheimnis sicher (mit auslagern.py Methode)
+            self.store_secret_safely(secret)
+            
+            # 6. Entschlüssele Telefonbuch
             cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)  # op=0 für Entschlüsselung
-            decrypted_data = cipher.update(base64.b64decode(encrypted_data)) + cipher.final()
-            
-            # 4. Parse das Telefonbuch
+            decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
             phonebook_data = json.loads(decrypted_data.decode('utf-8'))
+            
+            # 7. Aktualisiere Anzeige
             self.update_phonebook(phonebook_data)
             
         except Exception as e:
             print(f"Fehler beim Entschlüsseln des Telefonbuchs: {e}")
+    
+    def store_secret_safely(self, secret):
+        """Sichert das Geheimnis mit der auslagern.py Methode"""
+        try:
+            # Hier würde die Integration mit auslagern.c/auslagern.py erfolgen
+            # Beispielimplementierung (muss an Ihre auslagern.py angepasst werden):
+            import auslagern
+            auslagern.store_secret(secret)
+        except Exception as e:
+            print(f"Warnung: Geheimnis konnte nicht sicher gespeichert werden: {e}")
+            # Fallback: Temporär in Memory behalten
+            self.temp_secret = secret
 
     def send_client_secret(self):
         """Generiert und sendet das AES-Geheimnis an den Server"""
@@ -1058,6 +1130,100 @@ class PHONEBOOK(ctk.CTk):
 
     def open_language_settings(self):
         messagebox.showinfo("Sprache", "Spracheinstellungen (nicht implementiert)")
+    def handle_incoming_call(self, sip_data):
+        """Verarbeitet eingehende Anrufe"""
+        try:
+            # 1. Extrahiere verschlüsseltes Geheimnis
+            encrypted_secret = base64.b64decode(sip_data['custom_data']['ENCRYPTED_SECRET'])
+            
+            # 2. Entschlüssele mit eigenem privaten Schlüssel
+            with open("private_key.pem", "rb") as f:
+                priv_key = RSA.load_key_string(f.read())
+            
+            decrypted = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
+            
+            # 3. Überprüfe Overhead
+            if not decrypted.startswith(b"+++secret+++"):
+                raise ValueError("Ungültiges Geheimnis - Falscher Overhead")
+                
+            secret = decrypted[11:]  # 11 Bytes Overhead entfernen
+            self.current_secret = secret
+            self.secret_vault.store(secret)
+            
+            # 4. Extrahiere Anrufer-Daten
+            caller_ip = sip_data['custom_data']['CALLER_IP']
+            caller_port = int(sip_data['custom_data']['CALLER_PORT'])
+            caller_name = sip_data['custom_data']['CALLER_NAME']
+            
+            # 5. Bestätige den Anruf
+            response = self.build_sip_message(
+                "200 OK",
+                caller_name,
+                {"STATUS": "ACCEPTED"}
+            )
+            self.client_socket.sendall(response.encode('utf-8'))
+            
+            # 6. Starte Audio-Streams
+            iv = secret[:16]
+            aes_key = secret[16:]
+            start_audio_streams(caller_ip, caller_port, aes_key, iv)
+            
+            messagebox.showinfo("Anruf", f"Verbunden mit {caller_name}")
+            
+        except Exception as e:
+            print(f"Fehler bei Anrufannahme: {e}")
+            if 'CALLER_NAME' in sip_data['custom_data']:
+                # Sende Ablehnung
+                response = self.build_sip_message(
+                    "603 DECLINE",
+                    sip_data['custom_data']['CALLER_NAME'],
+                    {"STATUS": "REJECTED"}
+                )
+                self.client_socket.sendall(response.encode('utf-8'))
+    def initiate_call(self, recipient):
+        """Startet einen verschlüsselten Anruf zu einem anderen Client"""
+        try:
+            # 1. Generiere neues 48-Byte Geheimnis
+            secret = generate_secret()  # Ihre existierende Funktion
+            self.current_secret = secret
+            
+            # 2. Verschlüssele mit Public Key des Empfängers
+            recipient_pubkey = RSA.load_pub_key_bio(
+                BIO.MemoryBuffer(recipient['public_key'].encode())
+            
+            # Mit Overhead verschlüsseln
+            secret_with_overhead = b"+++secret+++" + secret
+            encrypted_secret = recipient_pubkey.public_encrypt(
+                secret_with_overhead, 
+                RSA.pkcs1_padding
+            )
+            
+            # 3. Sichere das Geheimnis lokal
+            self.secret_vault.store(secret)
+            
+            # 4. Sende INVITE Nachricht
+            request = self.build_sip_message(
+                "INVITE",
+                recipient['name'],
+                {
+                    "ENCRYPTED_SECRET": base64.b64encode(encrypted_secret).decode('utf-8'),
+                    "CALLER_NAME": load_client_name(),
+                    "CALLER_IP": socket.gethostbyname(socket.gethostname()),
+                    "CALLER_PORT": str(PORT)  # Globaler Audio-Port
+                }
+            )
+            self.client_socket.sendall(request.encode('utf-8'))
+            
+            # 5. Starte Audio-Streams
+            iv = secret[:16]
+            aes_key = secret[16:]
+            start_audio_streams(recipient['ip'], recipient['port'], aes_key, iv)
+            
+            messagebox.showinfo("Anruf", f"Verbinde mit {recipient['name']}...")
+            
+        except Exception as e:
+            messagebox.showerror("Anruf fehlgeschlagen", str(e))
+            self.current_secret = None
 
 def main():
     global app
