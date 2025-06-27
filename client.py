@@ -1223,37 +1223,49 @@ class PHONEBOOK(ctk.CTk):
             self.current_secret = None
 
     def handle_server_message(self, raw_data):
-        """Verarbeitet rohe SIP-Nachrichten"""
+        """Verarbeitet eingehende SIP-Nachrichten mit verbesserter Fehlerbehandlung"""
         try:
-            sip_data = parse_sip_message(raw_data.decode('utf-8'))
-        except UnicodeDecodeError:
-            # If UTF-8 fails, treat as binary phonebook data
-            self.handle_phonebook_message({'ENCRYPTED_PHONEBOOK': base64.b64encode(raw_data).decode('utf-8')})
-            return
-            
-
-        sip_data = parse_sip_message(raw_data)
-        if not sip_data:
-            return
-
-        # 1. Ping/Pong
-        if sip_data.get('custom_data', {}).get("PING"):
-            pong_msg = build_sip_message(
-                "MESSAGE",
-                self.server_ip,
-                {"PONG": "true"}
-            )
-            self.client_socket.sendall(pong_msg.encode())
-
-        # 2. Anrufbehandlung
-        elif sip_data.get('method') == "INVITE":
-            self.handle_incoming_call(sip_data)
-        elif sip_data.get('status_code') == "200":
-            print("Anruf bestätigt")
-
-        # 3. Telefonbuch-Updates
-        elif "PHONEBOOK" in sip_data.get('custom_data', {}):
-            self.handle_phonebook_message(sip_data['custom_data'])
+            # 1. Versuche die Nachricht als SIP-Nachricht zu parsen
+            try:
+                message = raw_data.decode('utf-8')
+                sip_data = parse_sip_message(message)
+            except UnicodeDecodeError:
+                sip_data = None
+    
+            # 2. Wenn es keine gültige SIP-Nachricht ist, behandle es als binäre Daten
+            if not sip_data:
+                print("[DEBUG] Received binary data, treating as phonebook")
+                self.handle_phonebook_message({'ENCRYPTED_PHONEBOOK': base64.b64encode(raw_data).decode('utf-8')})
+                return
+    
+            print(f"[DEBUG] Received SIP message: {sip_data}")
+    
+            # 3. Ping/Pong-Handling
+            if sip_data.get('custom_data', {}).get("PING"):
+                print("[DEBUG] Handling PING request")
+                pong_msg = build_sip_message(
+                    "MESSAGE",
+                    self.server_ip,
+                    {"PONG": "true"}
+                )
+                self.client_socket.sendall(pong_msg.encode())
+    
+            # 4. Telefonbuch-Updates
+            elif sip_data.get('custom_data', {}).get("TYPE") == "PHONEBOOK_UPDATE":
+                print("[DEBUG] Handling phonebook update")
+                self.handle_phonebook_message(sip_data['custom_data'])
+    
+            # 5. Anrufbehandlung
+            elif sip_data.get('method') == "INVITE":
+                print("[DEBUG] Handling incoming call")
+                self.handle_incoming_call(sip_data)
+                
+            elif sip_data.get('status_code') == "200":
+                print("[DEBUG] Received 200 OK response")
+    
+        except Exception as e:
+            print(f"[ERROR] Error handling server message: {str(e)}")
+            traceback.print_exc()
 
     def start_connection_wrapper(self):
         """Wrapper für start_connection mit Message-Handler"""
