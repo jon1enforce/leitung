@@ -10,6 +10,9 @@ import uuid
 import re
 import struct
 import base64
+import traceback
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from threading import Lock
 BUFFER_SIZE = 4096
 
 def send_frame(sock, data):
