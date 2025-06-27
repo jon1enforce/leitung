@@ -858,15 +858,15 @@ class PHONEBOOK(ctk.CTk):
                 print("Integritätsfehler: Falscher Overhead im entschlüsselten Geheimnis")
                 return
                 
-            secret = decrypted_secret[11:]  # 59 - 11 = 48 Bytes
+            secret = decrypted_secret[11:59]  # 48 Bytes nach dem Overhead
             iv = secret[:16]
             aes_key = secret[16:]
             
-            # 5. Speichere Geheimnis sicher (mit auslagern.py Methode)
-            self.store_secret_safely(secret)
+            # 5. Speichere Geheimnis sicher
+            self.secret_vault.store(secret)
             
             # 6. Entschlüssele Telefonbuch
-            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)  # op=0 für Entschlüsselung
+            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
             decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
             phonebook_data = json.loads(decrypted_data.decode('utf-8'))
             
