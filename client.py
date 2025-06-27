@@ -85,6 +85,8 @@ def recv_frame(sock, timeout=30):
     except socket.timeout:
         raise TimeoutError("Timeout beim Warten auf Frame")
 
+
+
 def get_public_ip():
     nat_type, public_ip, public_port = stun.get_ip_info()
     return public_ip, public_port  # Für SIP-Contact-Header
@@ -241,6 +243,14 @@ def encrypt_audio_chunk(chunk, key, seed):
     encrypted_chunk = cipher.update(chunk) + cipher.final()
     return encrypted_chunk
 
+
+def load_server_publickey():
+    """Lädt den öffentlichen Server-Schlüssel aus der Datei"""
+    if not os.path.exists("server_public_key.pem"):
+        raise FileNotFoundError("Server public key file not found")
+    
+    with open("server_public_key.pem", "rb") as f:
+        return f.read().decode('utf-8')
 def send_audio_stream(key,seed):
     """
     Erfasst Audio vom Mikrofon, verschlüsselt es und sendet es über das Netzwerk.
