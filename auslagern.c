@@ -1,37 +1,52 @@
-#include <sodium.h>
-#include <sys/prctl.h>
+#define _GNU_SOURCE
+#include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
+#include <sys/prctl.h>
+#include <stdint.h>
 
-// Ptrace-Blocking (Linux)
-void block_debugging() {
-    prctl(PR_SET_DUMPABLE, 0);
-    prctl(PR_SET_PTRACER, PR_SET_PTRACER_DENY);
-}
+#define KEY_SIZE 32
+#define NONCE_SIZE 12
+#define SECRET_SIZE (KEY_SIZE + NONCE_SIZE)
 
-// SecureKey-Struktur (direkt im gesperrten Speicher)
 typedef struct {
-    uint8_t key[32];
-    uint8_t nonce[12];
-} SecureKey;
+    uint8_t data[SECRET_SIZE];
+    volatile int locked;
+} SecureVault;
 
-// Erstellt einen neuen SecureKey (mlock + Anti-Debug)
-SecureKey* keyvault_new() {
-    block_debugging();
-    SecureKey *vault = mmap(NULL, sizeof(SecureKey), 
-               PROT_READ | PROT_WRITE, 
-               MAP_PRIVATE | MAP_ANONYMOUS | MAP_LOCKED, -1, 0);
-    if (vault == MAP_FAILED) return NULL;
-    return vault;
+static void secure_zero(void *s, size_t n) {
+    volatile uint8_t *p = (volatile uint8_t *)s;
+    while (n--) *p++ = 0;
 }
 
-// Lädt Schlüssel (ohne Zwischenspeicher)
-void keyvault_load(SecureKey *vault, const uint8_t *key, const uint8_t *nonce) {
-    for (size_t i = 0; i < 32; i++) vault->key[i] = key[i]; // Kein memcpy!
-    for (size_t i = 0; i < 12; i++) vault->nonce[i] = nonce[i];
+SecureVault* vault_create() {
+    SecureVault *v = mmap(NULL, sizeof(SecureVault),
+                 PROT_READ|PROT_WRITE,
+                 MAP_PRIVATE|MAP_ANONYMOUS|MAP_LOCKED, -1, 0);
+    if (v == MAP_FAILED) return NULL;
+    
+    mlock(v, sizeof(SecureVault));
+    v->locked = 1;
+    return v;
 }
 
-// Löscht den Schlüssel (CPU-Cache + RAM)
-void keyvault_wipe(SecureKey *vault) {
-    sodium_memzero(vault, sizeof(SecureKey));
-    munmap(vault, sizeof(SecureKey));
+void vault_load(SecureVault *v, const uint8_t *secret) {
+    if (!v || !v->locked) return;
+    for (size_t i = 0; i < SECRET_SIZE; i++) {
+        v->data[i] = secret[i];
+    }
+}
+
+void vault_retrieve(const SecureVault *v, uint8_t *output) {
+    if (!v || !v->locked) return;
+    for (size_t i = 0; i < SECRET_SIZE; i++) {
+        output[i] = v->data[i];
+    }
+}
+
+void vault_wipe(SecureVault *v) {
+    if (!v) return;
+    secure_zero(v, sizeof(SecureVault));
+    munlock(v, sizeof(SecureVault));
+    munmap(v, sizeof(SecureVault));
 }
