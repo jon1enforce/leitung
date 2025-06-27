@@ -840,41 +840,35 @@ class PHONEBOOK(ctk.CTk):
         self.create_phonebook_tab()
     
     def handle_phonebook_message(self, encrypted_data):
-        """Entschlüsselt das empfangene Telefonbuch"""
-        try:
-            # 1. Extrahiere verschlüsselte Teile
-            encrypted_secret = base64.b64decode(encrypted_data['ENCRYPTED_SECRET'])
-            encrypted_phonebook = base64.b64decode(encrypted_data['ENCRYPTED_PHONEBOOK'])
-            
-            # 2. Lade privaten Schlüssel
-            with open("private_key.pem", "rb") as f:
-                priv_key = RSA.load_key_string(f.read())
-            
-            # 3. Entschlüssele das Geheimnis
-            decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
-            
-            # 4. Überprüfe Overhead
-            if not decrypted_secret.startswith(b"+++secret+++"):
-                print("Integritätsfehler: Falscher Overhead im entschlüsselten Geheimnis")
-                return
+        """Thread-sichere Verarbeitung des Telefonbuchs"""
+        def _update():
+            try:
+                encrypted_secret = base64.b64decode(encrypted_data['ENCRYPTED_SECRET'])
+                encrypted_phonebook = base64.b64decode(encrypted_data['ENCRYPTED_PHONEBOOK'])
                 
-            secret = decrypted_secret[11:59]  # 48 Bytes nach dem Overhead
-            iv = secret[:16]
-            aes_key = secret[16:]
-            
-            # 5. Speichere Geheimnis sicher
-            self.secret_vault.store(secret)
-            
-            # 6. Entschlüssele Telefonbuch
-            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
-            decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
-            phonebook_data = json.loads(decrypted_data.decode('utf-8'))
-            
-            # 7. Aktualisiere Anzeige
-            self.update_phonebook(phonebook_data)
-            
-        except Exception as e:
-            print(f"Fehler beim Entschlüsseln des Telefonbuchs: {e}")
+                with open("private_key.pem", "rb") as f:
+                    priv_key = RSA.load_key_string(f.read())
+                
+                decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
+                
+                if not decrypted_secret.startswith(b"+++secret+++"):
+                    return
+                    
+                secret = decrypted_secret[11:59]
+                iv = secret[:16]
+                aes_key = secret[16:]
+                
+                cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
+                decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
+                phonebook_data = json.loads(decrypted_data.decode('utf-8'))
+                
+                # Thread-sicheres GUI-Update
+                self.after(0, lambda: self.update_phonebook(phonebook_data))
+                
+            except Exception as e:
+                print(f"Phonebook update error: {str(e)}")
+    
+        threading.Thread(target=_update, daemon=True).start()
     
     def store_secret_safely(self, secret):
         """Sichert das Geheimnis mit SecureVault"""
