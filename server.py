@@ -722,62 +722,58 @@ class Server:
             print(f"Fehler bei der Verschlüsselung des Telefonbuchs: {e}")
             return ""
     def broadcast_phonebook(self):
-        """Broadcastet das aktuelle Telefonbuch an alle verbundenen Clients"""
-        try:
-            # 1. Aktuelle Client-Daten sammeln
-            phonebook_data = [
-                {
-                    'id': client_id,
-                    'name': data['name'],
-                    'ip': data['ip'],
-                    'port': data['port'],
-                    'public_key': data['public_key']
-                }
-                for client_id, data in sorted(self.clients.items(), key=lambda x: int(x[0]))
-                if data.get('socket') is not None
-            ]
-            
-            # 2. Für jeden Client individuell verschlüsseln
-            for client_id, client_data in self.clients.items():
-                if not client_data.get('socket'):
-                    continue
+        """Thread-sichere Version des Broadcasts"""
+        def _broadcast():
+            try:
+                phonebook_data = [
+                    {
+                        'id': client_id,
+                        'name': data['name'],
+                        'ip': data['ip'],
+                        'port': data['port'],
+                        'public_key': data['public_key']
+                    }
+                    for client_id, data in sorted(self.clients.items(), key=lambda x: int(x[0]))
+                    if data.get('socket') is not None
+                ]
+                
+                for client_id, client_data in self.clients.items():
+                    if not client_data.get('socket'):
+                        continue
                     
-                try:
-                    # 3. Generiere 48-Byte Geheimnis (16 IV + 32 Key)
-                    secret = self.generate_secret()
-                    
-                    # 4. Verschlüssele Geheimnis mit Client Public Key
-                    client_pubkey = RSA.load_pub_key_bio(
-                        BIO.MemoryBuffer(client_data['public_key'].encode())
-                    )
-                    encrypted_secret = client_pubkey.public_encrypt(
-                        b"+++secret+++" + secret,
-                        RSA.pkcs1_padding
-                    )
-                    
-                    # 5. Verschlüssele Telefonbuch mit AES
-                    iv = secret[:16]
-                    aes_key = secret[16:]
-                    cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 1)
-                    plaintext = json.dumps(phonebook_data).encode('utf-8')
-                    encrypted_phonebook = cipher.update(plaintext) + cipher.final()
-                    
-                    # 6. Sende verschlüsselte Daten
-                    response = self.build_sip_message(
-                        "MESSAGE",
-                        client_data['name'],
-                        {
-                            "ENCRYPTED_SECRET": base64.b64encode(encrypted_secret).decode(),
-                            "ENCRYPTED_PHONEBOOK": base64.b64encode(encrypted_phonebook).decode()
-                        }
-                    )
-                    send_frame(client_data['socket'], response)
-                    
-                except Exception as e:
-                    print(f"Fehler bei Verschlüsselung für Client {client_id}: {e}")
-                    
-        except Exception as e:
-            print(f"Kritischer Fehler beim Broadcast: {e}")
+                    try:
+                        secret = self.generate_secret()
+                        client_pubkey = RSA.load_pub_key_bio(
+                            BIO.MemoryBuffer(client_data['public_key'].encode())
+                        encrypted_secret = client_pubkey.public_encrypt(
+                            b"+++secret+++" + secret,
+                            RSA.pkcs1_padding
+                        )
+                        
+                        iv = secret[:16]
+                        aes_key = secret[16:]
+                        cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 1)
+                        plaintext = json.dumps(phonebook_data).encode('utf-8')
+                        encrypted_phonebook = cipher.update(plaintext) + cipher.final()
+                        
+                        response = self.build_sip_message(
+                            "MESSAGE",
+                            client_data['name'],
+                            {
+                                "ENCRYPTED_SECRET": base64.b64encode(encrypted_secret).decode(),
+                                "ENCRYPTED_PHONEBOOK": base64.b64encode(encrypted_phonebook).decode()
+                            }
+                        )
+                        send_frame(client_data['socket'], response)
+                        
+                    except Exception as e:
+                        print(f"Broadcast error for client {client_id}: {str(e)}")
+                        
+            except Exception as e:
+                print(f"Critical broadcast error: {str(e)}")
+    
+        # Starte den Broadcast in einem neuen Thread
+        threading.Thread(target=_broadcast, daemon=True).start()
 def load_server_publickey():
     if not os.path.exists("server_public_key.pem"):
         bits = 4096
