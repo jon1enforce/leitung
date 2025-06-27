@@ -776,21 +776,12 @@ class Server:
                 plaintext = json.dumps(phonebook_data).encode('utf-8')
                 encrypted_phonebook = cipher.update(plaintext) + cipher.final()
                 
-                # 5. Baue SIP-Nachricht
-                phonebook_data = {
-                    'MESSAGE_TYPE': 'PHONEBOOK_UPDATE',
-                    'TIMESTAMP': str(int(time.time())),
-                    'ENCRYPTED_SECRET': base64.b64encode(encrypted_secret).decode(),
-                    'ENCRYPTED_PHONEBOOK': base64.b64encode(encrypted_phonebook).decode(),
-                    'CLIENT_ID': client_id
-                }
-                json_body = json.dumps(phonebook_data)
-                
+                # 5. Baue SIP-Nachricht mit der Hilfsmethode
                 response = self.build_phonebook_message(
-                    client_data,
-                    encrypted_secret,
-                    encrypted_phonebook,
-                    client_id
+                    client_data=client_data,
+                    encrypted_secret=encrypted_secret,
+                    encrypted_phonebook=encrypted_phonebook,
+                    client_id=client_id
                 )
                 
                 # 6. Synchroner Versand mit Timeout
