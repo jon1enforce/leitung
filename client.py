@@ -20,7 +20,8 @@ import tkinter as tk
 import stun  # pip install pystun3
 import struct
 import ctypes
-
+import platform
+from typing import Optional
 #fallback für bessere kompatibilität:
 try:
     from tkinter import simpledialog
@@ -727,27 +728,62 @@ def receive_audio_stream(key, seed):
             audio.terminate()
 class SecureVault:
     def __init__(self):
-        self.lib = ctypes.CDLL('./auslagern.so')
-        self.lib.vault_create.restype = ctypes.c_void_p
+        self.lib = None
         self.vault = None
-    
-    def create(self):
+        self._load_correct_library()
+        
+    def _load_correct_library(self):
+        """Läd die richtige Bibliothek für die aktuelle Architektur"""
+        arch = platform.machine().lower()
+        
+        # Mögliche Bibliotheksnamen (an deine Dateinamen anpassen)
+        lib_mapping = {
+            ('x86_64', 'amd64'): "libauslagern_x86_64.so",
+            ('aarch64', 'arm64'): "libauslagern_arm64.so",
+            ('armv7l',): "libauslagern_armv7.so"
+        }
+        
+        for arch_patterns, lib_name in lib_mapping.items():
+            if arch in arch_patterns:
+                try:
+                    self.lib = ctypes.CDLL(f"./{lib_name}")
+                    print(f"Successfully loaded {lib_name} for architecture {arch}")
+                    break
+                except Exception as e:
+                    print(f"Error loading {lib_name}: {str(e)}")
+        else:
+            raise RuntimeError(f"Unsupported architecture: {arch}. Supported: {list(lib_mapping.keys())}")
+
+        # Funktionen definieren
+        self.lib.vault_create.restype = ctypes.c_void_p
+        self.lib.vault_load.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte)]
+        self.lib.vault_retrieve.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte)]
+        
+    def create(self) -> bool:
+        """Erstellt einen neuen Vault"""
+        if not self.lib:
+            return False
         self.vault = self.lib.vault_create()
         return bool(self.vault)
     
-    def store(self, secret):
-        if not self.vault or len(secret) != 48: return False
+    def store(self, secret: bytes) -> bool:
+        """Speichert ein 48-Byte Geheimnis"""
+        if not self.vault or len(secret) != 48:
+            return False
         buf = (ctypes.c_ubyte * 48)(*secret)
         self.lib.vault_load(ctypes.c_void_p(self.vault), buf)
         return True
     
-    def retrieve(self):
-        if not self.vault: return None
+    def retrieve(self) -> Optional[bytes]:
+        """Holt das Geheimnis zurück"""
+        if not self.vault:
+            return None
         buf = (ctypes.c_ubyte * 48)()
         self.lib.vault_retrieve(ctypes.c_void_p(self.vault), buf)
         return bytes(buf)
     
     def wipe(self):
+        """Löscht den Vault"""
         if self.vault:
             self.lib.vault_wipe(ctypes.c_void_p(self.vault))
             self.vault = None
