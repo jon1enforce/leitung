@@ -764,10 +764,51 @@ class PHONEBOOK(ctk.CTk):
         self.create_phonebook_tab()
 
     def create_phonebook_tab(self):
-        # Listbox für das Telefonbuch
-        self.phonebook_listbox = tk.Listbox(self.phonebook_tab, bg='darkgray', fg='black')
-        self.phonebook_listbox.pack(fill='both', expand=True, padx=10, pady=10)
-
+        # Frame für das Telefonbuch mit Scrollbar
+        self.phonebook_frame = ctk.CTkFrame(self.phonebook_tab, fg_color='black')
+        self.phonebook_frame.pack(fill='both', expand=True, padx=10, pady=10)
+        
+        # Canvas für Scrollbar
+        self.canvas = tk.Canvas(self.phonebook_frame, bg='black', highlightthickness=0)
+        self.scrollbar = ttk.Scrollbar(self.phonebook_frame, orient="vertical", command=self.canvas.yview)
+        self.scrollable_frame = ctk.CTkFrame(self.canvas, fg_color='black')
+        
+        self.scrollable_frame.bind(
+            "<Configure>",
+            lambda e: self.canvas.configure(
+                scrollregion=self.canvas.bbox("all")
+            )
+        )
+        
+        self.canvas.create_window((0, 0), window=self.scrollable_frame, anchor="nw")
+        self.canvas.configure(yscrollcommand=self.scrollbar.set)
+        
+        self.canvas.pack(side="left", fill="both", expand=True)
+        self.scrollbar.pack(side="right", fill="y")
+        
+        # Beispiel-Daten (später durch echte Daten ersetzen)
+        self.phonebook_entries = [
+            {"id": "0", "name": "jon"},
+            {"id": "1", "name": "alice"},
+            {"id": "2", "name": "bob"}
+        ]
+        
+        # Phonebook Einträge erstellen
+        self.entry_buttons = []
+        for entry in self.phonebook_entries:
+            btn = ctk.CTkButton(
+                self.scrollable_frame,
+                text=f"{entry['id']}: {entry['name']}",
+                fg_color="#006400",  # Dunkelgrün
+                text_color="white",
+                font=("Helvetica", 14),
+                height=50,
+                corner_radius=10,
+                command=lambda e=entry: self.on_entry_click(e)
+            )
+            btn.pack(fill="x", pady=5, padx=5)
+            self.entry_buttons.append(btn)
+        
         # Buttons am unteren Rand
         buttons = [
             ctk.CTkButton(self.phonebook_tab, text="Update", command=self.load_phonebook),
@@ -775,7 +816,7 @@ class PHONEBOOK(ctk.CTk):
             ctk.CTkButton(self.phonebook_tab, text="Hang Up", command=self.on_hangup_click),
             ctk.CTkButton(self.phonebook_tab, text="Call", command=self.on_call_click)
         ]
-
+    
         # Platzierung der Buttons
         for i, button in enumerate(buttons):
             button.place(relx=i/4, rely=0.95, relwidth=0.25, relheight=0.05, anchor='sw')
@@ -851,19 +892,58 @@ class PHONEBOOK(ctk.CTk):
             self.client_socket = None
         return
 
+    def on_entry_click(self, entry):
+        print(f"Selected entry: {entry['id']}: {entry['name']}")
+        # Hier können Sie die Logik für den Anruf implementieren
+        # Beispiel:
+        # self.initiate_call(entry['id'], entry['name'])
 
-    def update_phonebook(self, phonebook):
-        self.phonebook_listbox.delete(0, tk.END)
-        for entry in phonebook.split("\n"):
-            self.phonebook_listbox.insert(tk.END, entry)
-            print('phonebook updated')
-        # Speichere das Telefonbuch lokal
-        with open("phonebook.json", "w") as f:
-            json.dump(phonebook, f)
+    def update_phonebook(self, phonebook_data):
+        # Lösche vorhandene Einträge
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+        
+        self.entry_buttons = []
+        
+        # Erstelle neue Einträge basierend auf den empfangenen Daten
+        for entry in phonebook_data:
+            btn = ctk.CTkButton(
+                self.scrollable_frame,
+                text=f"{entry['id']}: {entry['name']}",
+                fg_color="#006400",  # Dunkelgrün
+                text_color="white",
+                font=("Helvetica", 14),
+                height=50,
+                corner_radius=10,
+                command=lambda e=entry: self.on_entry_click(e)
+            )
+            btn.pack(fill="x", pady=5, padx=5)
+            self.entry_buttons.append(btn)
+        
+        # Aktualisiere den Canvas
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
 
     def load_phonebook(self):
-        # Lade das Telefonbuch vom Server
-        pass
+        if not self.client_socket:
+            messagebox.showerror("Fehler", "Keine Verbindung zum Server!")
+            return
+        
+        try:
+            # Anfrage an den Server senden
+            request = build_sip_message(
+                "GET",
+                "server",
+                {"REQUEST": "PHONEBOOK"}
+            )
+            self.client_socket.sendall(request.encode('utf-8'))
+            
+            # Antwort empfangen
+            response = recv_frame(self.client_socket)
+            if response:
+                phonebook_data = json.loads(response)
+                self.update_phonebook(phonebook_data)
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Fehler beim Laden des Telefonbuchs: {e}")
 
     def on_numpad_click(self, button):
         self.log_text.insert(tk.END, f"Nummernblock gedrückt: {button}\n")
