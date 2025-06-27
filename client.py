@@ -840,47 +840,66 @@ class PHONEBOOK(ctk.CTk):
         self.create_phonebook_tab()
     
     def handle_phonebook_message(self, encrypted_data):
-        """Thread-sichere Verarbeitung des Telefonbuchs"""
+        """Thread-sichere Verarbeitung des Telefonbuchs mit verbesserter Fehlerbehandlung"""
         def _update():
             try:
-                if isinstance(encrypted_data, str):
-                    # Try to parse as JSON if it's a string
-                    try:
-                        encrypted_data = json.loads(encrypted_data)
-                    except json.JSONDecodeError:
-                        pass
+                print("[DEBUG] Starting phonebook update processing")
                 
-                # Handle both direct binary and base64 encoded data
+                # 1. Sicherstellen, dass encrypted_data ein Dictionary ist
+                if isinstance(encrypted_data, bytes):
+                    encrypted_data = {'ENCRYPTED_PHONEBOOK': base64.b64encode(encrypted_data).decode('utf-8')}
+                elif not isinstance(encrypted_data, dict):
+                    print("[ERROR] Invalid encrypted_data format")
+                    return
+    
+                print(f"[DEBUG] Encrypted data received: {encrypted_data.keys()}")
+                
+                # 2. Extrahiere die verschlüsselten Teile
                 if 'ENCRYPTED_SECRET' in encrypted_data and 'ENCRYPTED_PHONEBOOK' in encrypted_data:
                     encrypted_secret = base64.b64decode(encrypted_data['ENCRYPTED_SECRET'])
                     encrypted_phonebook = base64.b64decode(encrypted_data['ENCRYPTED_PHONEBOOK'])
                 else:
-                    # Assume raw binary data
-                    encrypted_secret = encrypted_data[:256]  # RSA encrypted data is 256 bytes
-                    encrypted_phonebook = encrypted_data[256:]
+                    print("[ERROR] Missing required fields in encrypted_data")
+                    return
+    
+                print("[DEBUG] Encrypted parts extracted successfully")
                 
+                # 3. Entschlüssele das Geheimnis
                 with open("private_key.pem", "rb") as f:
                     priv_key = RSA.load_key_string(f.read())
                 
                 decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
                 
                 if not decrypted_secret.startswith(b"+++secret+++"):
+                    print("[ERROR] Invalid secret format - missing overhead")
                     return
                     
-                secret = decrypted_secret[11:59]
+                secret = decrypted_secret[11:59]  # 48 Bytes nach dem Overhead
                 iv = secret[:16]
                 aes_key = secret[16:]
                 
+                print("[DEBUG] Secret decrypted successfully")
+                
+                # 4. Entschlüssele das Telefonbuch
                 cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
                 decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
-                phonebook_data = json.loads(decrypted_data.decode('utf-8'))
                 
-                # Thread-sicheres GUI-Update
-                self.after(0, lambda: self.update_phonebook(phonebook_data))
+                try:
+                    phonebook_data = json.loads(decrypted_data.decode('utf-8'))
+                    print(f"[DEBUG] Decrypted phonebook data: {phonebook_data}")
+                    
+                    # 5. GUI-Update im Hauptthread
+                    self.after(0, lambda: self.update_phonebook(phonebook_data))
+                    
+                except json.JSONDecodeError as e:
+                    print(f"[ERROR] Failed to parse phonebook JSON: {str(e)}")
+                    print(f"Raw data: {decrypted_data[:100]}...")
                 
             except Exception as e:
-                print(f"Phonebook update error: {str(e)}")
+                print(f"[ERROR] Phonebook update error: {str(e)}")
+                traceback.print_exc()
     
+        # Starte die Verarbeitung in einem neuen Thread
         threading.Thread(target=_update, daemon=True).start()
     
     def store_secret_safely(self, secret):
