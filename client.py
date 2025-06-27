@@ -725,53 +725,32 @@ def receive_audio_stream(key, seed):
             stream.stop_stream()
             stream.close()
             audio.terminate()
-class SecretVault:
-    """Sichere Speicherung für 48-Byte-Geheimnisse mit auslagern.c"""
+class SecureVault:
     def __init__(self):
-        self.lib = self._load_library()
-        
-    def _load_library(self):
-        try:
-            lib = ctypes.CDLL('./auslagern.so')
-            lib.store_secret.argtypes = [ctypes.c_char_p, ctypes.c_size_t]
-            lib.store_secret.restype = ctypes.c_int
-            lib.retrieve_secret.argtypes = []
-            lib.retrieve_secret.restype = ctypes.POINTER(ctypes.c_byte * 48)
-            lib.wipe_secret.argtypes = []
-            lib.wipe_secret.restype = None
-            return lib
-        except Exception as e:
-            print(f"Warnung: Sichere Speicherung nicht verfügbar: {e}")
-            return None
+        self.lib = ctypes.CDLL('./auslagern.so')
+        self.lib.vault_create.restype = ctypes.c_void_p
+        self.vault = None
+    
+    def create(self):
+        self.vault = self.lib.vault_create()
+        return bool(self.vault)
     
     def store(self, secret):
-        """Sichert ein 48-Byte-Geheimnis"""
-        if len(secret) != 48:
-            raise ValueError("Geheimnis muss 48 Bytes lang sein")
-        
-        if self.lib:
-            result = self.lib.store_secret(secret, 48)
-            if result != 0:
-                raise RuntimeError("Fehler beim Speichern des Geheimnisses")
-        else:
-            # Fallback: In Memory behalten (unsicher)
-            self._fallback_secret = secret
+        if not self.vault or len(secret) != 48: return False
+        buf = (ctypes.c_ubyte * 48)(*secret)
+        self.lib.vault_load(ctypes.c_void_p(self.vault), buf)
+        return True
     
     def retrieve(self):
-        """Holt das Geheimnis zurück"""
-        if self.lib:
-            secret_ptr = self.lib.retrieve_secret()
-            return bytes(secret_ptr.contents)
-        elif hasattr(self, '_fallback_secret'):
-            return self._fallback_secret
-        return None
+        if not self.vault: return None
+        buf = (ctypes.c_ubyte * 48)()
+        self.lib.vault_retrieve(ctypes.c_void_p(self.vault), buf)
+        return bytes(buf)
     
     def wipe(self):
-        """Löscht das Geheimnis sicher"""
-        if self.lib:
-            self.lib.wipe_secret()
-        elif hasattr(self, '_fallback_secret'):
-            self._fallback_secret = b'\x00'*48
+        if self.vault:
+            self.lib.vault_wipe(ctypes.c_void_p(self.vault))
+            self.vault = None
 class PHONEBOOK(ctk.CTk):
     def __init__(self):
         super().__init__()
