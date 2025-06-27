@@ -1232,42 +1232,49 @@ class PHONEBOOK(ctk.CTk):
         except Exception as e:
             messagebox.showerror("Anruf fehlgeschlagen", str(e))
             self.current_secret = None
-
-    def handle_server_message(self, raw_data):
-        """Verarbeitet eingehende Nachrichten mit verbesserter Phonebook-Integration"""
+    def _process_json_body(self, body):
         try:
-            # 1. Versuche als SIP-Nachricht zu parsen
-            try:
-                message = raw_data.decode('utf-8')
-                sip_data = parse_sip_message(message)
-                if sip_data:
-                    print(f"[CLIENT] Received SIP message: {sip_data.get('method', 'UNKNOWN')}")
-                    
-                    # Phonebook Update erkennen
-                    if sip_data.get('custom_data', {}).get('MESSAGE_TYPE') == "PHONEBOOK_UPDATE":
-                        print("[CLIENT] Processing phonebook update")
-                        success = self._process_phonebook_update(sip_data['custom_data'])
-                        if not success:
-                            print("[CLIENT] Phonebook update failed")
-                        return success
-                    
-                    # Pong verarbeiten
-                    elif sip_data.get('custom_data', {}).get('PONG'):
-                        print("[CLIENT] Received PONG response")
-                        return True
-                    
-                    # Andere SIP-Nachrichten
-                    return self._handle_standard_sip(sip_data)
-            except UnicodeDecodeError:
-                pass
-                
-            # 2. Fallback für binäre Daten
-            print("[CLIENT] Received binary data, ignoring as phonebook update failed")
+            data = json.loads(body)
+            if 'MESSAGE_TYPE' in data and data['MESSAGE_TYPE'] == "PHONEBOOK_UPDATE":
+                return self._process_phonebook_update(data)
             return False
+        except json.JSONDecodeError:
+            print("[CLIENT] Invalid JSON in message body")
+            return False
+    
+    def handle_server_message(self, raw_data):
+        try:
+            # First try as proper SIP message
+            message = raw_data.decode('utf-8')
+            sip_data = parse_sip_message(message)
+            
+            if not sip_data:
+                return False
                 
+            # Handle PONG responses
+            if sip_data.get('headers', {}).get('PONG'):
+                print("[CLIENT] Received PONG response")
+                return True
+                
+            # Handle phonebook updates
+            if sip_data.get('method') == "MESSAGE":
+                content_type = sip_data.get('headers', {}).get('CONTENT-TYPE', '').lower()
+                
+                if 'phonebook_update' in sip_data.get('custom_data', {}).get('MESSAGE_TYPE', '').lower():
+                    return self._process_phonebook_update(sip_data['custom_data'])
+                    
+                elif 'application/json' in content_type:
+                    # Process JSON body directly
+                    body = message.split('\r\n\r\n')[1] if '\r\n\r\n' in message else ''
+                    return self._process_json_body(body)
+                    
+            return self._handle_standard_sip(sip_data)
+            
+        except UnicodeDecodeError:
+            print("[CLIENT] Received non-UTF8 data, cannot process as SIP")
+            return False
         except Exception as e:
             print(f"[CLIENT] Message handling failed: {str(e)}")
-            traceback.print_exc()
             return False
 
     def start_connection_wrapper(self):
