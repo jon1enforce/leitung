@@ -875,7 +875,10 @@ class PHONEBOOK(ctk.CTk):
             # 1. Base64 Decoding
             encrypted_secret = base64.b64decode(data['ENCRYPTED_SECRET'])
             encrypted_phonebook = base64.b64decode(data['ENCRYPTED_PHONEBOOK'])
-    
+        except Exception as e:
+        print(f"[CLIENT] Base64 decode failed: {str(e)}")
+        return False
+        
         if data.get('MESSAGE_TYPE') != 'PHONEBOOK_UPDATE':
             print("[CLIENT] Invalid message type received")
             return False
