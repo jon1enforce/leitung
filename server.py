@@ -673,54 +673,42 @@ class Server:
         for cid, data in self.phonebook:
             print(f"{cid}: {data['name']}")
     
-    def broadcast_phonebook(self):
-        """Verschlüsselt und sendet das Telefonbuch an alle Clients mit individueller AES-Verschlüsselung"""
+    def handle_phonebook_message(self, encrypted_data):
+        """Entschlüsselt das empfangene Telefonbuch"""
         try:
-            # 1. Bereite Telefonbuchdaten vor
-            phonebook_data = [
-                {'id': cid, 'name': data['name'], 'ip': data['ip'], 'port': data['port']}
-                for cid, data in sorted(self.clients.items(), key=lambda x: int(x[0]))
-                if data.get('socket') is not None
-            ]
+            # 1. Extrahiere verschlüsselte Teile
+            encrypted_secret = base64.b64decode(encrypted_data['ENCRYPTED_SECRET'])
+            encrypted_phonebook = base64.b64decode(encrypted_data['ENCRYPTED_PHONEBOOK'])
             
-            # 2. Für jeden Client individuell verschlüsseln
-            for client_id, client_data in self.clients.items():
-                if not client_data.get('socket') or not client_data.get('public_key'):
-                    continue
-                    
-                try:
-                    # 3. Generiere neues 48-Byte-Geheimnis mit Overhead
-                    secret = generate_secret()
-                    secret_with_overhead = b"+++secret+++" + secret  # 11 + 48 = 59 Bytes
-                    
-                    # 4. Verschlüssele Geheimnis mit Client Public Key
-                    client_pubkey = RSA.load_pub_key_bio(BIO.MemoryBuffer(client_data['public_key'].encode()))
-                    encrypted_secret = client_pubkey.public_encrypt(secret_with_overhead, RSA.pkcs1_padding)
-                    
-                    # 5. Verschlüssele Telefonbuch mit AES
-                    iv = secret[:16]  # Erste 16 Bytes als IV
-                    aes_key = secret[16:]  # Letzte 32 Bytes als AES-Key
-                    cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 1)  # op=1 für Verschlüsselung
-                    plaintext = json.dumps(phonebook_data).encode('utf-8')
-                    encrypted_phonebook = cipher.update(plaintext) + cipher.final()
-                    
-                    # 6. Sende verschlüsselte Daten
-                    response = self.build_sip_message(
-                        "MESSAGE",
-                        client_data['name'],
-                        {
-                            "ENCRYPTED_SECRET": base64.b64encode(encrypted_secret).decode('utf-8'),
-                            "ENCRYPTED_PHONEBOOK": base64.b64encode(encrypted_phonebook).decode('utf-8')
-                        }
-                    )
-                    send_frame(client_data['socket'], response)
-                    
-                except Exception as e:
-                    print(f"Fehler bei Verschlüsselung für Client {client_id}: {e}")
-                    continue
-                    
+            # 2. Lade privaten Schlüssel
+            with open("private_key.pem", "rb") as f:
+                priv_key = RSA.load_key_string(f.read())
+            
+            # 3. Entschlüssele das Geheimnis
+            decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
+            
+            # 4. Überprüfe Overhead
+            if not decrypted_secret.startswith(b"+++secret+++"):
+                print("Integritätsfehler: Falscher Overhead im entschlüsselten Geheimnis")
+                return
+                
+            secret = decrypted_secret[11:59]  # 48 Bytes nach dem Overhead
+            iv = secret[:16]
+            aes_key = secret[16:]
+            
+            # 5. Speichere Geheimnis sicher
+            self.secret_vault.store(secret)
+            
+            # 6. Entschlüssele Telefonbuch
+            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
+            decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
+            phonebook_data = json.loads(decrypted_data.decode('utf-8'))
+            
+            # 7. Aktualisiere Anzeige
+            self.update_phonebook(phonebook_data)
+            
         except Exception as e:
-            print(f"Kritischer Fehler beim Broadcast: {e}")
+            print(f"Fehler beim Entschlüsseln des Telefonbuchs: {e}")
 
     def encrypt_phonebook(self, secret):
         """Verschlüsselt das Telefonbuch mit dem öffentlichen Schlüssel des Clients."""
