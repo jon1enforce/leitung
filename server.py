@@ -726,6 +726,7 @@ class Server:
         """Thread-sichere Version des Broadcasts"""
         def _broadcast():
             try:
+                # Prepare phonebook data
                 phonebook_data = [
                     {
                         'id': client_id,
@@ -743,6 +744,7 @@ class Server:
                         continue
                     
                     try:
+                        # Generate and encrypt secret
                         secret = self.generate_secret()
                         client_pubkey = RSA.load_pub_key_bio(
                             BIO.MemoryBuffer(client_data['public_key'].encode()))
@@ -751,12 +753,14 @@ class Server:
                             RSA.pkcs1_padding
                         )
                         
+                        # Encrypt phonebook data
                         iv = secret[:16]
                         aes_key = secret[16:]
                         cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 1)
                         plaintext = json.dumps(phonebook_data).encode('utf-8')
                         encrypted_phonebook = cipher.update(plaintext) + cipher.final()
                         
+                        # Send as binary frame (not text)
                         response = self.build_sip_message(
                             "MESSAGE",
                             client_data['name'],
@@ -765,7 +769,7 @@ class Server:
                                 "ENCRYPTED_PHONEBOOK": base64.b64encode(encrypted_phonebook).decode()
                             }
                         )
-                        send_frame(client_data['socket'], response)
+                        send_frame(client_data['socket'], response.encode('utf-8'))
                         
                     except Exception as e:
                         print(f"Broadcast error for client {client_id}: {str(e)}")
@@ -773,7 +777,7 @@ class Server:
             except Exception as e:
                 print(f"Critical broadcast error: {str(e)}")
     
-        # Starte den Broadcast in einem neuen Thread
+        # Start broadcast in new thread
         threading.Thread(target=_broadcast, daemon=True).start()
 def load_server_publickey():
     if not os.path.exists("server_public_key.pem"):
