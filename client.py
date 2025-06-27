@@ -763,8 +763,8 @@ class PHONEBOOK(ctk.CTk):
         self.geometry("600x1000")
         self.configure(fg_color='black')
         ctk.set_appearance_mode("dark")
-        
-        self.secret_vault = SecretVault()  # Neue Instanz für Geheimnis-Speicherung
+        self.secret_vault = SecureVault()  # Neue Instanz für Geheimnis-Speicherung
+        self.secret_vault.create()
         self.current_secret = None  # Aktuelles 48-Byte-Geheimnis für laufende Kommunikation
         # Nur setup_ui aufrufen, nicht beide!
         self.setup_ui()
@@ -841,12 +841,11 @@ class PHONEBOOK(ctk.CTk):
             print(f"Fehler beim Entschlüsseln des Telefonbuchs: {e}")
     
     def store_secret_safely(self, secret):
-        """Sichert das Geheimnis mit der auslagern.py Methode"""
+        """Sichert das Geheimnis mit SecureVault"""
         try:
-            # Hier würde die Integration mit auslagern.c/auslagern.py erfolgen
-            # Beispielimplementierung (muss an Ihre auslagern.py angepasst werden):
-            import auslagern
-            auslagern.store_secret(secret)
+            if not self.secret_vault.vault:
+                self.secret_vault.create()
+            self.secret_vault.store(secret)
         except Exception as e:
             print(f"Warnung: Geheimnis konnte nicht sicher gespeichert werden: {e}")
             # Fallback: Temporär in Memory behalten
