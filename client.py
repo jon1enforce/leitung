@@ -843,8 +843,21 @@ class PHONEBOOK(ctk.CTk):
         """Thread-sichere Verarbeitung des Telefonbuchs"""
         def _update():
             try:
-                encrypted_secret = base64.b64decode(encrypted_data['ENCRYPTED_SECRET'])
-                encrypted_phonebook = base64.b64decode(encrypted_data['ENCRYPTED_PHONEBOOK'])
+                if isinstance(encrypted_data, str):
+                    # Try to parse as JSON if it's a string
+                    try:
+                        encrypted_data = json.loads(encrypted_data)
+                    except json.JSONDecodeError:
+                        pass
+                
+                # Handle both direct binary and base64 encoded data
+                if 'ENCRYPTED_SECRET' in encrypted_data and 'ENCRYPTED_PHONEBOOK' in encrypted_data:
+                    encrypted_secret = base64.b64decode(encrypted_data['ENCRYPTED_SECRET'])
+                    encrypted_phonebook = base64.b64decode(encrypted_data['ENCRYPTED_PHONEBOOK'])
+                else:
+                    # Assume raw binary data
+                    encrypted_secret = encrypted_data[:256]  # RSA encrypted data is 256 bytes
+                    encrypted_phonebook = encrypted_data[256:]
                 
                 with open("private_key.pem", "rb") as f:
                     priv_key = RSA.load_key_string(f.read())
