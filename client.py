@@ -382,48 +382,54 @@ def build_sip_message(method, recipient, custom_data={}):
         f"{body}"
     )
 def parse_sip_message(message):
-    """Improved SIP message parser that properly handles JSON bodies"""
+    """Improved SIP message parser that properly handles different message formats"""
     if isinstance(message, bytes):
         message = message.decode('utf-8')
     
     result = {
         'method': None,
+        'status_code': None,
         'headers': {},
-        'custom_data': {}
+        'custom_data': {},
+        'body': None
     }
     
     # Split headers and body
     parts = message.split('\r\n\r\n', 1)
     headers = parts[0]
     
+    # Parse first line
+    first_line = headers.split('\r\n')[0]
+    if first_line.startswith('SIP/2.0'):
+        parts = first_line.split()
+        if len(parts) >= 2:
+            result['status_code'] = parts[1]
+            if len(parts) > 2:
+                result['status_message'] = ' '.join(parts[2:])
+    else:
+        result['method'] = first_line.split()[0]
+    
     # Parse headers
-    for line in headers.split('\r\n'):
+    for line in headers.split('\r\n')[1:]:
         if ': ' in line:
             key, val = line.split(': ', 1)
             result['headers'][key.strip().upper()] = val.strip()
     
-    # Parse first line
-    first_line = headers.split('\r\n')[0]
-    if first_line.startswith(('SIP/2.0', 'REGISTER', 'INVITE', 'MESSAGE')):
-        if first_line.startswith('SIP/2.0'):
-            parts = first_line.split()
-            if len(parts) >= 2:
-                result['status_code'] = parts[1]
-        else:
-            result['method'] = first_line.split()[0]
-    
     # Parse body if present
-    if len(parts) > 1 and 'CONTENT-TYPE' in result['headers']:
-        body = parts[1]
-        content_type = result['headers']['CONTENT-TYPE'].lower()
-        
-        if 'application/json' in content_type:
-            try:
-                result['body'] = json.loads(body)
-            except json.JSONDecodeError:
+    if len(parts) > 1:
+        body = parts[1].strip()
+        if body:
+            # Try to parse as custom data (key:value pairs)
+            custom_data = {}
+            for line in body.split('\r\n'):
+                if ': ' in line:
+                    key, val = line.split(': ', 1)
+                    custom_data[key.strip()] = val.strip()
+            
+            if custom_data:
+                result['custom_data'] = custom_data
+            else:
                 result['body'] = body
-        else:
-            result['body'] = body
     
     return result
 def connection_loop(client_socket, server_ip, message_handler=None):
@@ -1316,7 +1322,11 @@ class PHONEBOOK(ctk.CTk):
         """Verarbeitet eingehende Nachrichten mit verbesserter Phonebook-Integration"""
         try:
             # 1. Versuche als SIP-Nachricht zu parsen
-            message = raw_data.decode('utf-8')
+            if isinstance(raw_data, bytes):
+                message = raw_data.decode('utf-8')
+            else:
+                message = str(raw_data)
+                
             sip_data = parse_sip_message(message)
             
             if not sip_data:
@@ -1328,9 +1338,9 @@ class PHONEBOOK(ctk.CTk):
                 return True
                 
             # 3. Handle phonebook updates
-            if 'body' in sip_data and isinstance(sip_data['body'], dict):
-                if sip_data['body'].get('MESSAGE_TYPE') == 'PHONEBOOK_UPDATE':
-                    return self._process_phonebook_update(sip_data['body'])
+            if 'custom_data' in sip_data and isinstance(sip_data['custom_data'], dict):
+                if 'MESSAGE_TYPE' in sip_data['custom_data'] and sip_data['custom_data']['MESSAGE_TYPE'] == 'PHONEBOOK_UPDATE':
+                    return self._process_phonebook_update(sip_data['custom_data'])
                     
             return self._handle_standard_sip(sip_data)
             
@@ -1339,6 +1349,7 @@ class PHONEBOOK(ctk.CTk):
             return False
         except Exception as e:
             print(f"[CLIENT] Message handling failed: {str(e)}")
+            traceback.print_exc()
             return False
 
     def start_connection_wrapper(self):
