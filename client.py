@@ -839,91 +839,60 @@ class PHONEBOOK(ctk.CTk):
         self.notebook.add(self.phonebook_tab, text="Telefonbuch")
         self.create_phonebook_tab()
     
-    def handle_phonebook_message(self, encrypted_data=None):
-        """Thread-sichere Verarbeitung des Telefonbuchs mit verbesserter Fehlerbehandlung"""
-        if encrypted_data is None:
-            print("[ERROR] No encrypted data provided")
-            return
+    def _handle_standard_sip(self, sip_data):
+        """Verarbeitet reguläre SIP-Nachrichten"""
+        # Hier können andere SIP-Nachrichten behandelt werden
+        print(f"[CLIENT] Handling standard SIP message: {sip_data}")
+        return True
+    def _process_phonebook_update(self, data):
+        """Verarbeitet Phonebook-Updates mit vollständiger Fehlerbehandlung"""
+        if not all(key in data for key in ['MESSAGE_TYPE', 'ENCRYPTED_SECRET', 'ENCRYPTED_PHONEBOOK']):
+            print("[CLIENT] Invalid phonebook message format!")
+            return False
     
-        def _update():
+        try:
+            print(f"[CLIENT] Processing phonebook update (Type: {data['MESSAGE_TYPE']})")
+            
+            # 1. Base64 Decoding
+            encrypted_secret = base64.b64decode(data['ENCRYPTED_SECRET'])
+            encrypted_phonebook = base64.b64decode(data['ENCRYPTED_PHONEBOOK'])
+            
+            # 2. Entschlüssele das Secret mit privatem Schlüssel
+            with open("private_key.pem", "rb") as f:
+                priv_key = RSA.load_key_string(f.read())
+            
+            decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
+            
+            # 3. Validiere den Secret-Header
+            if not decrypted_secret.startswith(b"+++secret+++"):
+                print("[CLIENT] Invalid secret format!")
+                return False
+                
+            secret = decrypted_secret[11:59]  # 48 Bytes Nutzdaten
+            iv = secret[:16]
+            aes_key = secret[16:]
+            
+            # 4. Entschlüssele das Phonebook
+            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)  # 0 = Entschlüsselung
+            decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
+            
+            # 5. Parse JSON
             try:
-                print("[DEBUG] Starting phonebook update processing")
-                print(f"[DEBUG] Encrypted data received: {type(encrypted_data)}")
+                phonebook_data = json.loads(decrypted_data.decode('utf-8'))
+                print(f"[CLIENT] Received phonebook with {len(phonebook_data)} entries")
                 
-                # 1. Sicherstellen, dass encrypted_data ein Dictionary ist
-                if isinstance(encrypted_data, bytes):
-                    data = {'ENCRYPTED_PHONEBOOK': base64.b64encode(encrypted_data).decode('utf-8')}
-                elif isinstance(encrypted_data, str):
-                    try:
-                        data = json.loads(encrypted_data)
-                    except json.JSONDecodeError:
-                        data = {'ENCRYPTED_PHONEBOOK': encrypted_data}
-                else:
-                    data = encrypted_data
-    
-                print(f"[DEBUG] Processing data: {data.keys() if isinstance(data, dict) else data}")
+                # 6. Update GUI im Hauptthread
+                self.after(0, lambda: self.update_phonebook(phonebook_data))
+                return True
                 
-                # 2. Extrahiere die verschlüsselten Teile
-                if not isinstance(data, dict):
-                    print("[ERROR] Invalid data format - expected dictionary")
-                    return
-    
-                if 'ENCRYPTED_SECRET' not in data or 'ENCRYPTED_PHONEBOOK' not in data:
-                    print("[ERROR] Missing required fields in encrypted data")
-                    return
-    
-                try:
-                    encrypted_secret = base64.b64decode(data['ENCRYPTED_SECRET'])
-                    encrypted_phonebook = base64.b64decode(data['ENCRYPTED_PHONEBOOK'])
-                except Exception as e:
-                    print(f"[ERROR] Failed to decode base64 data: {str(e)}")
-                    return
-    
-                print("[DEBUG] Encrypted parts extracted successfully")
+            except json.JSONDecodeError as e:
+                print(f"[CLIENT] Invalid phonebook JSON: {str(e)}")
+                return False
                 
-                # 3. Entschlüssele das Geheimnis
-                try:
-                    with open("private_key.pem", "rb") as f:
-                        priv_key = RSA.load_key_string(f.read())
-                    
-                    decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
-                    
-                    if not decrypted_secret.startswith(b"+++secret+++"):
-                        print("[ERROR] Invalid secret format - missing overhead")
-                        return
-                        
-                    secret = decrypted_secret[11:59]  # 48 Bytes nach dem Overhead
-                    iv = secret[:16]
-                    aes_key = secret[16:]
-                    
-                    print("[DEBUG] Secret decrypted successfully")
-                    
-                    # 4. Entschlüssele das Telefonbuch
-                    cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
-                    decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
-                    
-                    try:
-                        phonebook_data = json.loads(decrypted_data.decode('utf-8'))
-                        print(f"[DEBUG] Decrypted phonebook data: {phonebook_data}")
-                        
-                        # 5. GUI-Update im Hauptthread
-                        self.after(0, lambda: self.update_phonebook(phonebook_data))
-                        
-                    except json.JSONDecodeError as e:
-                        print(f"[ERROR] Failed to parse phonebook JSON: {str(e)}")
-                        print(f"Raw data: {decrypted_data[:100]}...")
-                    
-                except Exception as e:
-                    print(f"[ERROR] Decryption failed: {str(e)}")
-                    traceback.print_exc()
-                
-            except Exception as e:
-                print(f"[ERROR] Phonebook update error: {str(e)}")
-                traceback.print_exc()
-    
-        # Starte die Verarbeitung in einem neuen Thread
-        threading.Thread(target=_update, daemon=True).start()
-    
+        except Exception as e:
+            print(f"[CLIENT] Phonebook processing failed: {str(e)}")
+            traceback.print_exc()
+            return False
     def store_secret_safely(self, secret):
         """Sichert das Geheimnis mit SecureVault"""
         try:
