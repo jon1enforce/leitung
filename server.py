@@ -671,46 +671,55 @@ class Server:
             print(f"{cid}: {data['name']}")
     
     def broadcast_phonebook(self):
-        """Sendet verschlüsseltes Telefonbuch an alle Clients"""
+        """Sendet verschlüsseltes Telefonbuch an alle Clients mit AES"""
         try:
-            # 1. Generiere temporären AES-Schlüssel
-            temp_secret = os.urandom(32)  # 256-bit Schlüssel
-            iv = os.urandom(16)  # Initialisierungsvektor
+            # 1. Bereite Telefonbuchdaten vor
+            phonebook_data = [
+                {'id': cid, 'name': data['name']} 
+                for cid, data in sorted(self.clients.items(), key=lambda x: int(x[0]))
+            ]
             
-            # 2. Prepare phonebook data
-            phonebook_data = {
-                'entries': [
-                    {'id': cid, 'name': data['name']} 
-                    for cid, data in self.phonebook
-                ],
-                'timestamp': time.time()
-            }
-            
-            # 3. Verschlüsseln mit AES
-            cipher = EVP.Cipher("aes_256_cbc", temp_secret, iv, 1)
-            encrypted_data = cipher.update(json.dumps(phonebook_data).encode()) + cipher.final()
-            
-            # 4. An alle Clients senden
-            for cid, client_data in self.phonebook:
-                try:
-                    # 4a. RSA-verschlüsselten AES-Schlüssel senden
-                    pubkey = RSA.load_pub_key_bio(BIO.MemoryBuffer(client_data['public_key'].encode()))
-                    encrypted_secret = pubkey.public_encrypt(temp_secret + iv, RSA.pkcs1_padding)
-                    
-                    # 4b. Paket zusammenstellen
-                    packet = {
-                        'encrypted_data': encrypted_data.hex(),
-                        'encrypted_secret': encrypted_secret.hex()
-                    }
-                    
-                    send_frame(client_data['socket'], json.dumps(packet).encode())
-                    
-                except Exception as e:
-                    print(f"Fehler bei Client {cid}: {str(e)}")
-                    continue
-                    
+            # 2. Sende an alle Clients
+            for client_id, client_data in self.clients.items():
+                if client_data.get('socket') and client_data.get('aes_secret'):
+                    try:
+                        # 3. Entschlüssele das Client-Geheimnis mit dem privaten Server-Schlüssel
+                        with open("server_private_key.pem", "rb") as f:
+                            priv_key = RSA.load_key_string(f.read())
+                        
+                        # Der Client hat 48 Bytes gesendet (16 Bytes IV + 32 Bytes AES Key)
+                        encrypted_secret = client_data['aes_secret']
+                        decrypted_secret = priv_key.private_decrypt(
+                            encrypted_secret, 
+                            RSA.pkcs1_padding
+                        )
+                        
+                        # Extrahiere IV (16 Bytes) und AES Key (32 Bytes)
+                        iv = decrypted_secret[:16]
+                        aes_key = decrypted_secret[16:48]
+                        
+                        # 4. Verschlüssele das Telefonbuch mit AES
+                        cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 1)
+                        plaintext = json.dumps(phonebook_data).encode('utf-8')
+                        encrypted_data = cipher.update(plaintext) + cipher.final()
+                        
+                        # 5. Sende die verschlüsselten Daten
+                        response = self.build_sip_message(
+                            "MESSAGE",
+                            client_data['name'],
+                            {
+                                "ENCRYPTED_PHONEBOOK": base64.b64encode(encrypted_data).decode('utf-8'),
+                                "TIMESTAMP": str(time.time())
+                            }
+                        )
+                        send_frame(client_data['socket'], response)
+                        
+                    except Exception as e:
+                        print(f"Fehler bei Verschlüsselung für Client {client_id}: {e}")
+                        continue
+                        
         except Exception as e:
-            print(f"Broadcast-Fehler: {str(e)}")
+            print(f"Kritischer Fehler beim Broadcast: {e}")
 
     def encrypt_phonebook(self, secret):
         """Verschlüsselt das Telefonbuch mit dem öffentlichen Schlüssel des Clients."""
