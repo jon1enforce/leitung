@@ -726,6 +726,10 @@ class PHONEBOOK(ctk.CTk):
     def __init__(self):
         super().__init__()
         self.client_socket = None
+        self.server_public_key = None
+        self.encrypted_secret = None
+        self.aes_iv = None
+        self.aes_key = None
         self.title("PHONEBOOK, mein Telefonbuch")
         self.geometry("600x1000")
         self.configure(fg_color='black')
@@ -762,6 +766,102 @@ class PHONEBOOK(ctk.CTk):
         self.phonebook_tab = ctk.CTkFrame(self.notebook,fg_color='black')
         self.notebook.add(self.phonebook_tab, text="Telefonbuch")
         self.create_phonebook_tab()
+        self.setup_ui()
+
+    def setup_ui(self):
+        # Stile für die UI-Elemente
+        self.style = ttk.Style(self)
+        self.style.theme_use('alt')
+        self.style.configure('TFrame', background='black')
+        self.style.configure('TLabel', background='black', foreground='white')
+        self.style.configure('TButton', background='black', foreground='white')
+        self.style.configure('TEntry', background='gray', foreground='white')
+        self.style.configure('TCombobox', background='gray', foreground='white')
+        self.style.configure('TNotebook', background='black')
+        self.style.configure('TNotebook.Tab', background='black', foreground='white')
+
+        # Menüleiste
+        self.menu_bar = tk.Menu(self)
+        self.config(menu=self.menu_bar)
+
+        file_menu = tk.Menu(self.menu_bar, tearoff=0)
+        file_menu.add_command(label="Schließen", command=self.quit)
+        self.menu_bar.add_cascade(label="Datei", menu=file_menu)
+
+        settings_menu = tk.Menu(self.menu_bar, tearoff=0)
+        settings_menu.add_command(label="Tastatur", command=self.open_keyboard_settings)
+        settings_menu.add_command(label="Sprache", command=self.open_language_settings)
+        self.menu_bar.add_cascade(label="Einstellungen", menu=settings_menu)
+
+        # Notebook für Tabs
+        self.notebook = ttk.Notebook(self)
+        self.notebook.pack(fill='both', expand=True)
+
+        # Telefonbuch-Tab
+        self.phonebook_tab = ctk.CTkFrame(self.notebook, fg_color='black')
+        self.notebook.add(self.phonebook_tab, text="Telefonbuch")
+        self.create_phonebook_tab()
+
+    def handle_phonebook_message(self, encrypted_data):
+        """Entschlüsselt das empfangene Telefonbuch"""
+        try:
+            # 1. Lade privaten Schlüssel
+            with open("private_key.pem", "rb") as f:
+                priv_key = RSA.load_key_string(f.read())
+            
+            # 2. Entschlüssele das Geheimnis (IV + AES Key)
+            decrypted_secret = priv_key.private_decrypt(
+                self.encrypted_secret,  # Das zuvor an den Server gesendete Geheimnis
+                RSA.pkcs1_padding
+            )
+            iv = decrypted_secret[:16]
+            aes_key = decrypted_secret[16:48]
+            
+            # 3. Entschlüssele die Telefonbuch-Daten
+            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)  # op=0 für Entschlüsselung
+            decrypted_data = cipher.update(base64.b64decode(encrypted_data)) + cipher.final()
+            
+            # 4. Parse das Telefonbuch
+            phonebook_data = json.loads(decrypted_data.decode('utf-8'))
+            self.update_phonebook(phonebook_data)
+            
+        except Exception as e:
+            print(f"Fehler beim Entschlüsseln des Telefonbuchs: {e}")
+
+    def send_client_secret(self):
+        """Generiert und sendet das AES-Geheimnis an den Server"""
+        try:
+            # 1. Generiere 48-Byte Geheimnis (16 IV + 32 AES Key)
+            secret = generate_secret()  # Ihre existierende Funktion
+            
+            # 2. Lade Server Public Key
+            server_pubkey = RSA.load_pub_key_bio(
+                BIO.MemoryBuffer(self.server_public_key.encode())
+            )
+            
+            # 3. Verschlüssele das Geheimnis mit dem Server Public Key
+            encrypted_secret = server_pubkey.public_encrypt(
+                secret, 
+                RSA.pkcs1_padding
+            )
+            
+            # 4. Sende an Server
+            request = self.build_sip_message(
+                "MESSAGE",
+                "server",
+                {
+                    "CLIENT_SECRET": base64.b64encode(encrypted_secret).decode('utf-8')
+                }
+            )
+            self.client_socket.sendall(request.encode('utf-8'))
+            
+            # Speichere das Geheimnis für spätere Entschlüsselung
+            self.encrypted_secret = encrypted_secret
+            self.aes_iv = secret[:16]
+            self.aes_key = secret[16:48]
+            
+        except Exception as e:
+            print(f"Fehler beim Senden des Geheimnisses: {e}")
 
     def create_phonebook_tab(self):
         # Frame für das Telefonbuch mit Scrollbar
