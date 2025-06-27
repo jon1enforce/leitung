@@ -569,6 +569,9 @@ class Server:
                         pong_msg = self.build_sip_message("MESSAGE", client_name, {"PONG": "true"})
                         client_socket.sendall(pong_msg.encode('utf-8'))
                         last_pong_time = time.time()
+                elif msg.get('custom_data', {}).get('CLIENT_SECRET'):
+                    encrypted_secret = base64.b64decode(msg['custom_data']['CLIENT_SECRET'])
+                    self.clients[client_id]['aes_secret'] = encrypted_secret
                         
             except socket.timeout:
                 continue
