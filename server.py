@@ -683,6 +683,27 @@ class Server:
         for cid, data in self.phonebook:
             print(f"{cid}: {data['name']}")
     
+    def build_phonebook_message(self, client_data, encrypted_secret, encrypted_phonebook, client_id):
+        """Builds properly formatted SIP message with JSON body"""
+        message_data = {
+            "MESSAGE_TYPE": "PHONEBOOK_UPDATE",
+            "TIMESTAMP": str(int(time.time())),
+            "ENCRYPTED_SECRET": base64.b64encode(encrypted_secret).decode(),
+            "ENCRYPTED_PHONEBOOK": base64.b64encode(encrypted_phonebook).decode(),
+            "CLIENT_ID": client_id
+        }
+        json_body = json.dumps(message_data)
+        
+        return (
+            f"MESSAGE sip:{client_data['name']} SIP/2.0\r\n"
+            f"From: <sip:server@{self.host}>\r\n"
+            f"To: <sip:{client_data['name']}@{client_data['ip']}>\r\n"
+            f"Content-Type: application/json\r\n"
+            f"Content-Length: {len(json_body)}\r\n\r\n"
+            f"{json_body}"
+        )
+
+
     def handle_phonebook_message(self, encrypted_data):
         """Entschlüsselt das empfangene Telefonbuch"""
         try:
