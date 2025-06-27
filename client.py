@@ -970,27 +970,38 @@ class PHONEBOOK(ctk.CTk):
         if self.client_socket:
             messagebox.showerror("Fehler", "Es besteht bereits eine Verbindung zum Server.")
             return
-
+    
         server_ip = self.server_ip_input.get()
         server_port = self.server_port_input.get()
         client_name = load_client_name()
+        
         if not server_ip or not server_port or not client_name:
             messagebox.showerror("Fehler", "Keine Server-IP, Port oder Name angegeben.")
             return
-
+    
         self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
             self.client_socket.connect((server_ip, int(server_port)))
-            # Starte den Thread korrekt
-            message_thread = threading.Thread(target=start_connection, args=(server_ip, server_port, client_name, self.client_socket))
-            message_thread.daemon = True  # Daemon-Thread, damit er beendet wird, wenn das Hauptprogramm endet
-            message_thread.start()  # Starte den Thread
-            self.connection_window.after(1000,self.connection_window.destroy)            
+            
+            # Starte den Thread für die Verbindung
+            message_thread = threading.Thread(
+                target=start_connection, 
+                args=(server_ip, server_port, client_name, self.client_socket)
+            )
+            message_thread.daemon = True
+            message_thread.start()
+            
+            # Speichere den Server Public Key
+            self.server_public_key = load_server_publickey()
+            
+            # Sende das Client-Geheimnis
+            self.send_client_secret()
+            
+            self.connection_window.after(1000, self.connection_window.destroy)
             
         except Exception as e:
             messagebox.showerror("Fehler", f"Verbindung zum Server fehlgeschlagen: {e}")
             self.client_socket = None
-        return
 
     def on_entry_click(self, entry):
         print(f"Selected entry: {entry['id']}: {entry['name']}")
