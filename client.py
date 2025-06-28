@@ -391,8 +391,8 @@ def build_sip_message(method, recipient, custom_data={}):
     
     return (
         f"{method} sip:{recipient} SIP/2.0\r\n"
-        f"From: <sip:{'server' if hasattr(self, 'host') else load_client_name()}@"
-        f"{self.host if hasattr(self, 'host') else socket.gethostbyname(socket.gethostname())}>\r\n"
+        f"From: <sip:{'server' if hasattr('host') else load_client_name()}@"
+        f"{host if hasattr('host') else socket.gethostbyname(socket.gethostname())}>\r\n"
         f"To: <sip:{recipient}>\r\n"
         f"Content-Type: {content_type}\r\n"
         f"Content-Length: {len(body)}\r\n\r\n"
