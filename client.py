@@ -1047,7 +1047,7 @@ class PHONEBOOK(ctk.CTk):
 #threading
     def on_connect_click(self):
         if self.client_socket:
-            messagebox.showerror("Fehler", "Bereits verbunden")
+            print("Fehler, bereits verbunden")
             return
     
         self.server_ip = self.server_ip_input.get()
@@ -1063,7 +1063,7 @@ class PHONEBOOK(ctk.CTk):
                 daemon=True
             ).start()
             
-            messagebox.showinfo("Erfolg", "Verbunden mit Server")
+            print("Verbunden mit Server")
             self.connection_window.destroy()
     
         except Exception as e:
