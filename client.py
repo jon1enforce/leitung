@@ -1091,14 +1091,32 @@ class PHONEBOOK(ctk.CTk):
         # self.initiate_call(entry['id'], entry['name'])
 
     def update_phonebook(self, phonebook_data):
+        """Aktualisiert das Telefonbuch mit sortierten Client-Daten"""
         # Lösche vorhandene Einträge
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
         
         self.entry_buttons = []
         
-        # Erstelle neue Einträge basierend auf den empfangenen Daten
-        for entry in phonebook_data:
+        # Sicherstellen, dass es sich um eine Liste von Dictionaries handelt
+        if not isinstance(phonebook_data, list):
+            print("[ERROR] Invalid phonebook data format")
+            return
+        
+        # Nur Client-Einträge mit numerischer ID anzeigen
+        valid_entries = [
+            entry for entry in phonebook_data
+            if isinstance(entry, dict) and 
+            str(entry.get('id', '')).isdigit() and 
+            entry.get('name') and 
+            not entry.get('name', '').lower() == 'server'
+        ]
+        
+        # Nach ID sortieren
+        valid_entries.sort(key=lambda x: int(x['id']))
+        
+        # Einträge erstellen
+        for entry in valid_entries:
             btn = ctk.CTkButton(
                 self.scrollable_frame,
                 text=f"{entry['id']}: {entry['name']}",
