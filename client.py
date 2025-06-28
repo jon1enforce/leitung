@@ -1403,101 +1403,49 @@ class PHONEBOOK(ctk.CTk):
 
     
     def _process_encrypted_phonebook(self, encrypted_data):
-        """Verarbeitet verschlüsselte Phonebook-Daten"""
+        """Process encrypted phonebook data"""
         print("\n=== DECRYPTING PHONEBOOK DATA ===")
-        print(f"[DEBUG] Received data length: {len(encrypted_data)} bytes")
         
         try:
-            # 1. Validate minimum length (RSA block + some AES data)
+            # Validate minimum length
             if len(encrypted_data) < 512:
                 print(f"[ERROR] Data too short ({len(encrypted_data)} bytes)")
                 return False
                 
-            # 2. Extract encrypted parts
             encrypted_secret = encrypted_data[:512]
             encrypted_phonebook = encrypted_data[512:]
             
             print(f"[DEBUG] Encrypted secret (512 bytes): {encrypted_secret[:16].hex(' ')}...")
             print(f"[DEBUG] Encrypted phonebook ({len(encrypted_phonebook)} bytes): {encrypted_phonebook[:16].hex(' ')}...")
     
-            # 3. Load private key with validation
-            print("[DEBUG] Loading private key...")
-            try:
-                with open("private_key.pem", "rb") as f:
-                    priv_key_data = f.read()
-                    if not priv_key_data:
-                        print("[ERROR] Private key file is empty")
-                        return False
-                        
-                    priv_key = RSA.load_key_string(priv_key_data)
-                    if not priv_key:
-                        print("[ERROR] Failed to load private key")
-                        return False
-                        
-                    print("[DEBUG] Private key loaded successfully")
-            except Exception as e:
-                print(f"[ERROR] Private key loading failed: {str(e)}")
-                return False
-    
-            # 4. Decrypt the secret
-            print("[DEBUG] Decrypting secret...")
-            try:
-                decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
-                if not decrypted_secret:
-                    print("[ERROR] Decryption returned empty result")
-                    return False
-                    
-                print(f"[DEBUG] Decrypted secret (len={len(decrypted_secret)}): {decrypted_secret[:16].hex(' ')}...")
+            # Load private key
+            with open("private_key.pem", "rb") as f:
+                priv_key = RSA.load_key_string(f.read())
                 
-                # 5. Validate secret structure
-                if not decrypted_secret.startswith(b"+++secret+++"):
-                    print("[ERROR] Invalid secret format - missing overhead")
-                    print(f"[DEBUG] Secret starts with: {decrypted_secret[:12]}")
-                    return False
-                    
-                if len(decrypted_secret) < 59:  # 11 overhead + 48 secret
-                    print(f"[ERROR] Decrypted secret too short ({len(decrypted_secret)} bytes)")
-                    return False
-                    
-                secret = decrypted_secret[11:59]  # 48 bytes
-                iv = secret[:16]
-                aes_key = secret[16:48]
-                
-                print(f"[DEBUG] AES IV: {iv.hex(' ')}")
-                print(f"[DEBUG] AES Key: {aes_key[:8].hex(' ')}...")
-    
-                # 6. Decrypt phonebook
-                print("[DEBUG] Decrypting phonebook...")
-                cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
-                decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
-                
-                if not decrypted_data:
-                    print("[ERROR] Decrypted phonebook is empty")
-                    return False
-                    
-                print(f"[DEBUG] Decrypted data (len={len(decrypted_data)}): {decrypted_data[:100]}...")
-    
-                # 7. Parse JSON
-                try:
-                    phonebook_data = json.loads(decrypted_data.decode('utf-8'))
-                    print(f"[DEBUG] Successfully parsed {len(phonebook_data)} entries")
-                    
-                    # 8. Update UI
-                    self.after(0, lambda: self.update_phonebook(phonebook_data))
-                    return True
-                    
-                except json.JSONDecodeError as e:
-                    print(f"[ERROR] JSON parsing failed: {str(e)}")
-                    print(f"[DEBUG] Problematic data: {decrypted_data[max(0, e.pos-50):e.pos+50]}")
-                    return False
-                    
-            except Exception as e:
-                print(f"[ERROR] Decryption failed: {str(e)}")
-                traceback.print_exc()
+            # Decrypt secret
+            decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
+            if not decrypted_secret.startswith(b"+++secret+++"):
+                print("[ERROR] Invalid secret format")
                 return False
                 
+            secret = decrypted_secret[11:59]  # Skip overhead
+            iv = secret[:16]
+            aes_key = secret[16:48]
+            
+            # Decrypt phonebook
+            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
+            decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
+            
+            # Parse phonebook
+            phonebook_data = json.loads(decrypted_data.decode('utf-8'))
+            print(f"[DEBUG] Received phonebook with {len(phonebook_data)} entries")
+            
+            # Update UI in main thread
+            self.after(0, lambda: self.update_phonebook(phonebook_data))
+            return True
+            
         except Exception as e:
-            print(f"[CRITICAL] Processing failed: {str(e)}")
+            print(f"[DECRYPTION ERROR] {str(e)}")
             traceback.print_exc()
             return False
     
@@ -1507,49 +1455,43 @@ class PHONEBOOK(ctk.CTk):
         print(f"[FRAME] Length: {len(framed_data)} bytes")
         
         try:
-            # 1. Skip frame header if present
+            # Skip frame header if present (first 4 bytes)
             if len(framed_data) > 4 and framed_data[:4] == struct.pack('!I', len(framed_data)-4):
                 framed_data = framed_data[4:]
             
-            # 2. Try to parse as SIP message first
-            try:
-                message_str = framed_data.decode('utf-8')
-                if '\r\n\r\n' in message_str:
-                    headers, body = message_str.split('\r\n\r\n', 1)
-                    
-                    # Check if this is an encrypted phonebook message
-                    if "ENCRYPTED_PHONEBOOK" in headers or "ENCRYPTED_SECRET" in headers:
-                        print("[DEBUG] Found encrypted phonebook in SIP message")
-                        
-                        # Try to parse as JSON if content-type indicates
-                        if "application/json" in headers:
-                            try:
-                                data = json.loads(body)
-                                if "ENCRYPTED_SECRET" in data and "ENCRYPTED_PHONEBOOK" in data:
-                                    encrypted_secret = base64.b64decode(data["ENCRYPTED_SECRET"])
-                                    encrypted_phonebook = base64.b64decode(data["ENCRYPTED_PHONEBOOK"])
-                                    return self._process_encrypted_phonebook(encrypted_secret + encrypted_phonebook)
-                            except json.JSONDecodeError:
-                                pass
-                        
-                        # Fallback to key-value parsing
-                        lines = body.split('\n')
-                        encrypted_secret = None
-                        encrypted_phonebook = None
-                        
-                        for line in lines:
-                            if line.startswith("ENCRYPTED_SECRET:"):
-                                encrypted_secret = base64.b64decode(line.split("ENCRYPTED_SECRET:")[1].strip())
-                            elif line.startswith("ENCRYPTED_PHONEBOOK:"):
-                                encrypted_phonebook = base64.b64decode(line.split("ENCRYPTED_PHONEBOOK:")[1].strip())
-                        
-                        if encrypted_secret and encrypted_phonebook:
-                            return self._process_encrypted_phonebook(encrypted_secret + encrypted_phonebook)
-            
-            except UnicodeDecodeError:
-                print("[DEBUG] Not UTF-8, treating as raw encrypted data")
+            # Try to find SIP message body
+            body_start = framed_data.find(b'\r\n\r\n')
+            if body_start != -1:
+                headers = framed_data[:body_start]
+                body = framed_data[body_start+4:]  # Skip \r\n\r\n
                 
-            # 3. Fallback to direct encrypted data processing
+                print("[DEBUG] Found SIP message with body")
+                
+                # Try to parse as JSON
+                try:
+                    message_data = json.loads(body.decode('utf-8'))
+                    if "ENCRYPTED_SECRET" in message_data and "ENCRYPTED_PHONEBOOK" in message_data:
+                        print("[DEBUG] Found encrypted phonebook in JSON body")
+                        encrypted_secret = base64.b64decode(message_data["ENCRYPTED_SECRET"])
+                        encrypted_phonebook = base64.b64decode(message_data["ENCRYPTED_PHONEBOOK"])
+                        return self._process_encrypted_phonebook(encrypted_secret + encrypted_phonebook)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    pass
+                    
+                # Try key-value format
+                if b"ENCRYPTED_SECRET:" in body and b"ENCRYPTED_PHONEBOOK:" in body:
+                    print("[DEBUG] Found encrypted phonebook in key-value body")
+                    secret_part = body.split(b"ENCRYPTED_SECRET:")[1].split(b"\n")[0].strip()
+                    phonebook_part = body.split(b"ENCRYPTED_PHONEBOOK:")[1].split(b"\n")[0].strip()
+                    
+                    try:
+                        encrypted_secret = base64.b64decode(secret_part)
+                        encrypted_phonebook = base64.b64decode(phonebook_part)
+                        return self._process_encrypted_phonebook(encrypted_secret + encrypted_phonebook)
+                    except binascii.Error as e:
+                        print(f"[ERROR] Base64 decode failed: {e}")
+            
+            # Fallback to direct processing if no SIP headers found
             if len(framed_data) >= 512:
                 print("[DEBUG] Trying direct encrypted phonebook processing")
                 return self._process_encrypted_phonebook(framed_data)
