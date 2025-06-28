@@ -1502,36 +1502,60 @@ class PHONEBOOK(ctk.CTk):
             return False
     
     def _process_binary_phonebook(self, framed_data):
-        """Process framed SIP messages with enhanced binary detection"""
+        """Process framed SIP messages with encrypted payload"""
         print("\n=== PROCESSING FRAMED SIP MESSAGE ===")
         print(f"[FRAME] Length: {len(framed_data)} bytes")
         
-        # Skip frame header if present (first 4 bytes)
-        if len(framed_data) > 4 and framed_data[:4] == struct.pack('!I', len(framed_data)-4):
-            actual_data = framed_data[4:]
-        else:
-            actual_data = framed_data
-            
-        print(f"[DEBUG] First 32 bytes (hex): {' '.join(f'{b:02x}' for b in actual_data[:32])}")
-        print(f"[DEBUG] First 32 bytes (ascii): {actual_data[:32].decode('ascii', errors='replace')}")
-    
         try:
-            # 1. Check if this is encrypted phonebook data (minimum RSA block + some AES data)
-            if len(actual_data) >= 512:  # RSA block size
-                print("[DEBUG] Trying direct encrypted phonebook processing")
-                return self._process_encrypted_phonebook(actual_data)
-                
-            # 2. Try UTF-8 decode for SIP messages
+            # 1. Skip frame header if present
+            if len(framed_data) > 4 and framed_data[:4] == struct.pack('!I', len(framed_data)-4):
+                framed_data = framed_data[4:]
+            
+            # 2. Try to parse as SIP message first
             try:
-                message = actual_data.decode('utf-8')
-                print("[DEBUG] Decoded as UTF-8 SIP message")
-                sip_data = parse_sip_message(message)
-                return self._handle_standard_sip(sip_data)
+                message_str = framed_data.decode('utf-8')
+                if '\r\n\r\n' in message_str:
+                    headers, body = message_str.split('\r\n\r\n', 1)
+                    
+                    # Check if this is an encrypted phonebook message
+                    if "ENCRYPTED_PHONEBOOK" in headers or "ENCRYPTED_SECRET" in headers:
+                        print("[DEBUG] Found encrypted phonebook in SIP message")
+                        
+                        # Try to parse as JSON if content-type indicates
+                        if "application/json" in headers:
+                            try:
+                                data = json.loads(body)
+                                if "ENCRYPTED_SECRET" in data and "ENCRYPTED_PHONEBOOK" in data:
+                                    encrypted_secret = base64.b64decode(data["ENCRYPTED_SECRET"])
+                                    encrypted_phonebook = base64.b64decode(data["ENCRYPTED_PHONEBOOK"])
+                                    return self._process_encrypted_phonebook(encrypted_secret + encrypted_phonebook)
+                            except json.JSONDecodeError:
+                                pass
+                        
+                        # Fallback to key-value parsing
+                        lines = body.split('\n')
+                        encrypted_secret = None
+                        encrypted_phonebook = None
+                        
+                        for line in lines:
+                            if line.startswith("ENCRYPTED_SECRET:"):
+                                encrypted_secret = base64.b64decode(line.split("ENCRYPTED_SECRET:")[1].strip())
+                            elif line.startswith("ENCRYPTED_PHONEBOOK:"):
+                                encrypted_phonebook = base64.b64decode(line.split("ENCRYPTED_PHONEBOOK:")[1].strip())
+                        
+                        if encrypted_secret and encrypted_phonebook:
+                            return self._process_encrypted_phonebook(encrypted_secret + encrypted_phonebook)
+            
             except UnicodeDecodeError:
-                print("[DEBUG] Not UTF-8, treating as binary")
+                print("[DEBUG] Not UTF-8, treating as raw encrypted data")
                 
-            # Final fallback - try to process as binary phonebook
-            return self._process_encrypted_phonebook(actual_data)
+            # 3. Fallback to direct encrypted data processing
+            if len(framed_data) >= 512:
+                print("[DEBUG] Trying direct encrypted phonebook processing")
+                return self._process_encrypted_phonebook(framed_data)
+                
+            print("[ERROR] No valid message format detected")
+            return False
             
         except Exception as e:
             print(f"[CRITICAL ERROR] {str(e)}")
