@@ -872,7 +872,8 @@ class Server:
         # Debug output
         if __debug__:
             print("\n=== SERVER PHONEBOOK MESSAGE ===")
-            print(f"[Headers]\n{sip_message.split('\r\n\r\n')[0]}")
+            header_part = sip_message.split('\r\n\r\n')[0]
+            print(f"[Headers]\n{header_part}")
             print(f"[Body Length] {len(json_body)} bytes")
             print(f"[ENCRYPTED_SECRET] {message_data['ENCRYPTED_SECRET'][:64]}...")
             print(f"[ENCRYPTED_PHONEBOOK] {message_data['ENCRYPTED_PHONEBOOK'][:64]}...")
