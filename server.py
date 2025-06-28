@@ -301,60 +301,33 @@ def load_client_name():
         messagebox.showerror("Fehler", "Kein Name eingegeben. Abbruch.")
         return None
 def encrypt_phonebook_data(phonebook_json, client_public_key_pem):
-    """Enhanced encryption with full debugging"""
-    print("\n=== SERVER ENCRYPTION PROCESS ===")
-    
+    """Encrypts phonebook data for a specific client"""
     try:
-        # 1. Validate and debug client public key
-        print("\n[DEBUG] Loading client public key...")
-        debug_print_key("CLIENT_PUBLIC_KEY", client_public_key_pem.encode())
+        # 1. Generate random secret (16 bytes IV + 32 bytes AES key)
+        secret = generate_secret()
+        if len(secret) != 48:
+            raise ValueError("Invalid secret length")
+            
+        # 2. Encrypt secret with client's public key
         client_pubkey = RSA.load_pub_key_bio(BIO.MemoryBuffer(client_public_key_pem.encode()))
+        encrypted_secret = client_pubkey.public_encrypt(b"+++secret+++" + secret, RSA.pkcs1_padding)
         
-        # 2. Generate and debug secret
-        print("\n[DEBUG] Generating secret...")
-        secret = b"+++secret+++" + generate_secret()  # 11+48=59 bytes
-        if len(secret) != 59:
-            raise ValueError(f"Invalid secret length: {len(secret)} (expected 59)")
-            
-        debug_print_key("RAW_SECRET", secret)
+        # 3. Prepare AES parameters
+        iv = secret[:16]
+        aes_key = secret[16:]
         
-        # 3. Encrypt secret
-        print("\n[DEBUG] Encrypting secret...")
-        encrypted_secret = client_pubkey.public_encrypt(secret, RSA.pkcs1_padding)
-        if len(encrypted_secret) != 512:
-            raise ValueError(f"Invalid encrypted secret length: {len(encrypted_secret)} (expected 512)")
-            
-        debug_print_key("ENCRYPTED_SECRET", encrypted_secret)
-        
-        # 4. Prepare AES parameters
-        iv = secret[11:27]  # 16 bytes IV (after overhead)
-        aes_key = secret[27:59]  # 32 bytes AES key
-        
-        debug_print_key("AES_IV", iv)
-        debug_print_key("AES_KEY", aes_key)
-        
-        # 5. Encrypt phonebook
-        print("\n[DEBUG] Encrypting phonebook...")
+        # 4. Encrypt phonebook data
         plaintext = json.dumps(phonebook_json).encode('utf-8')
-        debug_print_key("PHONEBOOK_PLAINTEXT", plaintext)
-        
         cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 1)
         encrypted_phonebook = cipher.update(plaintext) + cipher.final()
         
-        if not encrypted_phonebook:
-            raise ValueError("Phonebook encryption returned empty result")
-            
-        debug_print_key("ENCRYPTED_PHONEBOOK", encrypted_phonebook)
-        
-        # 6. Combine results
-        encrypted_data = encrypted_secret + encrypted_phonebook
-        print("\n[SUCCESS] Phonebook encrypted successfully!")
-        return encrypted_data
+        # 5. Combine results
+        return encrypted_secret + encrypted_phonebook
         
     except Exception as e:
-        print(f"\n[CRITICAL ENCRYPTION ERROR] {str(e)}")
-        traceback.print_exc()
+        print(f"Encryption error: {e}")
         raise
+
 
 class Server:
     def __init__(self, host='0.0.0.0', port=5060):
