@@ -1227,34 +1227,65 @@ class PHONEBOOK(ctk.CTk):
             return False
     
     def handle_server_message(self, raw_data):
-        """Verarbeitet eingehende Nachrichten mit verbesserter Phonebook-Integration"""
+        """Verarbeitet eingehende Nachrichten mit verbesserter Fehlerbehandlung für Binärdaten"""
         try:
-            # 1. Versuche als SIP-Nachricht zu parsen
+            # 1. Versuche zunächst als SIP-Nachricht zu parsen (kann Text oder Binär sein)
             if isinstance(raw_data, bytes):
-                message = raw_data.decode('utf-8')
-            else:
-                message = str(raw_data)
-                
-            sip_data = parse_sip_message(message)
+                try:
+                    # Zuerst versuchen als UTF-8 zu dekodieren (für normale SIP-Nachrichten)
+                    message = raw_data.decode('utf-8')
+                    sip_data = parse_sip_message(message)
+                    if sip_data:
+                        # Handle normale SIP-Nachrichten
+                        if sip_data.get('headers', {}).get('PONG'):
+                            print("[CLIENT] Received PONG response")
+                            return True
+                        
+                        if 'custom_data' in sip_data and isinstance(sip_data['custom_data'], dict):
+                            if sip_data['custom_data'].get('MESSAGE_TYPE') == 'PHONEBOOK_UPDATE':
+                                return self._process_phonebook_update(sip_data['custom_data'])
+                        
+                        return self._handle_standard_sip(sip_data)
+                except UnicodeDecodeError:
+                    # Falls UTF-8 fehlschlägt, handelt es sich wahrscheinlich um verschlüsselte Binärdaten
+                    print("[CLIENT] Received binary data, attempting phonebook processing")
+                    return self._process_binary_phonebook(raw_data)
             
-            if not sip_data:
-                return False
-                
-            # 2. Handle PONG responses
-            if sip_data.get('headers', {}).get('PONG'):
-                print("[CLIENT] Received PONG response")
-                return True
-                
-            # 3. Handle phonebook updates
-            if 'custom_data' in sip_data and isinstance(sip_data['custom_data'], dict):
-                if sip_data['custom_data'].get('MESSAGE_TYPE') == 'PHONEBOOK_UPDATE':
-                    return self._process_phonebook_update(sip_data['custom_data'])
-                    
-            return self._handle_standard_sip(sip_data)
+            return False
             
         except Exception as e:
             print(f"[CLIENT] Message handling failed: {str(e)}")
             traceback.print_exc()
+            return False
+    
+    def _process_binary_phonebook(self, binary_data):
+        """Verarbeitet direkt empfangene Binärdaten als Phonebook-Update"""
+        try:
+            # Versuche die Binärdaten als SIP-Nachricht mit JSON-Body zu parsen
+            parts = binary_data.split(b'\r\n\r\n', 1)
+            if len(parts) < 2:
+                return False
+                
+            headers = parts[0].decode('utf-8', errors='ignore')
+            body = parts[1]
+            
+            # Versuche den Body als JSON zu parsen
+            try:
+                data = json.loads(body.decode('utf-8'))
+            except:
+                # Falls direkte JSON-Dekodierung fehlschlägt, versuche Base64
+                try:
+                    decoded = base64.b64decode(body)
+                    data = json.loads(decoded.decode('utf-8'))
+                except:
+                    return False
+                    
+            if isinstance(data, dict) and data.get('MESSAGE_TYPE') == 'PHONEBOOK_UPDATE':
+                return self._process_phonebook_update(data)
+                
+            return False
+        except Exception as e:
+            print(f"[CLIENT] Binary phonebook processing failed: {str(e)}")
             return False
     
     def _process_phonebook_update(self, data):
