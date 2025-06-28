@@ -767,105 +767,105 @@ class Server:
         except Exception as e:
             print(f"Fehler bei der Verschlüsselung des Telefonbuchs: {e}")
             return ""
-def broadcast_phonebook(self):
-    """Verbesserte synchron-asynchrone Broadcast-Implementierung mit vollständiger Fehlerbehandlung"""
-    def _broadcast_to_client(client_id, client_data, phonebook_data):
-        try:
-            # 1. Generiere Zufallssecret für diese Session
-            secret = b"+++secret+++" + os.urandom(48-11)  # 11 Byte Header + 48 Byte Nutzdaten
-            
-            # 2. Lade Client Public Key
-            client_pubkey = RSA.load_pub_key_bio(
-                BIO.MemoryBuffer(client_data['public_key'].encode()))
-            
-            # 3. Verschlüssele das Secret mit Client-Public-Key
-            encrypted_secret = client_pubkey.public_encrypt(
-                secret, 
-                RSA.pkcs1_padding
-            )
-            
-            # 4. Verschlüssele das Telefonbuch mit AES
-            iv = secret[:16]  # Ersten 16 Bytes als IV
-            aes_key = secret[16:]  # Rest als AES-256 Schlüssel
-            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 1)  # 1 = Verschlüsselung
-            plaintext = json.dumps(phonebook_data).encode('utf-8')
-            encrypted_phonebook = cipher.update(plaintext) + cipher.final()
-            
-            # 5. Baue SIP-Nachricht
-            message_data = {
-                "MESSAGE_TYPE": "PHONEBOOK_UPDATE",
-                "TIMESTAMP": str(int(time.time())),
-                "ENCRYPTED_SECRET": base64.b64encode(encrypted_secret).decode(),
-                "ENCRYPTED_PHONEBOOK": base64.b64encode(encrypted_phonebook).decode(),
-                "CLIENT_ID": client_id
-            }
-            response = self.build_sip_message(
-                "MESSAGE",
-                client_data['name'],
-                message_data
-            )
-            
-            # 6. Synchroner Versand mit Timeout
-            with self.client_send_lock:
-                client_socket = client_data['socket']
-                if client_socket:
-                    client_socket.settimeout(5.0)
-                    send_frame(client_socket, response)
-                    return True
+    def broadcast_phonebook(self):
+        """Verbesserte synchron-asynchrone Broadcast-Implementierung mit vollständiger Fehlerbehandlung"""
+        def _broadcast_to_client(client_id, client_data, phonebook_data):
+            try:
+                # 1. Generiere Zufallssecret für diese Session
+                secret = b"+++secret+++" + os.urandom(48-11)  # 11 Byte Header + 48 Byte Nutzdaten
+                
+                # 2. Lade Client Public Key
+                client_pubkey = RSA.load_pub_key_bio(
+                    BIO.MemoryBuffer(client_data['public_key'].encode()))
+                
+                # 3. Verschlüssele das Secret mit Client-Public-Key
+                encrypted_secret = client_pubkey.public_encrypt(
+                    secret, 
+                    RSA.pkcs1_padding
+                )
+                
+                # 4. Verschlüssele das Telefonbuch mit AES
+                iv = secret[:16]  # Ersten 16 Bytes als IV
+                aes_key = secret[16:]  # Rest als AES-256 Schlüssel
+                cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 1)  # 1 = Verschlüsselung
+                plaintext = json.dumps(phonebook_data).encode('utf-8')
+                encrypted_phonebook = cipher.update(plaintext) + cipher.final()
+                
+                # 5. Baue SIP-Nachricht
+                message_data = {
+                    "MESSAGE_TYPE": "PHONEBOOK_UPDATE",
+                    "TIMESTAMP": str(int(time.time())),
+                    "ENCRYPTED_SECRET": base64.b64encode(encrypted_secret).decode(),
+                    "ENCRYPTED_PHONEBOOK": base64.b64encode(encrypted_phonebook).decode(),
+                    "CLIENT_ID": client_id
+                }
+                response = self.build_sip_message(
+                    "MESSAGE",
+                    client_data['name'],
+                    message_data
+                )
+                
+                # 6. Synchroner Versand mit Timeout
+                with self.client_send_lock:
+                    client_socket = client_data['socket']
+                    if client_socket:
+                        client_socket.settimeout(5.0)
+                        send_frame(client_socket, response)
+                        return True
+                    return False
+                    
+            except Exception as e:
+                print(f"[SERVER] Error sending to {client_id}: {str(e)}")
                 return False
-                
-        except Exception as e:
-            print(f"[SERVER] Error sending to {client_id}: {str(e)}")
-            return False
-
-    def _broadcast():
-        try:
-            # 1. Aktive Clients filtern
-            active_clients = {
-                cid: data for cid, data in self.clients.items() 
-                if data.get('socket') is not None
-            }
-            
-            if not active_clients:
-                print("[SERVER] No active clients for broadcast")
-                return
-                
-            # 2. Telefonbuchdaten vorbereiten
-            phonebook_data = [
-                {
-                    'id': cid,
-                    'name': data['name'],
-                    'ip': data['ip'],
-                    'port': data['port'],
-                    'public_key': shorten_public_key(data['public_key'])
-                }
-                for cid, data in sorted(active_clients.items(), key=lambda x: int(x[0]))
-            ]
-            
-            print(f"[SERVER] Broadcasting to {len(active_clients)} clients")
-            
-            # 3. Paralleler Versand mit Thread-Pool
-            with ThreadPoolExecutor(max_workers=4) as executor:
-                futures = {
-                    executor.submit(_broadcast_to_client, cid, data, phonebook_data): cid
-                    for cid, data in active_clients.items()
+    
+        def _broadcast():
+            try:
+                # 1. Aktive Clients filtern
+                active_clients = {
+                    cid: data for cid, data in self.clients.items() 
+                    if data.get('socket') is not None
                 }
                 
-                for future in as_completed(futures, timeout=10.0):
-                    cid = futures[future]
-                    try:
-                        success = future.result()
-                        if not success:
-                            print(f"[WARNING] Failed to send to {cid}")
-                    except Exception as e:
-                        print(f"[ERROR] Broadcast failed for {cid}: {str(e)}")
-                        
-        except Exception as e:
-            print(f"[CRITICAL] Broadcast failed: {str(e)}")
-            traceback.print_exc()
-
-    # Starte den Broadcast in einem neuen Thread
-    threading.Thread(target=_broadcast, daemon=True).start()
+                if not active_clients:
+                    print("[SERVER] No active clients for broadcast")
+                    return
+                    
+                # 2. Telefonbuchdaten vorbereiten
+                phonebook_data = [
+                    {
+                        'id': cid,
+                        'name': data['name'],
+                        'ip': data['ip'],
+                        'port': data['port'],
+                        'public_key': shorten_public_key(data['public_key'])
+                    }
+                    for cid, data in sorted(active_clients.items(), key=lambda x: int(x[0]))
+                ]
+                
+                print(f"[SERVER] Broadcasting to {len(active_clients)} clients")
+                
+                # 3. Paralleler Versand mit Thread-Pool
+                with ThreadPoolExecutor(max_workers=4) as executor:
+                    futures = {
+                        executor.submit(_broadcast_to_client, cid, data, phonebook_data): cid
+                        for cid, data in active_clients.items()
+                    }
+                    
+                    for future in as_completed(futures, timeout=10.0):
+                        cid = futures[future]
+                        try:
+                            success = future.result()
+                            if not success:
+                                print(f"[WARNING] Failed to send to {cid}")
+                        except Exception as e:
+                            print(f"[ERROR] Broadcast failed for {cid}: {str(e)}")
+                            
+            except Exception as e:
+                print(f"[CRITICAL] Broadcast failed: {str(e)}")
+                traceback.print_exc()
+    
+        # Starte den Broadcast in einem neuen Thread
+        threading.Thread(target=_broadcast, daemon=True).start()
 def load_server_publickey():
     if not os.path.exists("server_public_key.pem"):
         bits = 4096
