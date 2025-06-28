@@ -733,39 +733,65 @@ def receive_audio_stream(key, seed):
             stream.stop_stream()
             stream.close()
             audio.terminate()
+
 class SecureVault:
     def __init__(self):
         self.lib = None
         self.vault = None
-        self._load_correct_library()
+        self.gen_lib = None
+        self._load_libraries()
         
-    def _load_correct_library(self):
-        """Läd die richtige Bibliothek für die aktuelle Architektur"""
+    def _load_libraries(self):
+        """Lädt alle benötigten Bibliotheken für die aktuelle Architektur"""
         arch = platform.machine().lower()
         
-        # Mögliche Bibliotheksnamen (an deine Dateinamen anpassen)
-        lib_mapping = {
+        # Mapping für die Auslagerungsbibliotheken
+        vault_lib_mapping = {
             ('x86_64', 'amd64'): "libauslagern_x86_64.so",
             ('aarch64', 'arm64'): "libauslagern_arm64.so",
             ('armv7l',): "libauslagern_armv7.so"
         }
         
-        for arch_patterns, lib_name in lib_mapping.items():
+        # Mapping für die Generierungsbibliotheken
+        gen_lib_mapping = {
+            ('x86_64', 'amd64'): "libsecuregen_x86_64.so",
+            ('aarch64', 'arm64'): "libsecuregen_arm64.so",
+            ('armv7l',): "libsecuregen_armv7.so"
+        }
+        
+        # Lade Auslagerungsbibliothek
+        for arch_patterns, lib_name in vault_lib_mapping.items():
             if arch in arch_patterns:
                 try:
                     self.lib = ctypes.CDLL(f"./{lib_name}")
-                    print(f"Successfully loaded {lib_name} for architecture {arch}")
+                    print(f"Successfully loaded vault lib: {lib_name}")
                     break
                 except Exception as e:
-                    print(f"Error loading {lib_name}: {str(e)}")
+                    print(f"Error loading vault lib {lib_name}: {str(e)}")
         else:
-            raise RuntimeError(f"Unsupported architecture: {arch}. Supported: {list(lib_mapping.keys())}")
-
+            raise RuntimeError(f"Unsupported architecture for vault: {arch}")
+        
+        # Lade Generierungsbibliothek
+        for arch_patterns, lib_name in gen_lib_mapping.items():
+            if arch in arch_patterns:
+                try:
+                    self.gen_lib = ctypes.CDLL(f"./{lib_name}")
+                    print(f"Successfully loaded generator lib: {lib_name}")
+                    break
+                except Exception as e:
+                    print(f"Error loading generator lib {lib_name}: {str(e)}")
+        else:
+            raise RuntimeError(f"Unsupported architecture for generator: {arch}")
+        
         # Funktionen definieren
         self.lib.vault_create.restype = ctypes.c_void_p
         self.lib.vault_load.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte)]
         self.lib.vault_retrieve.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte)]
+        self.lib.vault_wipe.argtypes = [ctypes.c_void_p]
         
+        self.gen_lib.generate_secret.argtypes = [ctypes.POINTER(ctypes.c_ubyte)]
+        self.gen_lib.generate_secret.restype = None
+    
     def create(self) -> bool:
         """Erstellt einen neuen Vault"""
         if not self.lib:
@@ -773,27 +799,38 @@ class SecureVault:
         self.vault = self.lib.vault_create()
         return bool(self.vault)
     
-    def store(self, secret: bytes) -> bool:
-        """Speichert ein 48-Byte Geheimnis"""
-        if not self.vault or len(secret) != 48:
+    def generate_secret(self) -> Optional[int]:
+        """Generiert ein 48-Byte Geheimnis und gibt nur die Speicheradresse zurück"""
+        if not self.gen_lib:
+            return None
+        buf = (ctypes.c_ubyte * 48)()
+        self.gen_lib.generate_secret(buf)
+        return ctypes.addressof(buf)
+    
+    def store(self, secret_ptr: int) -> bool:
+        """Speichert ein Geheimnis (nur über Speicheradresse)"""
+        if not self.vault or not secret_ptr:
             return False
-        buf = (ctypes.c_ubyte * 48)(*secret)
-        self.lib.vault_load(ctypes.c_void_p(self.vault), buf)
+        self.lib.vault_load(ctypes.c_void_p(self.vault), ctypes.c_void_p(secret_ptr))
         return True
     
-    def retrieve(self) -> Optional[bytes]:
-        """Holt das Geheimnis zurück"""
+    def retrieve(self) -> Optional[int]:
+        """Holt das Geheimnis zurück (gibt nur Speicheradresse zurück)"""
         if not self.vault:
             return None
         buf = (ctypes.c_ubyte * 48)()
-        self.lib.vault_retrieve(ctypes.c_void_p(self.vault), buf)
-        return bytes(buf)
+        self.lib.vault_retrieve(ctypes.c_void_p(self.vault), ctypes.cast(ctypes.byref(buf), ctypes.POINTER(ctypes.c_ubyte)))
+        return ctypes.addressof(buf)
     
     def wipe(self):
-        """Löscht den Vault"""
+        """Löscht den Vault sicher"""
         if self.vault:
             self.lib.vault_wipe(ctypes.c_void_p(self.vault))
             self.vault = None
+    
+    def __del__(self):
+        """Destruktor für sichere Bereinigung"""
+        self.wipe()
 class PHONEBOOK(ctk.CTk):
     def __init__(self):
         super().__init__()
