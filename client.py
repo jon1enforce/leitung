@@ -1394,7 +1394,7 @@ class PHONEBOOK(ctk.CTk):
             traceback.print_exc()
             return False
     
-    def _process_phonebook_update(self, message):
+     def _process_phonebook_update(self, message):
         """Processes phonebook update from parsed message with enhanced debugging"""
         print("\n=== PHONEBOOK UPDATE PROCESSING ===")
         print(f"[CLIENT] Received message type: {type(message)}")
@@ -1405,120 +1405,60 @@ class PHONEBOOK(ctk.CTk):
                 print("[ERROR] Message is not a dictionary")
                 return False
     
-            # 2. Extract data from message
-            data = {}
-            if 'custom_data' in message and isinstance(message['custom_data'], dict):
-                data.update(message['custom_data'])
-                print("[DEBUG] Found custom_data in message")
+            # 2. Extract encrypted data
+            encrypted_secret = base64.b64decode(message['ENCRYPTED_SECRET'])
+            encrypted_phonebook = base64.b64decode(message['ENCRYPTED_PHONEBOOK'])
+    
+            # 3. Decrypt secret
+            with open("private_key.pem", "rb") as f:
+                priv_key = RSA.load_key_string(f.read())
             
-            if 'body' in message:
-                print("[DEBUG] Found body in message")
-                try:
-                    if isinstance(message['body'], str):
-                        body_data = json.loads(message['body'])
-                    elif isinstance(message['body'], dict):
-                        body_data = message['body']
-                    else:
-                        print("[ERROR] Invalid body type")
-                        return False
-                    
-                    data.update(body_data)
-                    print("[DEBUG] Successfully merged body data")
-                except json.JSONDecodeError as e:
-                    print(f"[ERROR] Failed to parse body: {e}")
-                    return False
-    
-            print(f"[DEBUG] Merged data keys: {list(data.keys())}")
-    
-            # 3. Validate required fields
-            REQUIRED_KEYS = ['MESSAGE_TYPE', 'ENCRYPTED_SECRET', 'ENCRYPTED_PHONEBOOK']
-            missing_keys = [key for key in REQUIRED_KEYS if key not in data]
-            if missing_keys:
-                print(f"[ERROR] Missing required keys: {missing_keys}")
+            decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
+            
+            if not decrypted_secret.startswith(b"+++secret+++"):
+                print("[ERROR] Invalid secret header")
                 return False
+                
+            secret = decrypted_secret[11:59]  # 48 bytes
+            iv = secret[:16]
+            aes_key = secret[16:]
     
-            if data['MESSAGE_TYPE'] != 'PHONEBOOK_UPDATE':
-                print(f"[ERROR] Invalid message type: {data['MESSAGE_TYPE']}")
-                return False
-    
-            # 4. Base64 Decoding
+            # 4. Decrypt phonebook
+            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
+            decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
+            
             try:
-                print("[DEBUG] Attempting Base64 decoding")
-                encrypted_secret = base64.b64decode(data['ENCRYPTED_SECRET'])
-                encrypted_phonebook = base64.b64decode(data['ENCRYPTED_PHONEBOOK'])
-                print(f"[DEBUG] Secret length: {len(encrypted_secret)} bytes")
-                print(f"[DEBUG] Phonebook length: {len(encrypted_phonebook)} bytes")
-            except Exception as e:
-                print(f"[ERROR] Base64 decode failed: {e}")
-                return False
-    
-            # 5. Secret Decryption
-            try:
-                print("[DEBUG] Loading private key")
-                with open("private_key.pem", "rb") as f:
-                    priv_key = RSA.load_key_string(f.read())
-                
-                print("[DEBUG] Decrypting secret")
-                decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
-                
-                if not decrypted_secret.startswith(b"+++secret+++"):
-                    print("[ERROR] Invalid secret header")
-                    print(f"Header: {decrypted_secret[:12]}")
-                    return False
-                    
-                secret = decrypted_secret[11:59]  # 48 bytes
-                iv = secret[:16]
-                aes_key = secret[16:]
-                print("[DEBUG] Secret decrypted successfully")
-                print(f"IV: {iv.hex()[:8]}...")
-                print(f"AES Key: {aes_key.hex()[:8]}...")
-                
-            except Exception as e:
-                print(f"[ERROR] Secret decryption failed: {e}")
-                return False
-    
-            # 6. Phonebook Decryption
-            try:
-                print("[DEBUG] Initializing AES cipher")
-                cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
-                
-                print("[DEBUG] Decrypting phonebook")
-                decrypted_data = cipher.update(encrypted_phonebook)
-                decrypted_data += cipher.final()
-                
-                print(f"[DEBUG] Decrypted length: {len(decrypted_data)} bytes")
-                print(f"Sample data: {decrypted_data[:100]}...")
-                
-                # 7. JSON Parsing
                 phonebook_data = json.loads(decrypted_data.decode('utf-8'))
-                print(f"[DEBUG] Phonebook entries: {len(phonebook_data)}")
-                if phonebook_data:
-                    print(f"First entry: {phonebook_data[0]}")
+                print(f"[DEBUG] Decrypted phonebook data: {phonebook_data}")
                 
-                # 8. Update UI
-                print("[DEBUG] Updating phonebook UI")
-                self.after(0, lambda: self.update_phonebook(phonebook_data))
+                if not isinstance(phonebook_data, list):
+                    print("[ERROR] Phonebook data is not a list")
+                    return False
+                    
+                # 5. Filter and display valid clients
+                valid_clients = [
+                    client for client in phonebook_data
+                    if isinstance(client, dict) and 
+                    str(client.get('id', '')).isdigit() and 
+                    client.get('name') and
+                    client.get('name').lower() != 'server'
+                ]
                 
-                # 9. Store secret
-                self.current_secret = secret
-                if hasattr(self, 'secret_vault'):
-                    self.secret_vault.store(secret)
-                print("[SUCCESS] Phonebook update complete")
+                print(f"[DEBUG] Valid clients found: {len(valid_clients)}")
+                for client in valid_clients:
+                    print(f" - {client['id']}: {client['name']}")
+                
+                # 6. Update UI
+                self.after(0, lambda: self.update_phonebook(valid_clients))
                 return True
                 
-            except EVP.EVPError as e:
-                print(f"[ERROR] AES decryption failed: {e}")
             except json.JSONDecodeError as e:
-                print(f"[ERROR] Invalid JSON: {e}")
-                print(f"Data: {decrypted_data[:200]}")
-            except UnicodeDecodeError as e:
-                print(f"[ERROR] Decoding failed: {e}")
-                print(f"Hex dump: {binascii.hexlify(decrypted_data[:100])}")
+                print(f"[ERROR] JSON decode failed: {e}")
+                print(f"Raw data: {decrypted_data[:200]}")
+                return False
                 
-            return False
-            
         except Exception as e:
-            print(f"[CRITICAL] Unexpected error: {e}")
+            print(f"[CRITICAL] Processing failed: {str(e)}")
             traceback.print_exc()
             return False
     
