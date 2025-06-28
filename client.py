@@ -105,7 +105,21 @@ def merge_public_keys(keys):
     """Identisch auf Client und Server"""
     return "|||".join(normalize_key(k) for k in keys if k)
 
-
+def normalize_key(key):
+    """Normalisiert öffentliche Schlüssel für konsistenten Vergleich"""
+    if not key or "-----BEGIN PUBLIC KEY-----" not in key:
+        return None
+    
+    # Extrahiere nur den Base64-Inhalt zwischen den PEM-Markern
+    try:
+        key_content = "".join(
+            key.split("-----BEGIN PUBLIC KEY-----")[1]
+            .split("-----END PUBLIC KEY-----")[0]
+            .strip().split()
+        )
+        return key_content if key_content else None
+    except Exception:
+        return None
 
 
 def quantum_safe_hash(data):
