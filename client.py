@@ -1397,70 +1397,77 @@ class PHONEBOOK(ctk.CTk):
             return False
     
     def _process_phonebook_update(self, message):
-        """Processes phonebook update from parsed message with enhanced debugging"""
+        """Verarbeitet Phonebook-Updates mit vollständiger Entschlüsselung und Anzeige"""
         print("\n=== PHONEBOOK UPDATE PROCESSING ===")
-        print(f"[CLIENT] Received message type: {type(message)}")
         
         try:
-            # 1. Input Validation
+            # 1. Validierung der Eingangsdaten
             if not isinstance(message, dict):
-                print("[ERROR] Message is not a dictionary")
+                print("[ERROR] Ungültiges Nachrichtenformat")
                 return False
     
-            # 2. Extract encrypted data
+            # 2. Extrahiere verschlüsselte Daten
             encrypted_secret = base64.b64decode(message['ENCRYPTED_SECRET'])
             encrypted_phonebook = base64.b64decode(message['ENCRYPTED_PHONEBOOK'])
+            
+            print(f"[DEBUG] Empfangene Daten - Secret: {len(encrypted_secret)} bytes, Phonebook: {len(encrypted_phonebook)} bytes")
     
-            # 3. Decrypt secret
+            # 3. Entschlüssele das Geheimnis
             with open("private_key.pem", "rb") as f:
                 priv_key = RSA.load_key_string(f.read())
             
             decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
             
+            # 4. Validiere das Geheimnis
             if not decrypted_secret.startswith(b"+++secret+++"):
-                print("[ERROR] Invalid secret header")
+                print("[ERROR] Ungültiges Geheimnisformat")
                 return False
                 
-            secret = decrypted_secret[11:59]  # 48 bytes
+            secret = decrypted_secret[11:59]  # 48 Bytes
             iv = secret[:16]
             aes_key = secret[16:]
+            print(f"[DEBUG] Entschlüsselt - IV: {iv.hex()[:8]}..., Key: {aes_key.hex()[:8]}...")
     
-            # 4. Decrypt phonebook
+            # 5. Entschlüssele das Phonebook
             cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
             decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
             
             try:
+                # 6. Parse JSON-Daten
                 phonebook_data = json.loads(decrypted_data.decode('utf-8'))
-                print(f"[DEBUG] Decrypted phonebook data: {phonebook_data}")
+                print(f"[DEBUG] Rohdaten: {phonebook_data}")
                 
                 if not isinstance(phonebook_data, list):
-                    print("[ERROR] Phonebook data is not a list")
+                    print("[ERROR] Phonebook ist keine Liste")
                     return False
                     
-                # 5. Filter and display valid clients
-                valid_clients = [
-                    client for client in phonebook_data
-                    if isinstance(client, dict) and 
-                    str(client.get('id', '')).isdigit() and 
-                    client.get('name') and
-                    client.get('name').lower() != 'server'
-                ]
+                # 7. Filtere gültige Einträge
+                valid_entries = []
+                for entry in phonebook_data:
+                    try:
+                        if (isinstance(entry, dict) and 
+                            str(entry.get('id', '')).isdigit() and 
+                            entry.get('name')):
+                            print(f"[DEBUG] Gültiger Eintrag gefunden: {entry['id']}: {entry['name']}")
+                            valid_entries.append(entry)
+                    except Exception as e:
+                        print(f"[WARNING] Ungültiger Eintrag: {e}")
                 
-                print(f"[DEBUG] Valid clients found: {len(valid_clients)}")
-                for client in valid_clients:
-                    print(f" - {client['id']}: {client['name']}")
-                
-                # 6. Update UI
-                self.after(0, lambda: self.update_phonebook(valid_clients))
-                return True
-                
+                # 8. Aktualisiere UI
+                if valid_entries:
+                    self.after(0, lambda: self.update_phonebook(valid_entries))
+                    return True
+                else:
+                    print("[ERROR] Keine gültigen Einträge gefunden")
+                    return False
+                    
             except json.JSONDecodeError as e:
-                print(f"[ERROR] JSON decode failed: {e}")
-                print(f"Raw data: {decrypted_data[:200]}")
+                print(f"[ERROR] JSON Fehler: {e}")
+                print(f"Daten: {decrypted_data[:200]}...")
                 return False
                 
         except Exception as e:
-            print(f"[CRITICAL] Processing failed: {str(e)}")
+            print(f"[CRITICAL] Verarbeitungsfehler: {str(e)}")
             traceback.print_exc()
             return False
     
