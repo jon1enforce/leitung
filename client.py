@@ -1329,60 +1329,70 @@ class PHONEBOOK(ctk.CTk):
             return False
     
     def _process_binary_phonebook(self, binary_data):
-        """Process incoming data that could be either SIP or encrypted phonebook"""
-        print("\n=== PHONEBOOK PROCESSING START ===")
-        print(f"[INPUT] Length: {len(binary_data)} bytes")
-        print(f"[HEAD] ASCII: {binary_data[:64].decode('ascii', errors='replace')}")
-        print(f"[HEAD] Hex: {binary_data[:32].hex()}")
+        """Process framed binary data that may contain SIP or encrypted phonebook"""
+        print("\n=== FRAMED DATA PROCESSING ===")
+        print(f"[FRAME] Length: {len(binary_data)} bytes")
+        print(f"[HEADER] Hex: {binary_data[:32].hex()}")
+        print(f"[ASCII] Start: {binary_data[:64].decode('ascii', errors='replace')}")
     
-        # 1. Check if this is actually a SIP message
-        if binary_data.startswith(b'MESSAGE') or binary_data.startswith(b'SIP/2.0'):
-            try:
-                print("[DEBUG] Detected SIP message format")
-                sip_data = parse_sip_message(binary_data.decode('utf-8'))
-                if sip_data:
-                    return self._process_phonebook_update(sip_data)
-            except Exception as e:
-                print(f"[ERROR] SIP parsing failed: {str(e)}")
+        try:
+            # 1. Check for SIP message in frame
+            if binary_data.startswith((b'MESSAGE', b'SIP/2.0', b'REGISTER')):
+                try:
+                    print("[DEBUG] Detected SIP message in frame")
+                    sip_data = parse_sip_message(binary_data.decode('utf-8'))
+                    if sip_data:
+                        print("[DEBUG] Parsed SIP headers successfully")
+                        
+                        # Special case for PONG responses
+                        if sip_data.get('headers', {}).get('PONG'):
+                            print("[CLIENT] Received PONG response")
+                            return True
+                            
+                        return self._process_phonebook_update(sip_data)
+                except Exception as e:
+                    print(f"[ERROR] SIP processing failed: {str(e)}")
     
-        # 2. Only attempt decryption if data looks encrypted
-        if len(binary_data) >= 256:
-            print("[DEBUG] Attempting encrypted phonebook processing")
-            try:
-                # Key loading with validation
-                print("[KEY] Loading private key...")
-                with open("private_key.pem", "rb") as f:
-                    priv_key = RSA.load_key_string(f.read())
-                    if not priv_key.check_key():
-                        print("[ERROR] Private key validation failed")
+            # 2. Handle as encrypted phonebook if large enough
+            if len(binary_data) >= 256:
+                print("[DEBUG] Attempting encrypted phonebook processing")
+                try:
+                    # Load and validate private key
+                    with open("private_key.pem", "rb") as f:
+                        priv_key = RSA.load_key_string(f.read())
+                        if not priv_key.check_key():
+                            print("[ERROR] Invalid private key")
+                            return False
+    
+                    # RSA decryption
+                    encrypted_secret = binary_data[:256]
+                    decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
+                    
+                    if not decrypted_secret or not decrypted_secret.startswith(b"+++secret+++"):
+                        print("[ERROR] Invalid decrypted secret")
                         return False
     
-                # RSA decryption
-                encrypted_secret = binary_data[:256]
-                print(f"[RSA] Encrypted secret: {encrypted_secret[:16].hex()}...")
-                
-                decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
-                if not decrypted_secret:
-                    print("[ERROR] RSA decryption returned None")
-                    return False
+                    # AES decryption
+                    secret = decrypted_secret[11:59]
+                    cipher = EVP.Cipher("aes_256_cbc", secret[16:], secret[:16], 0)
+                    decrypted_data = cipher.update(binary_data[256:]) + cipher.final()
+                    
+                    # Parse and update phonebook
+                    phonebook = json.loads(decrypted_data.decode('utf-8'))
+                    self.after(0, lambda: self.update_phonebook(phonebook))
+                    return True
+                    
+                except Exception as e:
+                    print(f"[DECRYPT ERROR] {str(e)}")
+                    traceback.print_exc()
     
-                # AES decryption
-                iv = decrypted_secret[:16]
-                aes_key = decrypted_secret[16:48]
-                cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
-                decrypted_data = cipher.update(binary_data[256:]) + cipher.final()
-                
-                # JSON parsing
-                phonebook = json.loads(decrypted_data.decode('utf-8'))
-                self.after(0, lambda: self.update_phonebook(phonebook))
-                return True
-                
-            except Exception as e:
-                print(f"[DECRYPT ERROR] {str(e)}")
-                traceback.print_exc()
+            print("[ERROR] Unrecognized message format")
+            return False
     
-        print("[ERROR] Data didn't match any known format")
-        return False
+        except Exception as e:
+            print(f"[CRITICAL ERROR] {str(e)}")
+            traceback.print_exc()
+            return False
     
     def _process_phonebook_update(self, message):
         """Processes phonebook update from parsed message with enhanced debugging"""
