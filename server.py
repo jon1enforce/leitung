@@ -446,31 +446,24 @@ class Server:
         except Exception as e:
             print("Fehler beim Lesen der Festplatten-Entropie:", e)
             return None
-
     def generate_secret(self):
-        """
-        Erzeuge ein 48-Byte-Geheimnis:
-        - Seed: 8 Bytes aus os.urandom + 8 Bytes aus der Festplatten-Entropie.
-        - Schlüssel: 16 Bytes aus os.urandom + 16 Bytes aus der Festplatten-Entropi e.
-        :return: 48-Byte-Geheimnis als Bytes.
-        """
-        # Erzeuge den Seed: 8 Bytes aus os.urandom + 8 Bytes aus der Festplatten-Entropie
-        seed_part1 = os.urandom(8)  # 8 Bytes aus os.urandom
-        seed_part2 = self.get_disk_entropy(8)  # 8 Bytes aus der Festplatten-Entropie
-        if not seed_part2:
+        """Erzeuge ein 48-Byte-Geheimnis (16 IV + 32 AES Key)"""
+        # Erzeuge den IV (16 Bytes)
+        iv_part1 = os.urandom(8)
+        iv_part2 = self.get_disk_entropy(8)
+        if not iv_part2:
             raise RuntimeError("Konnte die Festplatten-Entropie nicht lesen.")
-        seed = seed_part1 + seed_part2  # 16 Bytes Seed
-
-        # Erzeuge den Schlüssel: 16 Bytes aus os.urandom + 16 Bytes aus der Festpla tten-Entropie
-        key_part1 = os.urandom(16)  # 16 Bytes aus os.urandom
-        key_part2 = self.get_disk_entropy(16)  # 16 Bytes aus der Festplatten-Entropie
+        iv = iv_part1 + iv_part2
+        
+        # Erzeuge den AES-Schlüssel (32 Bytes)
+        key_part1 = os.urandom(16)
+        key_part2 = self.get_disk_entropy(16)
         if not key_part2:
             raise RuntimeError("Konnte die Festplatten-Entropie nicht lesen.")
-        key = key_part1 + key_part2  # 32 Bytes Schlüssel
-
-        # Kombiniere Seed und Schlüssel zu einem 48-Byte-Geheimnis
-        secret = seed + key  # 16 + 32 = 48 Bytes
-        return secret
+        aes_key = key_part1 + key_part2
+        
+        # Kombiniere IV und Schlüssel (48 Bytes total)
+        return iv + aes_key
 
     def generate_client_id(self):
         """Generiert sequentielle Client-IDs (0,1,2,...) mit Nachrücklogik"""
