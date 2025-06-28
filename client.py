@@ -187,6 +187,41 @@ def verify_merkle_integrity(all_keys, received_root_hash):
     print(f"Received hash:   {received_root_hash}")
     
     return calculated_hash == received_root_hash
+
+def debug_print_key(key_type, key_data):
+    """Print detailed key information"""
+    print(f"\n=== {key_type.upper()} KEY DEBUG ===")
+    print(f"Length: {len(key_data)} bytes")
+    print(f"First 32 bytes (hex): {' '.join(f'{b:02x}' for b in key_data[:32])}")
+    print(f"First 32 bytes (ascii): {key_data[:32].decode('ascii', errors='replace')}")
+    if len(key_data) > 32:
+        print(f"Last 32 bytes (hex): {' '.join(f'{b:02x}' for b in key_data[-32:])}")
+    print("="*50)
+
+def validate_key_pair(private_key, public_key):
+    """Validate RSA key pair matches"""
+    try:
+        # Create test message
+        test_msg = b"TEST_MESSAGE_" + os.urandom(16)
+        
+        # Encrypt with public key
+        pub_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(public_key))
+        encrypted = pub_key.public_encrypt(test_msg, RSA.pkcs1_padding)
+        
+        # Decrypt with private key
+        priv_key = RSA.load_key_string(private_key)
+        decrypted = priv_key.private_decrypt(encrypted, RSA.pkcs1_padding)
+        
+        if decrypted == test_msg:
+            print("[KEY VALIDATION] Key pair is valid and matches")
+            return True
+        else:
+            print("[KEY VALIDATION] Key pair does not match!")
+            return False
+    except Exception as e:
+        print(f"[KEY VALIDATION ERROR] {str(e)}")
+        return False
+
 def get_disk_entropy(size):
     """
     Lese zufällige Daten von der Festplatte (z. B. /dev/urandom).
@@ -241,6 +276,74 @@ def add_dynamic_padding(data, key):
     # Daten mit Padding kombinieren
     padded_data = data + padding
     return padded_data
+
+def decrypt_phonebook_data(encrypted_data, private_key_pem):
+    """Enhanced decryption with full debugging"""
+    print("\n=== CLIENT DECRYPTION PROCESS ===")
+    
+    try:
+        # 1. Split into secret and phonebook
+        if len(encrypted_data) < 512:
+            raise ValueError(f"Data too short ({len(encrypted_data)} bytes)")
+            
+        encrypted_secret = encrypted_data[:512]
+        encrypted_phonebook = encrypted_data[512:]
+        
+        debug_print_key("ENCRYPTED_SECRET", encrypted_secret)
+        debug_print_key("ENCRYPTED_PHONEBOOK", encrypted_phonebook)
+        
+        # 2. Load and validate private key
+        print("\n[DEBUG] Loading client private key...")
+        debug_print_key("CLIENT_PRIVATE_KEY", private_key_pem.encode())
+        priv_key = RSA.load_key_string(private_key_pem.encode())
+        
+        # 3. Decrypt secret
+        print("\n[DEBUG] Decrypting secret...")
+        decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
+        
+        if not decrypted_secret:
+            raise ValueError("Decryption returned empty result - possible key mismatch")
+            
+        debug_print_key("DECRYPTED_SECRET", decrypted_secret)
+        
+        # 4. Validate secret structure
+        if not decrypted_secret.startswith(b"+++secret+++"):
+            raise ValueError("Invalid secret structure - missing overhead")
+            
+        secret = decrypted_secret[11:59]  # Skip overhead
+        if len(secret) != 48:
+            raise ValueError(f"Invalid secret length: {len(secret)} (expected 48)")
+            
+        iv = secret[:16]
+        aes_key = secret[16:]
+        
+        debug_print_key("AES_IV", iv)
+        debug_print_key("AES_KEY", aes_key)
+        
+        # 5. Decrypt phonebook
+        print("\n[DEBUG] Decrypting phonebook...")
+        cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
+        decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
+        
+        if not decrypted_data:
+            raise ValueError("Phonebook decryption returned empty result")
+            
+        debug_print_key("DECRYPTED_PHONEBOOK", decrypted_data)
+        
+        # 6. Parse JSON
+        try:
+            phonebook_data = json.loads(decrypted_data.decode('utf-8'))
+            print("\n[SUCCESS] Phonebook decrypted successfully!")
+            return phonebook_data
+        except json.JSONDecodeError as e:
+            print(f"\n[ERROR] JSON decode failed: {str(e)}")
+            print(f"Problematic data: {decrypted_data[:200]}")
+            raise
+            
+    except Exception as e:
+        print(f"\n[CRITICAL DECRYPTION ERROR] {str(e)}")
+        traceback.print_exc()
+        raise
 
 def decrypt_audio_chunk(chunk, key, seed):
     # AES-Entschlüsselung mit M2Crypto
