@@ -1267,62 +1267,61 @@ class PHONEBOOK(ctk.CTk):
         try:
             # Debug-Ausgabe des Rohdaten-Typs
             print(f"[DEBUG] Received data type: {type(raw_data)}, length: {len(raw_data) if hasattr(raw_data, '__len__') else 'N/A'}")
+            print(f"Hex dump (first 32 bytes): {raw_data[:32].hex()}")
     
-            # 1. Versuche zunächst als SIP-Nachricht zu parsen
-            if isinstance(raw_data, bytes):
-                try:
-                    # Versuche UTF-8 Dekodierung
-                    message = raw_data.decode('utf-8')
-                    print("[DEBUG] Successfully decoded as UTF-8 text")
-                    
-                    sip_data = parse_sip_message(message)
-                    if not sip_data:
-                        print("[ERROR] Failed to parse SIP message structure")
-                        return False
+            # 1. Frame-Header Prüfung (für binäre Phonebook-Updates)
+            if len(raw_data) >= 4:
+                frame_length = struct.unpack('>I', raw_data[:4])[0]
+                if len(raw_data) == 4 + frame_length:
+                    print("[DEBUG] Detected framed binary message")
+                    return self._process_binary_phonebook(raw_data[4:])
     
-                    # Debug-Ausgabe der SIP-Struktur
-                    print("[DEBUG] Parsed SIP structure:")
-                    print(f"Method: {sip_data.get('method')}")
-                    print(f"Status: {sip_data.get('status_code')}")
-                    print(f"Headers: {list(sip_data.get('headers', {}).keys())}")
-                    print(f"Custom data keys: {list(sip_data.get('custom_data', {}).keys())}")
-    
-                    # PONG Nachrichten behandeln
-                    if sip_data.get('headers', {}).get('PONG'):
-                        print("[CLIENT] Received PONG response")
-                        return True
-                    
-                    # Phonebook Updates behandeln
-                    custom_data = sip_data.get('custom_data', {})
-                    if custom_data.get('MESSAGE_TYPE') == 'PHONEBOOK_UPDATE':
-                        print("[CLIENT] Detected phonebook update in SIP message")
-                        return self._process_phonebook_update(sip_data)
-                    
-                    # Andere SIP-Nachrichten
-                    return self._handle_standard_sip(sip_data)
-    
-                except UnicodeDecodeError as ude:
-                    # Spezifische Behandlung von Unicode-Fehlern
-                    print(f"[DEBUG] UTF-8 decode failed, likely binary data. Error: {str(ude)}")
-                    print(f"Data sample (hex): {raw_data[:16].hex()}")
-                    
-                    # Versuche, ob es sich um ein verschlüsseltes Phonebook handelt
-                    try:
-                        print("[CLIENT] Attempting binary phonebook processing")
-                        return self._process_binary_phonebook(raw_data)
-                    except Exception as e:
-                        print(f"[ERROR] Binary processing failed: {str(e)}")
-                        traceback.print_exc()
-                        return False
-    
-                except json.JSONDecodeError as jde:
-                    print(f"[ERROR] JSON decode failed: {str(jde)}")
-                    print(f"Problematic data: {message[jde.pos-20:jde.pos+20]}")
+            # 2. Versuche als SIP-Nachricht zu parsen
+            try:
+                message = raw_data.decode('utf-8')
+                print("[DEBUG] Successfully decoded as UTF-8 text")
+                
+                sip_data = parse_sip_message(message)
+                if not sip_data:
+                    print("[ERROR] Failed to parse SIP message structure")
                     return False
     
-            # Falls keine Bytes empfangen wurden
-            print("[ERROR] Received non-bytes data")
-            return False
+                # Debug-Ausgabe der SIP-Struktur
+                print("[DEBUG] Parsed SIP structure:")
+                print(f"Method: {sip_data.get('method')}")
+                print(f"Status: {sip_data.get('status_code')}")
+                print(f"Headers: {list(sip_data.get('headers', {}).keys())}")
+                print(f"Custom data keys: {list(sip_data.get('custom_data', {}).keys())}")
+    
+                # PONG Nachrichten behandeln
+                if sip_data.get('headers', {}).get('PONG'):
+                    print("[CLIENT] Received PONG response")
+                    return True
+                
+                # Phonebook Updates behandeln
+                custom_data = sip_data.get('custom_data', {})
+                if custom_data.get('MESSAGE_TYPE') == 'PHONEBOOK_UPDATE':
+                    print("[CLIENT] Detected phonebook update in SIP message")
+                    return self._process_phonebook_update(sip_data)
+                
+                # Andere SIP-Nachrichten
+                return self._handle_standard_sip(sip_data)
+    
+            except UnicodeDecodeError as ude:
+                # 3. Fallback: Binärdaten als verschlüsseltes Phonebook behandeln
+                print(f"[DEBUG] UTF-8 decode failed, attempting binary processing. Error: {str(ude)}")
+                try:
+                    return self._process_binary_phonebook(raw_data)
+                except Exception as e:
+                    print(f"[ERROR] Binary processing failed: {str(e)}")
+                    traceback.print_exc()
+                    return False
+    
+            except json.JSONDecodeError as jde:
+                print(f"[ERROR] JSON decode failed: {str(jde)}")
+                if 'message' in locals():
+                    print(f"Problematic data: {message[jde.pos-20:jde.pos+20]}")
+                return False
     
         except Exception as e:
             print(f"[CRITICAL] Message handling failed: {str(e)}")
