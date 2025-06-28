@@ -1328,28 +1328,24 @@ class PHONEBOOK(ctk.CTk):
 
     
     def _process_encrypted_phonebook(self, encrypted_data):
-        """Handles encrypted phonebook data with enhanced error checking"""
+        """Verarbeitet verschlüsselte Phonebook-Daten mit erweitertem Debugging"""
         print("\n=== DECRYPTING PHONEBOOK DATA ===")
-        print(f"[DEBUG] Total encrypted data length: {len(encrypted_data)}")
+        print(f"[DEBUG] Received data length: {len(encrypted_data)} bytes")
         
         try:
-            # 1. Validate input data
-            if not encrypted_data:
-                print("[ERROR] Empty encrypted data received")
+            # 1. Extrahiere verschlüsselte Teile
+            if len(encrypted_data) < 512:
+                print(f"[ERROR] Data too short ({len(encrypted_data)} bytes), need at least 512 bytes")
                 return False
                 
-            if len(encrypted_data) < 512:
-                print(f"[ERROR] Data too short ({len(encrypted_data)} bytes). Need at least 512 bytes for RSA payload.")
-                return False
-    
-            # 2. Split into parts
             encrypted_secret = encrypted_data[:512]
             encrypted_phonebook = encrypted_data[512:]
             
-            print(f"[DEBUG] Encrypted secret (512 bytes): {encrypted_secret[:32].hex(' ')}...")
-            print(f"[DEBUG] Encrypted phonebook ({len(encrypted_phonebook)} bytes): {encrypted_phonebook[:32].hex(' ')}...")
+            print(f"[DEBUG] Encrypted secret (512 bytes): {encrypted_secret[:16].hex(' ')}...")
+            print(f"[DEBUG] Encrypted phonebook ({len(encrypted_phonebook)} bytes): {encrypted_phonebook[:16].hex(' ')}...")
     
-            # 3. Load private key with validation
+            # 2. Lade privaten Schlüssel mit Validierung
+            print("[DEBUG] Loading private key...")
             try:
                 with open("private_key.pem", "rb") as f:
                     priv_key_data = f.read()
@@ -1362,12 +1358,13 @@ class PHONEBOOK(ctk.CTk):
                         print("[ERROR] Failed to load private key")
                         return False
                         
-                    print("[DEBUG] Private key successfully loaded")
+                    print("[DEBUG] Private key loaded successfully")
             except Exception as e:
                 print(f"[ERROR] Private key loading failed: {str(e)}")
                 return False
     
-            # 4. Decrypt the secret with error handling
+            # 3. Entschlüssele das Geheimnis
+            print("[DEBUG] Decrypting secret...")
             try:
                 decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
                 if not decrypted_secret:
@@ -1376,49 +1373,46 @@ class PHONEBOOK(ctk.CTk):
                     
                 print(f"[DEBUG] Decrypted secret (len={len(decrypted_secret)}): {decrypted_secret[:16].hex(' ')}...")
                 
-                # 5. Validate secret structure
+                # 4. Validiere Geheimnis-Struktur
                 if not decrypted_secret.startswith(b"+++secret+++"):
-                    print("[ERROR] Invalid secret - missing overhead marker")
+                    print("[ERROR] Invalid secret format - missing overhead")
                     print(f"[DEBUG] Secret starts with: {decrypted_secret[:12]}")
                     return False
                     
                 if len(decrypted_secret) < 59:
-                    print(f"[ERROR] Decrypted secret too short ({len(decrypted_secret)} bytes). Need at least 59 bytes.")
+                    print(f"[ERROR] Decrypted secret too short ({len(decrypted_secret)} bytes)")
                     return False
                     
-                secret = decrypted_secret[11:59]  # 48 bytes
+                secret = decrypted_secret[11:59]  # 48 Bytes
                 iv = secret[:16]
-                aes_key = secret[16:]
+                aes_key = secret[16:48]
                 
-                print(f"[DEBUG] AES IV (16 bytes): {iv.hex(' ')}")
-                print(f"[DEBUG] AES Key (32 bytes): {aes_key.hex(' ')}")
+                print(f"[DEBUG] AES IV: {iv.hex(' ')}")
+                print(f"[DEBUG] AES Key: {aes_key[:8].hex(' ')}...")
     
-                # 6. Decrypt phonebook data
+                # 5. Entschlüssele Phonebook
+                print("[DEBUG] Decrypting phonebook...")
                 cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
                 decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
                 
                 if not decrypted_data:
-                    print("[ERROR] Decrypted phonebook data is empty")
+                    print("[ERROR] Decrypted phonebook is empty")
                     return False
                     
                 print(f"[DEBUG] Decrypted data (len={len(decrypted_data)}): {decrypted_data[:100]}...")
     
-                # 7. Parse JSON with detailed error reporting
+                # 6. Parse JSON
                 try:
                     phonebook_data = json.loads(decrypted_data.decode('utf-8'))
-                    if not isinstance(phonebook_data, list):
-                        print("[ERROR] Phonebook data is not a list")
-                        return False
-                        
-                    print(f"[DEBUG] Successfully parsed {len(phonebook_data)} phonebook entries")
+                    print(f"[DEBUG] Successfully parsed {len(phonebook_data)} entries")
                     
-                    # 8. Update UI in main thread
+                    # 7. Update UI
                     self.after(0, lambda: self.update_phonebook(phonebook_data))
                     return True
                     
                 except json.JSONDecodeError as e:
-                    print(f"[ERROR] JSON decode failed at position {e.pos}: {str(e)}")
-                    print(f"[DEBUG] Problem area: {decrypted_data[max(0, e.pos-50):e.pos+50]}")
+                    print(f"[ERROR] JSON parsing failed: {str(e)}")
+                    print(f"[DEBUG] Problematic data: {decrypted_data[max(0, e.pos-50):e.pos+50]}")
                     return False
                     
             except Exception as e:
