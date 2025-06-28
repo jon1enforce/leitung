@@ -10,6 +10,9 @@ import uuid
 import re
 import struct
 import base64
+import ctypes
+import platform
+from typing import Optional
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
@@ -888,6 +891,105 @@ def load_server_publickey():
         with open("server_public_key.pem", "rb") as pubHandle:
             public_key = pubHandle.read()
     return public_key.decode('utf-8')
+
+
+class SecureVault:
+    def __init__(self):
+        self.lib = None
+        self.vault = None
+        self.gen_lib = None
+        self._load_libraries()
+        
+    def _load_libraries(self):
+        """Lädt alle benötigten Bibliotheken für die aktuelle Architektur"""
+        arch = platform.machine().lower()
+        
+        # Mapping für die Auslagerungsbibliotheken
+        vault_lib_mapping = {
+            ('x86_64', 'amd64'): "libauslagern_x86_64.so",
+            ('aarch64', 'arm64'): "libauslagern_arm64.so",
+            ('armv7l',): "libauslagern_armv7.so"
+        }
+        
+        # Mapping für die Generierungsbibliotheken
+        gen_lib_mapping = {
+            ('x86_64', 'amd64'): "libsecuregen_x86_64.so",
+            ('aarch64', 'arm64'): "libsecuregen_arm64.so",
+            ('armv7l',): "libsecuregen_armv7.so"
+        }
+        
+        # Lade Auslagerungsbibliothek
+        for arch_patterns, lib_name in vault_lib_mapping.items():
+            if arch in arch_patterns:
+                try:
+                    self.lib = ctypes.CDLL(f"./{lib_name}")
+                    print(f"Successfully loaded vault lib: {lib_name}")
+                    break
+                except Exception as e:
+                    print(f"Error loading vault lib {lib_name}: {str(e)}")
+        else:
+            raise RuntimeError(f"Unsupported architecture for vault: {arch}")
+        
+        # Lade Generierungsbibliothek
+        for arch_patterns, lib_name in gen_lib_mapping.items():
+            if arch in arch_patterns:
+                try:
+                    self.gen_lib = ctypes.CDLL(f"./{lib_name}")
+                    print(f"Successfully loaded generator lib: {lib_name}")
+                    break
+                except Exception as e:
+                    print(f"Error loading generator lib {lib_name}: {str(e)}")
+        else:
+            raise RuntimeError(f"Unsupported architecture for generator: {arch}")
+        
+        # Funktionen definieren
+        self.lib.vault_create.restype = ctypes.c_void_p
+        self.lib.vault_load.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte)]
+        self.lib.vault_retrieve.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte)]
+        self.lib.vault_wipe.argtypes = [ctypes.c_void_p]
+        
+        self.gen_lib.generate_secret.argtypes = [ctypes.POINTER(ctypes.c_ubyte)]
+        self.gen_lib.generate_secret.restype = None
+    
+    def create(self) -> bool:
+        """Erstellt einen neuen Vault"""
+        if not self.lib:
+            return False
+        self.vault = self.lib.vault_create()
+        return bool(self.vault)
+    
+    def generate_secret(self) -> Optional[int]:
+        """Generiert ein 48-Byte Geheimnis und gibt nur die Speicheradresse zurück"""
+        if not self.gen_lib:
+            return None
+        buf = (ctypes.c_ubyte * 48)()
+        self.gen_lib.generate_secret(buf)
+        return ctypes.addressof(buf)
+    
+    def store(self, secret_ptr: int) -> bool:
+        """Speichert ein Geheimnis (nur über Speicheradresse)"""
+        if not self.vault or not secret_ptr:
+            return False
+        self.lib.vault_load(ctypes.c_void_p(self.vault), ctypes.c_void_p(secret_ptr))
+        return True
+    
+    def retrieve(self) -> Optional[int]:
+        """Holt das Geheimnis zurück (gibt nur Speicheradresse zurück)"""
+        if not self.vault:
+            return None
+        buf = (ctypes.c_ubyte * 48)()
+        self.lib.vault_retrieve(ctypes.c_void_p(self.vault), ctypes.cast(ctypes.byref(buf), ctypes.POINTER(ctypes.c_ubyte)))
+        return ctypes.addressof(buf)
+    
+    def wipe(self):
+        """Löscht den Vault sicher"""
+        if self.vault:
+            self.lib.vault_wipe(ctypes.c_void_p(self.vault))
+            self.vault = None
+    
+    def __del__(self):
+        """Destruktor für sichere Bereinigung"""
+        self.wipe()
 
 if __name__ == "__main__":
     try:
