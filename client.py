@@ -888,137 +888,6 @@ class PHONEBOOK(ctk.CTk):
         # Hier können andere SIP-Nachrichten behandelt werden
         print(f"[CLIENT] Handling standard SIP message: {sip_data}")
         return True
-    def _process_phonebook_update(self, data):
-        """Verarbeitet Phonebook-Updates mit vollständiger Fehlerbehandlung und erweiterten Sicherheitschecks
-        
-        Args:
-            data: Dictionary mit den Phonebook-Daten
-            
-        Returns:
-            bool: True bei Erfolg, False bei Fehler
-        """
-        """Processes phonebook update from parsed message"""
-        if not isinstance(message, dict):
-            print("[CLIENT] Invalid message format")
-            return False
-        
-        # Check if we have a JSON body
-        if 'body' in message and isinstance(message['body'], dict):
-            data = message['body']
-        else:
-            print("[CLIENT] No valid JSON body found")
-            return False
-        # 1. Input Validation
-        REQUIRED_KEYS = ['MESSAGE_TYPE', 'ENCRYPTED_SECRET', 'ENCRYPTED_PHONEBOOK']
-        if not all(key in data for key in ['MESSAGE_TYPE', 'ENCRYPTED_SECRET', 'ENCRYPTED_PHONEBOOK']):
-            print("[CLIENT] Invalid phonebook message format!")
-            return False
-    
-        try:
-            print(f"[CLIENT] Processing phonebook update (Timestamp: {data.get('TIMESTAMP', 'unknown')})")
-            
-            # 1. Base64 Decoding
-            encrypted_secret = base64.b64decode(data['ENCRYPTED_SECRET'])
-            encrypted_phonebook = base64.b64decode(data['ENCRYPTED_PHONEBOOK'])
-        except Exception as e:
-            print(f"[CLIENT] Base64 decode failed: {str(e)}")
-            return False
-        
-        if data.get('MESSAGE_TYPE') != 'PHONEBOOK_UPDATE':
-            print("[CLIENT] Invalid message type received")
-            return False
-    
-        try:
-            print(f"[CLIENT] Processing phonebook update (Timestamp: {data.get('TIMESTAMP', 'unknown')})")
-    
-            # 2. Base64 Decoding mit Fehlerbehandlung
-            try:
-                encrypted_secret = base64.b64decode(data['ENCRYPTED_SECRET'])
-                encrypted_phonebook = base64.b64decode(data['ENCRYPTED_PHONEBOOK'])
-                
-                if len(encrypted_secret) < 48 or len(encrypted_phonebook) == 0:
-                    print("[CLIENT] Invalid encrypted data length")
-                    return False
-                    
-            except (binascii.Error, ValueError) as e:
-                print(f"[CLIENT] Base64 decoding failed: {str(e)}")
-                return False
-    
-            # 3. Entschlüsselung des Secrets
-            try:
-                with open("private_key.pem", "rb") as f:
-                    priv_key = RSA.load_key_string(f.read())
-                
-                decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
-                
-                # 4. Secret-Header Validierung
-                if not decrypted_secret.startswith(b"+++secret+++"):
-                    print("[CLIENT] Invalid secret header - possible tampering detected")
-                    return False
-                    
-                secret = decrypted_secret[11:59]  # 48 Bytes Nutzdaten
-                if len(secret) != 48:
-                    print("[CLIENT] Invalid secret length")
-                    return False
-                    
-                iv = secret[:16]
-                aes_key = secret[16:]
-                
-            except (RSA.RSAError, IOError) as e:
-                print(f"[CLIENT] Decryption failed: {str(e)}")
-                return False
-    
-            # 5. Phonebook Entschlüsselung
-            try:
-                cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)  # 0 = Entschlüsselung
-                decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
-                
-                # 6. JSON Parsing mit Größenbeschränkung (Security)
-                MAX_PHONEBOOK_SIZE = 10 * 1024 * 1024  # 10MB
-                if len(decrypted_data) > MAX_PHONEBOOK_SIZE:
-                    print("[CLIENT] Phonebook data too large")
-                    return False
-                    
-                phonebook_data = json.loads(decrypted_data.decode('utf-8'))
-                
-                # 7. Datenvalidierung
-                if not isinstance(phonebook_data, list):
-                    print("[CLIENT] Invalid phonebook format - expected list")
-                    return False
-                    
-                print(f"[CLIENT] Received valid phonebook with {len(phonebook_data)} entries")
-    
-                # 8. GUI Update im Hauptthread
-                self.after(0, lambda: self.update_phonebook(phonebook_data))
-                
-                # 9. Geheimnis sicher speichern für laufende Kommunikation
-                self.current_secret = secret
-                self.store_secret_safely(secret)
-                
-                return True
-                
-            except json.JSONDecodeError as e:
-                print(f"[CLIENT] Invalid phonebook JSON: {str(e)}")
-            except EVP.EVPError as e:
-                print(f"[CLIENT] AES decryption failed: {str(e)}")
-            except UnicodeDecodeError as e:
-                print(f"[CLIENT] Character encoding error: {str(e)}")
-                
-        except Exception as e:
-            print(f"[CLIENT] Critical error in phonebook processing: {str(e)}")
-            traceback.print_exc()
-            
-        return False
-    def store_secret_safely(self, secret):
-        """Sichert das Geheimnis mit SecureVault"""
-        try:
-            if not self.secret_vault.vault:
-                self.secret_vault.create()
-            self.secret_vault.store(secret)
-        except Exception as e:
-            print(f"Warnung: Geheimnis konnte nicht sicher gespeichert werden: {e}")
-            # Fallback: Temporär in Memory behalten
-            self.temp_secret = secret
 
     def send_client_secret(self):
         """Generiert und sendet das AES-Geheimnis an den Server"""
@@ -1378,18 +1247,111 @@ class PHONEBOOK(ctk.CTk):
                 
             # 3. Handle phonebook updates
             if 'custom_data' in sip_data and isinstance(sip_data['custom_data'], dict):
-                if 'MESSAGE_TYPE' in sip_data['custom_data'] and sip_data['custom_data']['MESSAGE_TYPE'] == 'PHONEBOOK_UPDATE':
+                if sip_data['custom_data'].get('MESSAGE_TYPE') == 'PHONEBOOK_UPDATE':
                     return self._process_phonebook_update(sip_data['custom_data'])
                     
             return self._handle_standard_sip(sip_data)
             
-        except UnicodeDecodeError:
-            print("[CLIENT] Received non-UTF8 data")
-            return False
         except Exception as e:
             print(f"[CLIENT] Message handling failed: {str(e)}")
             traceback.print_exc()
             return False
+    
+    def _process_phonebook_update(self, data):
+        """Verarbeitet Phonebook-Updates mit vollständiger Fehlerbehandlung"""
+        try:
+            # 1. Input Validation
+            REQUIRED_KEYS = ['MESSAGE_TYPE', 'ENCRYPTED_SECRET', 'ENCRYPTED_PHONEBOOK']
+            if not all(key in data for key in REQUIRED_KEYS):
+                print("[CLIENT] Invalid phonebook message format!")
+                return False
+        
+            # 2. Base64 Decoding mit Fehlerbehandlung
+            try:
+                encrypted_secret = base64.b64decode(data['ENCRYPTED_SECRET'])
+                encrypted_phonebook = base64.b64decode(data['ENCRYPTED_PHONEBOOK'])
+                
+                if len(encrypted_secret) < 48 or len(encrypted_phonebook) == 0:
+                    print("[CLIENT] Invalid encrypted data length")
+                    return False
+            except (binascii.Error, ValueError) as e:
+                print(f"[CLIENT] Base64 decoding failed: {str(e)}")
+                return False
+    
+            # 3. Entschlüsselung des Secrets
+            try:
+                with open("private_key.pem", "rb") as f:
+                    priv_key = RSA.load_key_string(f.read())
+                
+                decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
+                
+                # 4. Secret-Header Validierung
+                if not decrypted_secret.startswith(b"+++secret+++"):
+                    print("[CLIENT] Invalid secret header - possible tampering detected")
+                    return False
+                    
+                secret = decrypted_secret[11:59]  # 48 Bytes Nutzdaten
+                if len(secret) != 48:
+                    print("[CLIENT] Invalid secret length")
+                    return False
+                    
+                iv = secret[:16]
+                aes_key = secret[16:]
+            except (RSA.RSAError, IOError) as e:
+                print(f"[CLIENT] Decryption failed: {str(e)}")
+                return False
+    
+            # 5. Phonebook Entschlüsselung
+            try:
+                cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)  # 0 = Entschlüsselung
+                decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
+                
+                # 6. JSON Parsing mit Größenbeschränkung (Security)
+                MAX_PHONEBOOK_SIZE = 10 * 1024 * 1024  # 10MB
+                if len(decrypted_data) > MAX_PHONEBOOK_SIZE:
+                    print("[CLIENT] Phonebook data too large")
+                    return False
+                    
+                phonebook_data = json.loads(decrypted_data.decode('utf-8'))
+                
+                # 7. Datenvalidierung
+                if not isinstance(phonebook_data, list):
+                    print("[CLIENT] Invalid phonebook format - expected list")
+                    return False
+                    
+                print(f"[CLIENT] Received valid phonebook with {len(phonebook_data)} entries")
+    
+                # 8. GUI Update im Hauptthread
+                self.after(0, lambda: self.update_phonebook(phonebook_data))
+                
+                # 9. Geheimnis sicher speichern für laufende Kommunikation
+                self.store_secret_safely(secret)
+                
+                return True
+                
+            except Exception as e:
+                print(f"[CLIENT] Phonebook processing failed: {str(e)}")
+                return False
+                
+        except Exception as e:
+            print(f"[CLIENT] Critical error in phonebook processing: {str(e)}")
+            traceback.print_exc()
+            return False
+    
+    def store_secret_safely(self, secret):
+        """Sichert das Geheimnis mit SecureVault"""
+        try:
+            if not hasattr(self, 'secret_vault') or not self.secret_vault.vault:
+                self.secret_vault = SecureVault()
+                self.secret_vault.create()
+            
+            # Konvertiere zu ctypes Buffer
+            buf = (ctypes.c_ubyte * 48)(*secret)
+            self.secret_vault.store(ctypes.addressof(buf))
+        except Exception as e:
+            print(f"Warnung: Geheimnis konnte nicht sicher gespeichert werden: {e}")
+            # Fallback: Temporär in Memory behalten
+            self.temp_secret = secret
 
     def start_connection_wrapper(self):
         """Wrapper für start_connection mit Message-Handler"""
