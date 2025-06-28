@@ -1093,9 +1093,10 @@ class PHONEBOOK(ctk.CTk):
     def update_phonebook(self, phonebook_data):
         """Aktualisiert die Phonebook-Anzeige mit Client-Daten"""
         print(f"\n[UI] Updating phonebook with {len(phonebook_data)} entries")
+        print(f"Data received: {phonebook_data}")  # Debug-Ausgabe der empfangenen Daten
         
-        # Lösche vorhandene Einträge
-        self.scrollable_frame.after(0, lambda: [widget.destroy() for widget in self.scrollable_frame.winfo_children()])
+        # Lösche vorhandene Einträge (im Hauptthread)
+        self.after(0, self._clear_phonebook_entries)
         
         # Erstelle Einträge für jeden gültigen Client
         for entry in phonebook_data:
@@ -1105,20 +1106,25 @@ class PHONEBOOK(ctk.CTk):
             client_id = entry.get('id', '')
             client_name = entry.get('name', '')
             
-            if not str(client_id).isdigit() or not client_name:
+            if not client_id or not client_name:
                 continue
                 
             print(f"[UI] Adding client {client_id}: {client_name}")
             
-            # UI-Update muss im Hauptthread erfolgen
-            self.scrollable_frame.after(0, lambda e=entry: self._add_phonebook_entry(e))
+            # Widget-Erstellung im Hauptthread
+            self.after(0, lambda e=entry: self._add_phonebook_entry(e))
         
-        # Aktualisiere den Canvas
-        self.scrollable_frame.after(0, lambda: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
-        print("[UI] Phonebook update complete")
+        # Canvas aktualisieren
+        self.after(0, self._update_canvas_scrollregion)
+    
+    def _clear_phonebook_entries(self):
+        """Löscht alle Einträge im scrollable_frame"""
+        for widget in self.scrollable_frame.winfo_children():
+            widget.destroy()
+        self.entry_buttons = []
     
     def _add_phonebook_entry(self, entry):
-        """Hilfsfunktion zum Hinzufügen eines Eintrags (im Hauptthread)"""
+        """Fügt einen einzelnen Eintrag hinzu"""
         btn = ctk.CTkButton(
             self.scrollable_frame,
             text=f"{entry['id']}: {entry['name']}",
@@ -1130,6 +1136,12 @@ class PHONEBOOK(ctk.CTk):
             command=lambda e=entry: self.on_entry_click(e)
         )
         btn.pack(fill="x", pady=5, padx=5)
+        self.entry_buttons.append(btn)
+    
+    def _update_canvas_scrollregion(self):
+        """Aktualisiert die Scrollregion des Canvas"""
+        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self.canvas.yview_moveto(0)  # Zum Anfang scrollen
 
     def load_phonebook(self):
         if not self.client_socket:
