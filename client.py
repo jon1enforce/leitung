@@ -70,23 +70,31 @@ def send_frame(sock, data):
     sock.sendall(header + data)
 
 def recv_frame(sock, timeout=30):
-    """Empfängt einen Frame mit Längenprefix"""
+    """Improved frame receiver with strict length checking"""
     sock.settimeout(timeout)
     try:
+        # Read header
         header = sock.recv(4)
-        if not header: return None
+        if len(header) != 4:
+            return None
+            
         length = struct.unpack('!I', header)[0]
+        if length > 10 * 1024 * 1024:  # 10MB max
+            raise ValueError("Frame too large")
         
-        chunks = []
-        bytes_recd = 0
-        while bytes_recd < length:
-            chunk = sock.recv(min(length - bytes_recd, 4096))
-            if not chunk: raise ConnectionError("Verbindung abgebrochen")
-            chunks.append(chunk)
-            bytes_recd += len(chunk)
-        return b''.join(chunks).decode('utf-8')
+        # Read body
+        received = bytearray()
+        while len(received) < length:
+            chunk = sock.recv(min(length - len(received), 4096))
+            if not chunk:
+                raise ConnectionError("Connection closed prematurely")
+            received.extend(chunk)
+            
+        return received.decode('utf-8')
     except socket.timeout:
-        raise TimeoutError("Timeout beim Warten auf Frame")
+        raise TimeoutError("Timeout waiting for frame")
+    except UnicodeDecodeError:
+        return None  # Or handle binary data differently
 
 
 
