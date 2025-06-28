@@ -370,8 +370,7 @@ class Server:
             self._register_client(result)
     
         return result 
-        def start(self):
-        print("start1")
+    def start(self):
         try:
             print(f"Starte Server auf {self.host}:{self.port}...")
             
