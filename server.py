@@ -515,33 +515,46 @@ class Server:
         ]
         return [server_key] + client_keys
     def process_merkle_tree(self, client_name, client_socket):
+        """Verarbeitet Merkle Tree für Schlüsselverifikation"""
         try:
-            all_keys = [self.server_public_key] + [
+            # 1. Sammle alle Schlüssel und dedupliziere
+            raw_keys = [self.server_public_key] + [
                 c['public_key'] for c in self.clients.values() 
                 if c.get('public_key')
             ]
             
-            if len(all_keys) < 2:
-                print("Warnung: Nicht genug Keys für Merkle Tree")
-                return
-    
+            unique_keys = []
+            seen_keys = set()
+            for key in raw_keys:
+                normalized = normalize_key(key)
+                if normalized and normalized not in seen_keys:
+                    seen_keys.add(normalized)
+                    unique_keys.append(key)
+            
+            print(f"[Server] Unique keys for Merkle Tree: {len(unique_keys)}")
+            
+            # 2. Normalisierung
             normalized_keys = []
-            for key in all_keys:
+            for key in unique_keys:
                 normalized = normalize_key(key)
                 if normalized:
                     normalized_keys.append(normalized)
-                else:
-                    print(f"Warnung: Key konnte nicht normalisiert werden: {key[:50]}...")
-    
-            if len(normalized_keys) < 2:
-                normalized_keys.append(normalized_keys[0])  # Fallback
-    
-            merged = "|||".join(normalized_keys)
-            merkle_root = build_merkle_tree([merged])
             
+            if len(normalized_keys) < 1:
+                raise ValueError("No valid keys found for Merkle tree")
+            
+            # 3. Zusammenführung mit Trennzeichen
+            merged = "|||".join(normalized_keys)
+            print(f"[Server] Merged keys (len={len(merged)}): {merged[:100]}...")
+            
+            # 4. Merkle Root berechnen
+            merkle_root = build_merkle_tree([merged])
+            print(f"[Server] Final Merkle Root: {merkle_root}")
+            
+            # 5. Nachricht senden
             merkle_msg = self.build_sip_message("MESSAGE", client_name, {
                 "MERKLE_ROOT": merkle_root,
-                "ALL_KEYS": json.dumps(all_keys)
+                "ALL_KEYS": json.dumps(unique_keys)  # Original unnormalisierte, aber deduplizierte Keys
             })
             send_frame(client_socket, merkle_msg)
     
