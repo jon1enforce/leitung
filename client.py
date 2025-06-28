@@ -1329,83 +1329,108 @@ class PHONEBOOK(ctk.CTk):
             return False
     
     def _process_binary_phonebook(self, binary_data):
-        """Process encrypted binary phonebook updates with enhanced error handling"""
+        """Process encrypted binary phonebook updates with complete error handling"""
         try:
             print(f"\n[CLIENT] Processing binary phonebook ({len(binary_data)} bytes)")
             print(f"Hex header: {binary_data[:32].hex()}")
     
-            # 1. Validate minimum length
-            if len(binary_data) < 256:  # Minimum for RSA-encrypted secret
-                print("[ERROR] Data too short for encrypted phonebook")
+            # 1. Validate frame structure
+            if len(binary_data) < 256:
+                print("[ERROR] Data too short (minimum 256 bytes required)")
                 return False
     
-            # 2. Split into encrypted secret (256 bytes) and phonebook data
+            # 2. Split into encrypted parts
             encrypted_secret = binary_data[:256]
             encrypted_phonebook = binary_data[256:]
-            print(f"[DEBUG] Encrypted secret: {len(encrypted_secret)} bytes")
-            print(f"[DEBUG] Encrypted phonebook: {len(encrypted_phonebook)} bytes")
+            print(f"[DEBUG] Encrypted secret (first 16): {encrypted_secret[:16].hex()}")
+            print(f"[DEBUG] Phonebook data length: {len(encrypted_phonebook)}")
     
-            # 3. RSA Decryption with error handling
+            # 3. Load private key with validation
             try:
                 with open("private_key.pem", "rb") as f:
-                    priv_key = RSA.load_key_string(f.read())
-                    print("[DEBUG] Loaded private key successfully")
+                    priv_key_data = f.read()
+                    if not priv_key_data:
+                        print("[ERROR] Private key file is empty")
+                        return False
+                        
+                    priv_key = RSA.load_key_string(priv_key_data)
+                    if not priv_key.check_key():
+                        print("[ERROR] Invalid private key")
+                        return False
+                        
+                print("[DEBUG] Private key loaded and validated")
             except Exception as e:
-                print(f"[ERROR] Failed to load private key: {e}")
+                print(f"[ERROR] Key loading failed: {str(e)}")
+                traceback.print_exc()
                 return False
     
+            # 4. RSA Decryption with enhanced checks
             try:
-                decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
-                print(f"[DEBUG] Decrypted secret: {len(decrypted_secret)} bytes")
+                print("[DEBUG] Attempting RSA decryption...")
+                decrypted_secret = priv_key.private_decrypt(
+                    encrypted_secret,
+                    RSA.pkcs1_padding
+                )
                 
-                if not decrypted_secret:
-                    print("[ERROR] RSA decryption returned empty result")
+                if decrypted_secret is None:
+                    print("[ERROR] RSA decryption returned None")
+                    print("Possible causes:")
+                    print("- Key mismatch (wrong private key)")
+                    print("- Corrupted encrypted data")
+                    print(f"Input sample: {encrypted_secret[:32].hex()}")
                     return False
                     
+                print(f"[DEBUG] Decrypted secret length: {len(decrypted_secret)}")
+                
                 if not decrypted_secret.startswith(b"+++secret+++"):
                     print("[ERROR] Invalid secret header")
-                    print(f"Header: {decrypted_secret[:12]}")
+                    print(f"Header found: {decrypted_secret[:12]}")
+                    print(f"Full secret: {decrypted_secret.hex()}")
                     return False
                     
-                secret = decrypted_secret[11:59]  # Extract 48 bytes (16 IV + 32 key)
+                secret = decrypted_secret[11:59]  # 16 IV + 32 key
                 iv = secret[:16]
                 aes_key = secret[16:]
-                print("[DEBUG] AES parameters extracted successfully")
+                print("[DEBUG] AES params extracted successfully")
     
             except RSA.RSAError as e:
-                print(f"[ERROR] RSA decryption failed: {e}")
-                print(f"Encrypted secret sample: {encrypted_secret[:32].hex()}")
+                print(f"[ERROR] RSA decryption failed: {str(e)}")
+                print(f"Key size: {priv_key.size()} bits")
+                print(f"Input size: {len(encrypted_secret)} bytes")
                 return False
     
-            # 4. AES Decryption
+            # 5. AES Decryption
             try:
+                print("[DEBUG] Attempting AES decryption...")
                 cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
                 decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
                 
                 print(f"[DEBUG] Decrypted {len(decrypted_data)} bytes")
-                print(f"Data sample: {decrypted_data[:64].hex()}")
+                print(f"Data start: {decrypted_data[:64].hex()}")
     
-                # 5. Parse JSON
+                # 6. Parse JSON
                 phonebook = json.loads(decrypted_data.decode('utf-8'))
-                print(f"[SUCCESS] Received phonebook with {len(phonebook)} entries")
+                print(f"[SUCCESS] Phonebook received ({len(phonebook)} entries)")
                 
-                # 6. Update UI
+                # 7. Update UI
                 self.after(0, lambda: self.update_phonebook(phonebook))
                 return True
     
             except EVP.EVPError as e:
-                print(f"[ERROR] AES decryption failed: {e}")
-                print(f"IV: {iv.hex()}, Key: {aes_key.hex()[:16]}...")
+                print(f"[ERROR] AES decryption failed: {str(e)}")
+                print(f"Used IV: {iv.hex()}")
+                print(f"Used key: {aes_key.hex()[:16]}...")
             except json.JSONDecodeError as e:
-                print(f"[ERROR] Invalid JSON: {e}")
+                print(f"[ERROR] Invalid JSON: {str(e)}")
                 print(f"Data start: {decrypted_data[:100]}")
-            except Exception as e:
-                print(f"[ERROR] Processing failed: {e}")
+            except UnicodeDecodeError as e:
+                print(f"[ERROR] Decoding failed: {str(e)}")
+                print(f"Hex dump: {decrypted_data[:64].hex()}")
     
             return False
     
         except Exception as e:
-            print(f"[CRITICAL] Unexpected error: {e}")
+            print(f"[CRITICAL] Unexpected error: {str(e)}")
             traceback.print_exc()
             return False
     
