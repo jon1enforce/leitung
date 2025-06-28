@@ -147,21 +147,21 @@ def verify_merkle_integrity(all_keys, received_root_hash):
     """Überprüft die Integrität aller Schlüssel mittels Merkle Tree"""
     print("\n=== CLIENT VERIFICATION ===")
     
-    # 1. Debug-Ausgabe
-    print("\n[Client] Received keys (raw):")
-    for i, key in enumerate(all_keys):
-        print(f"Key {i}: {key}" if key else f"Key {i}: None")
-
-    # 2. Normalisierung (wie Server)
-    normalized_keys = []
+    # 1. Deduplizierung der Schlüssel
+    unique_keys = []
+    seen_keys = set()
     for key in all_keys:
-        if not key or "-----BEGIN PUBLIC KEY-----" not in key:
-            continue
-        normalized = "".join(
-            key.split("-----BEGIN PUBLIC KEY-----")[1]
-            .split("-----END PUBLIC KEY-----")[0]
-            .strip().split()
-        )
+        normalized = normalize_key(key)
+        if normalized and normalized not in seen_keys:
+            seen_keys.add(normalized)
+            unique_keys.append(key)
+    
+    print(f"[Client] Unique keys after deduplication: {len(unique_keys)}")
+    
+    # 2. Normalisierung und Validierung
+    normalized_keys = []
+    for key in unique_keys:
+        normalized = normalize_key(key)
         if normalized:
             normalized_keys.append(normalized)
     
@@ -171,11 +171,11 @@ def verify_merkle_integrity(all_keys, received_root_hash):
 
     # 3. Zusammenführung mit Trennzeichen
     merged = "|||".join(normalized_keys)
-    print(f"\n[Client] Merged keys (len={len(merged)}): {merged[:100]}...")
+    print(f"[Client] Merged keys (len={len(merged)}): {merged[:100]}...")
 
     # 4. Merkle Root berechnen
     calculated_hash = build_merkle_tree([merged])
-    print(f"\n[Client] Calculated hash: {calculated_hash}")
+    print(f"[Client] Calculated hash: {calculated_hash}")
     print(f"Received hash:   {received_root_hash}")
     
     return calculated_hash == received_root_hash
@@ -576,6 +576,7 @@ def start_connection(server_ip, server_port, client_name, client_socket, message
             print(f"\n[Client] Raw Merkle Response:\n{merkle_response}\n")
         
             merkle_data = parse_sip_message(merkle_response)
+# Nach dem Empfang der Merkle-Antwort:
             all_keys = []
             merkle_root = None
             
@@ -583,13 +584,14 @@ def start_connection(server_ip, server_port, client_name, client_socket, message
                 if 'ALL_KEYS' in merkle_data['custom_data']:
                     try:
                         all_keys = json.loads(merkle_data['custom_data']['ALL_KEYS'])
-                        print(f"[Client] Received All Keys: {len(all_keys)} keys")
+                        print(f"[Client] Received {len(all_keys)} keys from server")
                     except json.JSONDecodeError as e:
                         print(f"[Client] Error parsing keys: {e}")
-        
+            
                 if 'MERKLE_ROOT' in merkle_data['custom_data']:
                     merkle_root = merkle_data['custom_data']['MERKLE_ROOT']
             
+            # Keine zusätzlichen Keys mehr hinzufügen - vertraue der Server-Liste
             if not merkle_root:
                 if '\r\n\r\n' in merkle_response:
                     body = merkle_response.split('\r\n\r\n')[1]
@@ -597,19 +599,11 @@ def start_connection(server_ip, server_port, client_name, client_socket, message
                         if line.startswith('MERKLE_ROOT:'):
                             merkle_root = line.split('MERKLE_ROOT:')[1].strip()
                             break
-        
+            
             if not merkle_root:
                 raise ValueError("No Merkle root in response")
             
-            # Add server public key to the list of all keys if not already included
-            if server_public_key not in all_keys:
-                all_keys.append(server_public_key)
-            
-            # Add client public key to the list if not already included
-            if client_pubkey not in all_keys:
-                all_keys.append(client_pubkey)
-        
-            # Verify Merkle integrity with just all_keys and merkle_root
+            # Direkte Verifikation ohne Modifikation der Key-Liste
             if not verify_merkle_integrity(all_keys, merkle_root):
                 messagebox.showerror("Security Error", 
                     "Integrity check failed!\n"
@@ -617,8 +611,6 @@ def start_connection(server_ip, server_port, client_name, client_socket, message
                     "Connection terminated.")
                 client_socket.close()
                 return
-            else:
-                print("Integrity successfully verified")
         
             # Start main communication loop
             connection_loop(client_socket, server_ip, message_handler)
