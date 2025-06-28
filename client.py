@@ -1125,38 +1125,67 @@ class PHONEBOOK(ctk.CTk):
         self.connect_button = ctk.CTkButton(self.button_frame, text="Verbinden", command=self.on_connect_click)
         self.connect_button.pack(side='left', fill="x", expand=True, padx=10)
 
-
-
-
-
+    def cleanup_connection(self):
+        """Clean up connection resources"""
+        if hasattr(self, 'client_socket') and self.client_socket:
+            try:
+                self.client_socket.close()
+            except:
+                pass
+            finally:
+                self.client_socket = None
     #threading
     def on_connect_click(self):
-        if self.client_socket:
+        if hasattr(self, 'client_socket') and self.client_socket:
             messagebox.showerror("Fehler", "Bereits verbunden")
             return
     
         server_ip = self.server_ip_input.get()
         server_port = self.server_port_input.get()
-        
-        try:
-            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.client_socket.connect((server_ip, int(server_port)))
-            
-            self.server_ip = server_ip
-            self.server_port = server_port
-            
-            threading.Thread(
-                target=self.start_connection_wrapper,
-                daemon=True
-            ).start()
-            
-            # ENTFERNEN Sie diese Zeile komplett:
-            # messagebox.showinfo("Erfolg", "Verbunden mit Server")
-            
-            self.connection_window.destroy()
     
+        try:
+            # Validate inputs
+            if not server_ip or not server_port:
+                raise ValueError("Server-IP und Port müssen angegeben werden")
+            
+            port = int(server_port)
+            if not (0 < port <= 65535):
+                raise ValueError("Ungültiger Port")
+    
+            # Create and connect socket
+            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.client_socket.settimeout(5)  # 5 second timeout
+            
+            try:
+                self.client_socket.connect((server_ip, port))
+                
+                # Store connection info
+                self.server_ip = server_ip
+                self.server_port = port
+                
+                # Start connection thread
+                threading.Thread(
+                    target=self.start_connection_wrapper,
+                    daemon=True
+                ).start()
+                
+                self.connection_window.destroy()
+    
+            except socket.timeout:
+                messagebox.showerror("Fehler", "Verbindungstimeout - Server nicht erreichbar")
+                self.cleanup_connection()
+            except ConnectionRefusedError:
+                messagebox.showerror("Fehler", "Verbindung abgelehnt - Server nicht erreichbar oder Port falsch")
+                self.cleanup_connection()
+            except OSError as e:
+                messagebox.showerror("Fehler", f"Netzwerkfehler: {str(e)}")
+                self.cleanup_connection()
+    
+        except ValueError as e:
+            messagebox.showerror("Fehler", f"Ungültige Eingabe: {str(e)}")
+            self.cleanup_connection()
         except Exception as e:
-            messagebox.showerror("Fehler", f"Verbindung fehlgeschlagen: {e}")
+            messagebox.showerror("Fehler", f"Unerwarteter Fehler: {str(e)}")
             self.cleanup_connection()
 
     def on_entry_click(self, entry):
