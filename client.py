@@ -1328,64 +1328,106 @@ class PHONEBOOK(ctk.CTk):
 
     
     def _process_encrypted_phonebook(self, encrypted_data):
-        """Handles encrypted phonebook data with detailed debugging"""
+        """Handles encrypted phonebook data with enhanced error checking"""
         print("\n=== DECRYPTING PHONEBOOK DATA ===")
         print(f"[DEBUG] Total encrypted data length: {len(encrypted_data)}")
         
         try:
-            # 1. Extract the encrypted parts
-            if len(encrypted_data) < 512:
-                print("[ERROR] Data too short to contain valid encrypted payload")
+            # 1. Validate input data
+            if not encrypted_data:
+                print("[ERROR] Empty encrypted data received")
                 return False
                 
-            # First 512 bytes are RSA encrypted secret
+            if len(encrypted_data) < 512:
+                print(f"[ERROR] Data too short ({len(encrypted_data)} bytes). Need at least 512 bytes for RSA payload.")
+                return False
+    
+            # 2. Split into parts
             encrypted_secret = encrypted_data[:512]
             encrypted_phonebook = encrypted_data[512:]
             
             print(f"[DEBUG] Encrypted secret (512 bytes): {encrypted_secret[:32].hex(' ')}...")
             print(f"[DEBUG] Encrypted phonebook ({len(encrypted_phonebook)} bytes): {encrypted_phonebook[:32].hex(' ')}...")
     
-            # 2. Load private key
-            with open("private_key.pem", "rb") as f:
-                priv_key = RSA.load_key_string(f.read())
-                print("[DEBUG] Private key loaded successfully")
-    
-            # 3. Decrypt the secret
-            decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
-            print(f"[DEBUG] Decrypted secret (len={len(decrypted_secret)}): {decrypted_secret[:16].hex(' ')}...")
-            
-            if not decrypted_secret.startswith(b"+++secret+++"):
-                print("[ERROR] Invalid secret - missing overhead")
-                print(f"[DEBUG] Secret starts with: {decrypted_secret[:12]}")
-                return False
-                
-            secret = decrypted_secret[11:59]  # 48 bytes
-            iv = secret[:16]
-            aes_key = secret[16:]
-            print(f"[DEBUG] AES IV (16 bytes): {iv.hex(' ')}")
-            print(f"[DEBUG] AES Key (32 bytes): {aes_key[:16].hex(' ')}...")
-    
-            # 4. Decrypt phonebook
-            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
-            decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
-            print(f"[DEBUG] Decrypted data (len={len(decrypted_data)}): {decrypted_data[:100]}...")
-    
-            # 5. Parse JSON
+            # 3. Load private key with validation
             try:
-                phonebook_data = json.loads(decrypted_data.decode('utf-8'))
-                print(f"[DEBUG] Successfully parsed JSON with {len(phonebook_data)} entries")
-                print(f"[DEBUG] First entry: {phonebook_data[0] if phonebook_data else 'Empty'}")
+                with open("private_key.pem", "rb") as f:
+                    priv_key_data = f.read()
+                    if not priv_key_data:
+                        print("[ERROR] Private key file is empty")
+                        return False
+                        
+                    priv_key = RSA.load_key_string(priv_key_data)
+                    if not priv_key:
+                        print("[ERROR] Failed to load private key")
+                        return False
+                        
+                    print("[DEBUG] Private key successfully loaded")
+            except Exception as e:
+                print(f"[ERROR] Private key loading failed: {str(e)}")
+                return False
+    
+            # 4. Decrypt the secret with error handling
+            try:
+                decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
+                if not decrypted_secret:
+                    print("[ERROR] Decryption returned empty result")
+                    return False
+                    
+                print(f"[DEBUG] Decrypted secret (len={len(decrypted_secret)}): {decrypted_secret[:16].hex(' ')}...")
                 
-                # 6. Update UI
-                self.after(0, lambda: self.update_phonebook(phonebook_data))
-                return True
-            except json.JSONDecodeError as e:
-                print(f"[ERROR] JSON decode failed at position {e.pos}: {str(e)}")
-                print(f"[DEBUG] Problematic data: {decrypted_data[max(0, e.pos-50):e.pos+50]}")
+                # 5. Validate secret structure
+                if not decrypted_secret.startswith(b"+++secret+++"):
+                    print("[ERROR] Invalid secret - missing overhead marker")
+                    print(f"[DEBUG] Secret starts with: {decrypted_secret[:12]}")
+                    return False
+                    
+                if len(decrypted_secret) < 59:
+                    print(f"[ERROR] Decrypted secret too short ({len(decrypted_secret)} bytes). Need at least 59 bytes.")
+                    return False
+                    
+                secret = decrypted_secret[11:59]  # 48 bytes
+                iv = secret[:16]
+                aes_key = secret[16:]
+                
+                print(f"[DEBUG] AES IV (16 bytes): {iv.hex(' ')}")
+                print(f"[DEBUG] AES Key (32 bytes): {aes_key.hex(' ')}")
+    
+                # 6. Decrypt phonebook data
+                cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
+                decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
+                
+                if not decrypted_data:
+                    print("[ERROR] Decrypted phonebook data is empty")
+                    return False
+                    
+                print(f"[DEBUG] Decrypted data (len={len(decrypted_data)}): {decrypted_data[:100]}...")
+    
+                # 7. Parse JSON with detailed error reporting
+                try:
+                    phonebook_data = json.loads(decrypted_data.decode('utf-8'))
+                    if not isinstance(phonebook_data, list):
+                        print("[ERROR] Phonebook data is not a list")
+                        return False
+                        
+                    print(f"[DEBUG] Successfully parsed {len(phonebook_data)} phonebook entries")
+                    
+                    # 8. Update UI in main thread
+                    self.after(0, lambda: self.update_phonebook(phonebook_data))
+                    return True
+                    
+                except json.JSONDecodeError as e:
+                    print(f"[ERROR] JSON decode failed at position {e.pos}: {str(e)}")
+                    print(f"[DEBUG] Problem area: {decrypted_data[max(0, e.pos-50):e.pos+50]}")
+                    return False
+                    
+            except Exception as e:
+                print(f"[ERROR] Decryption failed: {str(e)}")
+                traceback.print_exc()
                 return False
                 
         except Exception as e:
-            print(f"[ERROR] Decryption failed: {str(e)}")
+            print(f"[CRITICAL] Processing failed: {str(e)}")
             traceback.print_exc()
             return False
     
