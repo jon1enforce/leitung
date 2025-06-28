@@ -809,11 +809,11 @@ class Server:
             print(f"Fehler bei der Verschlüsselung des Telefonbuchs: {e}")
             return ""
     def broadcast_phonebook(self):
-        """Verbesserte synchron-asynchrone Broadcast-Implementierung mit vollständiger Fehlerbehandlung"""
+        """Broadcastet das aktuelle Phonebook an alle verbundenen Clients"""
         def _broadcast_to_client(client_id, client_data, phonebook_data):
             try:
-                # 1. Generiere Zufallssecret für diese Session
-                secret = b"+++secret+++" + os.urandom(48-11)  # 11 Byte Header + 48 Byte Nutzdaten
+                # 1. Generiere neues 48-Byte Geheimnis für diese Session
+                secret = b"+++secret+++" + os.urandom(48-11)  # 11 Byte Header + 37 Byte Nutzdaten
                 
                 # 2. Lade Client Public Key
                 client_pubkey = RSA.load_pub_key_bio(
@@ -840,6 +840,7 @@ class Server:
                     "ENCRYPTED_PHONEBOOK": base64.b64encode(encrypted_phonebook).decode(),
                     "CLIENT_ID": client_id
                 }
+                
                 response = self.build_sip_message(
                     "MESSAGE",
                     client_data['name'],
@@ -853,37 +854,48 @@ class Server:
                         client_socket.settimeout(5.0)
                         send_frame(client_socket, response)
                         return True
-                    return False
-                    
+                return False
+                
             except Exception as e:
                 print(f"[SERVER] Error sending to {client_id}: {str(e)}")
+                traceback.print_exc()
                 return False
     
         def _broadcast():
             try:
-                # 1. Aktive Clients filtern (OHNE Server)
+                # 1. Aktive Clients filtern (nur Clients mit numerischen IDs)
                 active_clients = {
                     cid: data for cid, data in self.clients.items() 
                     if data.get('socket') is not None and cid.isdigit()
                 }
                 
+                print(f"[SERVER] Broadcasting to {len(active_clients)} active clients")
+                
                 if not active_clients:
                     print("[SERVER] No active clients for broadcast")
                     return
                     
-                # 2. Telefonbuchdaten vorbereiten (nur Clients)
-                phonebook_data = [
-                    {
+                # 2. Telefonbuchdaten vorbereiten (nur Clients, kein Server)
+                phonebook_data = []
+                for cid, data in sorted(active_clients.items(), key=lambda x: int(x[0])):
+                    if not data.get('name') or data['name'].lower() == 'server':
+                        continue
+                        
+                    print(f"[SERVER] Adding client to phonebook: {cid}: {data['name']}")
+                    
+                    phonebook_data.append({
                         'id': cid,
                         'name': data['name'],
                         'ip': data['ip'],
                         'port': data['port'],
                         'public_key': shorten_public_key(data['public_key'])
-                    }
-                    for cid, data in sorted(active_clients.items(), key=lambda x: int(x[0]))
-                ]
+                    })
                 
-                print(f"[SERVER] Broadcasting to {len(active_clients)} clients")
+                if not phonebook_data:
+                    print("[SERVER] No valid client entries to broadcast")
+                    return
+                
+                print(f"[SERVER] Prepared phonebook with {len(phonebook_data)} entries")
                 
                 # 3. Paralleler Versand mit Thread-Pool
                 with ThreadPoolExecutor(max_workers=4) as executor:
@@ -897,10 +909,13 @@ class Server:
                         try:
                             success = future.result()
                             if not success:
-                                print(f"[WARNING] Failed to send to {cid}")
+                                print(f"[WARNING] Failed to send to client {cid}")
                         except Exception as e:
                             print(f"[ERROR] Broadcast failed for {cid}: {str(e)}")
+                            traceback.print_exc()
                             
+                print("[SERVER] Broadcast completed")
+                
             except Exception as e:
                 print(f"[CRITICAL] Broadcast failed: {str(e)}")
                 traceback.print_exc()
