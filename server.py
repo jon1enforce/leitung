@@ -51,6 +51,40 @@ def recv_frame(sock, timeout=30):
         raise TimeoutError("Timeout waiting for frame")
     except UnicodeDecodeError:
         return None  # Or handle binary data differently
+def debug_print_key(key_type, key_data):
+    """Print detailed key information"""
+    print(f"\n=== {key_type.upper()} KEY DEBUG ===")
+    print(f"Length: {len(key_data)} bytes")
+    print(f"First 32 bytes (hex): {' '.join(f'{b:02x}' for b in key_data[:32])}")
+    print(f"First 32 bytes (ascii): {key_data[:32].decode('ascii', errors='replace')}")
+    if len(key_data) > 32:
+        print(f"Last 32 bytes (hex): {' '.join(f'{b:02x}' for b in key_data[-32:])}")
+    print("="*50)
+
+def validate_key_pair(private_key, public_key):
+    """Validate RSA key pair matches"""
+    try:
+        # Create test message
+        test_msg = b"TEST_MESSAGE_" + os.urandom(16)
+        
+        # Encrypt with public key
+        pub_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(public_key))
+        encrypted = pub_key.public_encrypt(test_msg, RSA.pkcs1_padding)
+        
+        # Decrypt with private key
+        priv_key = RSA.load_key_string(private_key)
+        decrypted = priv_key.private_decrypt(encrypted, RSA.pkcs1_padding)
+        
+        if decrypted == test_msg:
+            print("[KEY VALIDATION] Key pair is valid and matches")
+            return True
+        else:
+            print("[KEY VALIDATION] Key pair does not match!")
+            return False
+    except Exception as e:
+        print(f"[KEY VALIDATION ERROR] {str(e)}")
+        return False
+
 
 def build_merkle_tree(data_blocks):
     data_blocks = list(data_blocks)
