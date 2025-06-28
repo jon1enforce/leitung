@@ -41,7 +41,7 @@ def recv_frame(sock, timeout=30):
         # Read body
         received = bytearray()
         while len(received) < length:
-            chunk = sock.recv(min(length - len(received), 4096)
+            chunk = sock.recv(min(length - len(received), 4096))
             if not chunk:
                 raise ConnectionError("Connection closed prematurely")
             received.extend(chunk)
