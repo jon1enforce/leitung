@@ -861,17 +861,17 @@ class Server:
     
         def _broadcast():
             try:
-                # 1. Aktive Clients filtern
+                # 1. Aktive Clients filtern (OHNE Server)
                 active_clients = {
                     cid: data for cid, data in self.clients.items() 
-                    if data.get('socket') is not None
+                    if data.get('socket') is not None and cid.isdigit()
                 }
                 
                 if not active_clients:
                     print("[SERVER] No active clients for broadcast")
                     return
                     
-                # 2. Telefonbuchdaten vorbereiten
+                # 2. Telefonbuchdaten vorbereiten (nur Clients)
                 phonebook_data = [
                     {
                         'id': cid,
