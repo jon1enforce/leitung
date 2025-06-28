@@ -1047,15 +1047,19 @@ class PHONEBOOK(ctk.CTk):
 #threading
     def on_connect_click(self):
         if self.client_socket:
-            print("Fehler, bereits verbunden")
+            messagebox.showerror("Fehler", "Bereits verbunden")
             return
     
-        self.server_ip = self.server_ip_input.get()
-        server_port = self.server_port_input.get()
+        server_ip = self.server_ip_input.get()
+        server_port = self.server_port_input.get()  # Get the value before destroying
         
         try:
             self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.client_socket.connect((self.server_ip, int(server_port)))
+            self.client_socket.connect((server_ip, int(server_port)))
+            
+            # Store the values as instance variables
+            self.server_ip = server_ip
+            self.server_port = server_port
             
             # Starte connection_loop mit Message-Handler
             threading.Thread(
@@ -1063,7 +1067,7 @@ class PHONEBOOK(ctk.CTk):
                 daemon=True
             ).start()
             
-            print("Verbunden mit Server")
+            messagebox.showinfo("Erfolg", "Verbunden mit Server")
             self.connection_window.destroy()
     
         except Exception as e:
@@ -1431,11 +1435,11 @@ class PHONEBOOK(ctk.CTk):
         """Wrapper für start_connection mit Message-Handler"""
         start_connection(
             self.server_ip,
-            int(self.server_port_input.get()),
+            int(self.server_port),  # Use the stored value
             load_client_name(),
             self.client_socket,
-            self.handle_server_message  # Dies ist der message_handler
-        )
+            self.handle_server_message
+    )
 
 def main():
     global app
