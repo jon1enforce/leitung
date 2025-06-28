@@ -820,24 +820,64 @@ class Server:
             print(f"{cid}: {data['name']}")
     
     def build_phonebook_message(self, client_data, encrypted_secret, encrypted_phonebook, client_id):
-        """Builds properly formatted SIP message with JSON body"""
+        """Builds properly formatted SIP message with JSON body containing encrypted phonebook data.
+        
+        Args:
+            client_data: Dictionary containing client information (name, ip)
+            encrypted_secret: RSA-encrypted secret (bytes)
+            encrypted_phonebook: AES-encrypted phonebook data (bytes)
+            client_id: Client identifier string
+            
+        Returns:
+            Properly formatted SIP message string
+        
+        Raises:
+            ValueError: If input validation fails
+        """
+        # Input validation
+        if not all(key in client_data for key in ['name', 'ip']):
+            raise ValueError("Invalid client_data - missing required fields")
+        if not isinstance(encrypted_secret, bytes) or len(encrypted_secret) != 512:
+            raise ValueError("encrypted_secret must be 512 bytes")
+        if not isinstance(encrypted_phonebook, bytes) or len(encrypted_phonebook) == 0:
+            raise ValueError("encrypted_phonebook must be non-empty bytes")
+        if not isinstance(client_id, str):
+            raise ValueError("client_id must be string")
+    
+        # Prepare message data with compact JSON formatting
         message_data = {
             "MESSAGE_TYPE": "PHONEBOOK_UPDATE",
-            "TIMESTAMP": str(int(time.time())),
-            "ENCRYPTED_SECRET": base64.b64encode(encrypted_secret).decode(),
-            "ENCRYPTED_PHONEBOOK": base64.b64encode(encrypted_phonebook).decode(),
+            "TIMESTAMP": int(time.time()),  # Integer timestamp
+            "ENCRYPTED_SECRET": base64.b64encode(encrypted_secret).decode('ascii'),
+            "ENCRYPTED_PHONEBOOK": base64.b64encode(encrypted_phonebook).decode('ascii'),
             "CLIENT_ID": client_id
         }
-        json_body = json.dumps(message_data)
-        
-        return (
+    
+        # Generate compact JSON without extra whitespace
+        try:
+            json_body = json.dumps(message_data, separators=(',', ':'))
+        except (TypeError, ValueError) as e:
+            raise ValueError(f"JSON serialization failed: {str(e)}")
+    
+        # Build SIP message with proper line endings
+        sip_message = (
             f"MESSAGE sip:{client_data['name']} SIP/2.0\r\n"
             f"From: <sip:server@{self.host}>\r\n"
             f"To: <sip:{client_data['name']}@{client_data['ip']}>\r\n"
             f"Content-Type: application/json\r\n"
-            f"Content-Length: {len(json_body)}\r\n\r\n"
+            f"Content-Length: {len(json_body)}\r\n\r\n"  # Double CRLF marks end of headers
             f"{json_body}"
         )
+    
+        # Debug output
+        if __debug__:
+            print("\n=== SERVER PHONEBOOK MESSAGE ===")
+            print(f"[Headers]\n{sip_message.split('\r\n\r\n')[0]}")
+            print(f"[Body Length] {len(json_body)} bytes")
+            print(f"[ENCRYPTED_SECRET] {message_data['ENCRYPTED_SECRET'][:64]}...")
+            print(f"[ENCRYPTED_PHONEBOOK] {message_data['ENCRYPTED_PHONEBOOK'][:64]}...")
+    
+        return sip_message
 
 
     def handle_phonebook_message(self, encrypted_data):
