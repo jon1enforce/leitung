@@ -422,89 +422,58 @@ def build_sip_message(method, recipient, custom_data={}, from_server=False, host
         f"{body}"
     )
 def parse_sip_message(message):
-    """
-    Client-spezifischer Parser mit:
-    - Toleranter Fehlerbehandlung für UI-Anzeige
-    - PONG/Phonebook Update-Spezialisierung
-    - Automatischem Merkle-Tree-Check
-    """
+    """Original-Implementierung mit Merkle-Tree-Support"""
     if isinstance(message, bytes):
-        try:
-            message = message.decode('utf-8')
-        except UnicodeDecodeError:
-            print("[CLIENT] Received binary data, may be encrypted content")
-            return {'binary_data': message}
-
-    lines = [line.strip() for line in message.replace('\r\n', '\n').split('\n') if line.strip()]
-    if not lines:
+        message = message.decode('utf-8')
+    
+    message = message.strip()
+    if not message:
         return None
-
-    result = {
-        'method': None,
-        'status_code': None,
-        'headers': {},
-        'custom_data': {},
-        'ui_actions': []  # Client-spezifisch für UI-Updates
-    }
-
-    # First line parsing (tolerant)
+    
+    lines = [line.strip() for line in message.replace('\r\n', '\n').split('\n') if line.strip()]
+    result = {'headers': {}, 'custom_data': {}}
+    
+    # Erste Zeile (Request/Response-Line)
     first_line = lines[0]
-    if 'SIP/2.0' in first_line:
-        parts = first_line.split()
+    if first_line.startswith('SIP/2.0'):
+        parts = first_line.split(maxsplit=2)
         if len(parts) >= 2:
             result['status_code'] = parts[1]
             if len(parts) > 2:
-                result['status_message'] = ' '.join(parts[2:])
+                result['status_message'] = parts[2]
     else:
-        try:
-            result['method'] = first_line.split()[0]
-        except IndexError:
-            pass
-
-    # Header parsing (tolerant)
-    body_start = len(lines)
-    for i, line in enumerate(lines[1:]):
-        if not line.strip():
-            body_start = i + 1
-            break
-        if ':' not in line:
-            continue  # Skip invalid headers
+        result['method'] = first_line.split()[0]
+    
+    # Header parsen
+    for line in lines[1:]:
+        if ':' in line:
+            key, val = line.split(':', 1)
+            key = key.strip().upper()
+            val = val.strip()
             
-        parts = line.split(':', 1)
-        key = parts[0].strip().upper()
-        result['headers'][key] = parts[1].strip()
-
-    # Body parsing (optimiert für Server-Antworten)
-    if len(lines) > body_start:
-        body = '\n'.join(lines[body_start:])
+            if key == "CONTENT-LENGTH":
+                try:
+                    result['content_length'] = int(val)
+                except ValueError:
+                    pass
+            elif key not in result['headers']:
+                result['headers'][key] = val
+    
+    # Body verarbeiten (für MERKLE_ROOT und ALL_KEYS)
+    if 'content_length' in result and result['content_length'] > 0:
+        body_lines = lines[len(result['headers']) + 1:]
+        body = '\n'.join(body_lines)
         
-        # Priority 1: Phonebook Update (JSON)
         try:
-            data = json.loads(body)
-            if isinstance(data, dict):
-                result['custom_data'] = data
-                if data.get('MESSAGE_TYPE') == 'PHONEBOOK_UPDATE':
-                    result['ui_actions'].append(('update_phonebook', data))
-        except json.JSONDecodeError:
-            # Priority 2: Key-Value Pairs
             result['custom_data'] = dict(
-                line.split(':', 1) 
-                for line in body.split('\n') 
+                line.split(':', 1)
+                for line in body.splitlines()
                 if ':' in line
             )
-
-    # Client-spezifische Aktionen
-    if 'PONG' in result.get('custom_data', {}):
-        result['ui_actions'].append(('pong_received', None))
-        
-    if 'MERKLE_ROOT' in result.get('custom_data', {}):
-        if not verify_merkle_integrity(
-            result['custom_data'].get('ALL_KEYS', []),
-            result['custom_data']['MERKLE_ROOT']
-        ):
-            result['ui_actions'].append(('security_alert', 'Merkle verification failed'))
-
-    return result
+        except Exception:
+            result['body'] = body
+    
+    return result if ('method' in result or 'status_code' in result) else None
 def connection_loop(client_socket, server_ip, message_handler=None):
     """
     Erweiterte Verbindungsschleife mit:
