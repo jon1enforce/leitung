@@ -1329,77 +1329,60 @@ class PHONEBOOK(ctk.CTk):
             return False
     
     def _process_binary_phonebook(self, binary_data):
-        """Process encrypted binary phonebook updates with enhanced key loading debug"""
-        print("\n=== BINARY PHONEBOOK PROCESSING START ===")
-        print(f"[RAW DATA] Length: {len(binary_data)} bytes")
-        print(f"[RAW DATA] Hex head: {binary_data[:64].hex()}")
-        print(f"[RAW DATA] ASCII head: {repr(binary_data[:64].decode('ascii', errors='replace'))}")
+        """Process incoming data that could be either SIP or encrypted phonebook"""
+        print("\n=== PHONEBOOK PROCESSING START ===")
+        print(f"[INPUT] Length: {len(binary_data)} bytes")
+        print(f"[HEAD] ASCII: {binary_data[:64].decode('ascii', errors='replace')}")
+        print(f"[HEAD] Hex: {binary_data[:32].hex()}")
     
-        try:
-            # 1. Validate input structure
-            if len(binary_data) < 256:
-                print("[ERROR] Data too short for encrypted format")
-                return False
-    
-            # 2. Key Loading with deep validation
-            print("\n=== KEY LOADING PHASE ===")
+        # 1. Check if this is actually a SIP message
+        if binary_data.startswith(b'MESSAGE') or binary_data.startswith(b'SIP/2.0'):
             try:
-                print("[DEBUG] Attempting to load private key...")
-                
-                # Read key file with existence check
-                if not os.path.exists("private_key.pem"):
-                    print("[ERROR] private_key.pem file not found")
-                    return False
-                    
-                with open("private_key.pem", "rb") as f:
-                    key_data = f.read()
-                    print(f"[DEBUG] Key file size: {len(key_data)} bytes")
-                    print(f"[DEBUG] First 32 bytes: {key_data[:32].hex()}")
-                    
-                    # Validate PEM structure
-                    if not b"-----BEGIN RSA PRIVATE KEY-----" in key_data:
-                        print("[ERROR] Invalid PEM structure in private key")
-                        return False
-                        
-                    # Try loading with password if needed
-                    for password in [None, b"", b"password"]:  # Common password attempts
-                        try:
-                            bio = BIO.MemoryBuffer(key_data)
-                            priv_key = RSA.load_key_bio(bio, callback=lambda *_: password)
-                            print(f"[DEBUG] Successfully loaded key with {'no password' if password is None else 'password'}")
-                            break
-                        except Exception as e:
-                            print(f"[DEBUG] Failed with password {password}: {str(e)}")
-                            continue
-                    else:
-                        print("[ERROR] Failed to load private key (possibly password protected)")
-                        return False
-                    
-                    # Verify key parameters
-                    try:
-                        print(f"[DEBUG] Key size: {priv_key.size()} bits")
-                        print(f"[DEBUG] Key modulus: {priv_key.n[:16].hex()}...")
-                        
-                        if not priv_key.check_key():
-                            print("[ERROR] Key failed internal consistency check")
-                            return False
-                            
-                    except Exception as e:
-                        print(f"[ERROR] Key validation failed: {str(e)}")
-                        return False
-                        
+                print("[DEBUG] Detected SIP message format")
+                sip_data = parse_sip_message(binary_data.decode('utf-8'))
+                if sip_data:
+                    return self._process_phonebook_update(sip_data)
             except Exception as e:
-                print(f"[CRITICAL] Key loading crashed: {str(e)}")
+                print(f"[ERROR] SIP parsing failed: {str(e)}")
+    
+        # 2. Only attempt decryption if data looks encrypted
+        if len(binary_data) >= 256:
+            print("[DEBUG] Attempting encrypted phonebook processing")
+            try:
+                # Key loading with validation
+                print("[KEY] Loading private key...")
+                with open("private_key.pem", "rb") as f:
+                    priv_key = RSA.load_key_string(f.read())
+                    if not priv_key.check_key():
+                        print("[ERROR] Private key validation failed")
+                        return False
+    
+                # RSA decryption
+                encrypted_secret = binary_data[:256]
+                print(f"[RSA] Encrypted secret: {encrypted_secret[:16].hex()}...")
+                
+                decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
+                if not decrypted_secret:
+                    print("[ERROR] RSA decryption returned None")
+                    return False
+    
+                # AES decryption
+                iv = decrypted_secret[:16]
+                aes_key = decrypted_secret[16:48]
+                cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
+                decrypted_data = cipher.update(binary_data[256:]) + cipher.final()
+                
+                # JSON parsing
+                phonebook = json.loads(decrypted_data.decode('utf-8'))
+                self.after(0, lambda: self.update_phonebook(phonebook))
+                return True
+                
+            except Exception as e:
+                print(f"[DECRYPT ERROR] {str(e)}")
                 traceback.print_exc()
-                return False
     
-            # Rest of the processing remains the same...
-            # [Previous RSA, AES and JSON processing code here]
-    
-        except Exception as e:
-            print(f"[UNEXPECTED ERROR] {str(e)}")
-            traceback.print_exc()
-            return False
+        print("[ERROR] Data didn't match any known format")
+        return False
     
     def _process_phonebook_update(self, message):
         """Processes phonebook update from parsed message with enhanced debugging"""
