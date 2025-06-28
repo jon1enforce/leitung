@@ -1329,57 +1329,42 @@ class PHONEBOOK(ctk.CTk):
             return False
     
     def _process_binary_phonebook(self, framed_data):
-        """Process framed SIP messages that may contain phonebook updates"""
+        """Process framed SIP messages and extract client info correctly"""
         print("\n=== PROCESSING FRAMED SIP MESSAGE ===")
         print(f"[FRAME] Length: {len(framed_data)} bytes")
-        print(f"[CONTENT] ASCII start: {framed_data[:64].decode('ascii', errors='replace')}")
-        print(f"[CONTENT] Hex start: {framed_data[:32].hex()}")
-    
+        
         try:
-            # 1. Parse SIP message from frame
+            # 1. Parse SIP message
             sip_data = parse_sip_message(framed_data.decode('utf-8'))
             if not sip_data:
                 print("[ERROR] Failed to parse SIP message")
                 return False
     
-            print("[DEBUG] Parsed SIP message successfully")
-            print(f"Method: {sip_data.get('method')}")
-            print(f"Status: {sip_data.get('status_code')}")
-            print(f"Headers: {list(sip_data.get('headers', {}).keys())}")
+            # 2. Extract client name from From-header
+            from_header = sip_data.get('headers', {}).get('FROM', '')
+            client_name = "Unknown"
+            if 'sip:' in from_header:
+                client_name = from_header.split('sip:')[1].split('@')[0]
+                print(f"[DEBUG] Extracted client name: {client_name}")
     
-            # 2. Handle different SIP message types
-            if sip_data.get('headers', {}).get('PONG'):
-                print("[CLIENT] Received PONG response")
-                return True
-    
-            # 3. Check for phonebook data in expected locations
-            phonebook_data = None
-            
-            # Case 1: Phonebook in custom_data
-            if sip_data.get('custom_data'):
-                print("[DEBUG] Checking custom_data for phonebook")
-                phonebook_data = sip_data.get('custom_data')
-            
-            # Case 2: Phonebook in body
-            elif sip_data.get('body'):
+            # 3. Process phonebook data
+            phonebook_data = sip_data.get('custom_data', {})
+            if not phonebook_data:
+                print("[DEBUG] Trying to parse body as JSON")
                 try:
-                    print("[DEBUG] Checking body for phonebook data")
-                    phonebook_data = json.loads(sip_data['body'])
+                    phonebook_data = json.loads(sip_data.get('body', '{}'))
                 except json.JSONDecodeError:
-                    print("[DEBUG] Body is not JSON, trying key-value pairs")
-                    phonebook_data = dict(
-                        line.split(': ', 1)
-                        for line in sip_data['body'].splitlines()
-                        if ': ' in line
-                    )
+                    print("[DEBUG] Body is not JSON")
     
-            # 4. Process phonebook data if found
-            if phonebook_data and 'CLIENT_ID' in phonebook_data:
-                print("[DEBUG] Found phonebook data structure")
+            # 4. Update phonebook with correct name
+            if 'CLIENT_ID' in phonebook_data:
+                print("[DEBUG] Updating phonebook UI")
                 self.after(0, lambda: self.update_phonebook([{
                     'id': phonebook_data['CLIENT_ID'],
-                    'name': 'Server',
-                    'public_key': 'N/A'
+                    'name': client_name,  # Use extracted name here
+                    'public_key': phonebook_data.get('PUBLIC_KEY', 'N/A'),
+                    'ip': sip_data.get('headers', {}).get('X-IP', ''),
+                    'port': sip_data.get('headers', {}).get('X-PORT', '')
                 }]))
                 return True
     
