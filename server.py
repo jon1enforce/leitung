@@ -291,61 +291,86 @@ class Server:
         )
     def parse_sip_message(self, message):
         """
-        Korrigierte Version die SIP-Antworten richtig erkennt
+        Server-spezifischer Parser mit:
+        - Strict SIP-Header-Validierung
+        - Merkle-Tree- und Broadcast-Support
+        - Automatischer Client-Registrierung
         """
         if isinstance(message, bytes):
-            message = message.decode('utf-8')
-        
-        message = message.strip()
-        if not message:
-            return None
+            try:
+                message = message.decode('utf-8')
+            except UnicodeDecodeError:
+                print("[SERVER] Invalid UTF-8 in SIP message")
+                return None
     
+        # Normalize line endings and split
         lines = [line.strip() for line in message.replace('\r\n', '\n').split('\n') if line.strip()]
-        result = {'headers': {}, 'custom_data': {}}
-        print(f"Original headers: {lines[1:]}")  # Zeigt die tatsächlich geparsten Header
-        # Erste Zeile analysieren
-        first_line = lines[0]
-        if first_line.startswith(('SIP/2.0', 'REGISTER', 'INVITE', 'MESSAGE')):
-            if first_line.startswith('SIP/2.0'):
-                parts = first_line.split(maxsplit=2)
-                if len(parts) >= 2:
-                    result['status_code'] = parts[1]
-                    if len(parts) > 2:
-                        result['status_message'] = parts[2]
-            else:
-                result['method'] = first_line.split()[0]
-        else:
+        if not lines:
             return None
     
-        # Header parsen
-        for line in lines[1:]:
-            if ':' in line:
-                key, sep, value = line.partition(':')
-                key = key.strip().upper()
-                value = value.strip()
-                
-                if not key:
-                    continue
-                if key == "CONTENT-LENGTH":
-                    try:
-                        result['content_length'] = int(value)
-                    except ValueError:
-                        pass
-                elif key not in result['headers']:  # Nur ersten Header-Wert behalten
-                    result['headers'][key] = value
-        if 'content_length' in result and result['content_length'] > 0:
-            body = '\n'.join(lines[len(result['headers'])+1:])
+        result = {
+            'method': None,
+            'status_code': None,
+            'headers': {},
+            'custom_data': {},
+            'client_info': None  # Server-spezifisch für Client-Registrierung
+        }
+    
+        # Parse first line
+        first_line = lines[0]
+        if first_line.startswith('SIP/2.0'):
+            parts = first_line.split(maxsplit=2)
+            if len(parts) >= 2:
+                result['status_code'] = parts[1]
+                if len(parts) > 2:
+                    result['status_message'] = parts[2]
+        else:
+            result['method'] = first_line.split()[0]
+    
+        # Parse headers (strict)
+        body_start = len(lines)
+        for i, line in enumerate(lines[1:]):
+            if not line.strip():
+                body_start = i + 1
+                break
+            if ': ' not in line:
+                continue  # Skip malformed headers
+            key, val = line.split(': ', 1)
+            key = key.strip().upper()
+            result['headers'][key] = val.strip()
+    
+            # Server-spezifisch: Client-Info aus From-Header
+            if key == 'FROM' and 'sip:' in val:
+                result['client_info'] = val.split('sip:')[1].split('@')[0]
+    
+        # Parse body (tolerant für Key-Value und JSON)
+        if len(lines) > body_start:
+            body = '\n'.join(lines[body_start:])
             if body:
                 try:
+                    # Versuche Key-Value-Parsing (für SIP-Standardbody)
                     result['custom_data'] = dict(
-                        line.split(':', 1) 
-                        for line in body.splitlines() 
-                        if ':' in line
+                        line.split(': ', 1) 
+                        for line in body.split('\n') 
+                        if ': ' in line
                     )
-                except Exception:
-                    result['custom_data'] = {}
-        return result if ('method' in result or 'status_code' in result) else None     
-    def start(self):
+                    
+                    # Falls kein Key-Value, versuche JSON (für Phonebook Updates)
+                    if not result['custom_data']:
+                        try:
+                            result['custom_data'] = json.loads(body)
+                        except json.JSONDecodeError:
+                            result['body'] = body
+                except Exception as e:
+                    print(f"[SERVER] Body parsing warning: {str(e)}")
+                    result['body'] = body
+    
+        # Server-spezifische Post-Processing
+        if result.get('method') == 'REGISTER' and 'PUBLIC_KEY' in result.get('custom_data', {}):
+            self._register_client(result)
+    
+        return result 
+        def start(self):
         print("start1")
         try:
             print(f"Starte Server auf {self.host}:{self.port}...")
