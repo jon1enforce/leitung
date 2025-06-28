@@ -1054,30 +1054,30 @@ class PHONEBOOK(ctk.CTk):
 
 
 
-#threading
+    #threading
     def on_connect_click(self):
         if self.client_socket:
             messagebox.showerror("Fehler", "Bereits verbunden")
             return
     
         server_ip = self.server_ip_input.get()
-        server_port = self.server_port_input.get()  # Get the value before destroying
+        server_port = self.server_port_input.get()
         
         try:
             self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.client_socket.connect((server_ip, int(server_port)))
             
-            # Store the values as instance variables
             self.server_ip = server_ip
             self.server_port = server_port
             
-            # Starte connection_loop mit Message-Handler
             threading.Thread(
                 target=self.start_connection_wrapper,
                 daemon=True
             ).start()
             
-            messagebox.showinfo("Erfolg", "Verbunden mit Server")
+            # ENTFERNEN Sie diese Zeile komplett:
+            # messagebox.showinfo("Erfolg", "Verbunden mit Server")
+            
             self.connection_window.destroy()
     
         except Exception as e:
