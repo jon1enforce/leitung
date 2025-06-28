@@ -823,11 +823,11 @@ class Server:
                 # 2. Generiere neues 48-Byte Geheimnis
                 print("[DEBUG] Generating new secret...")
                 try:
-                    secret = b"+++secret+++" + self.generate_secret()
-                    if len(secret) != 59:  # 11 Byte Header + 48 Byte Nutzdaten
-                        print(f"[ERROR] Invalid secret length: {len(secret)}")
+                    raw_secret = self.generate_secret()
+                    if len(raw_secret) != 48:
+                        print(f"[ERROR] Invalid secret length: {len(raw_secret)}")
                         return False
-                    print(f"[DEBUG] Generated secret (len={len(secret)}): {secret[:16].hex(' ')}...")
+                    secret = b"+++secret+++" + raw_secret  # Now total is 59 bytes
                 except Exception as e:
                     print(f"[ERROR] Secret generation failed: {str(e)}")
                     return False
