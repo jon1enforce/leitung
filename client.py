@@ -422,55 +422,88 @@ def build_sip_message(method, recipient, custom_data={}, from_server=False, host
         f"{body}"
     )
 def parse_sip_message(message):
-    """Improved SIP message parser that properly handles different message formats"""
+    """
+    Client-spezifischer Parser mit:
+    - Toleranter Fehlerbehandlung für UI-Anzeige
+    - PONG/Phonebook Update-Spezialisierung
+    - Automatischem Merkle-Tree-Check
+    """
     if isinstance(message, bytes):
-        message = message.decode('utf-8')
-    
+        try:
+            message = message.decode('utf-8')
+        except UnicodeDecodeError:
+            print("[CLIENT] Received binary data, may be encrypted content")
+            return {'binary_data': message}
+
+    lines = [line.strip() for line in message.replace('\r\n', '\n').split('\n') if line.strip()]
+    if not lines:
+        return None
+
     result = {
         'method': None,
         'status_code': None,
         'headers': {},
         'custom_data': {},
-        'body': None
+        'ui_actions': []  # Client-spezifisch für UI-Updates
     }
-    
-    # Split headers and body
-    parts = message.split('\r\n\r\n', 1)
-    headers = parts[0]
-    
-    # Parse first line
-    first_line = headers.split('\r\n')[0]
-    if first_line.startswith('SIP/2.0'):
+
+    # First line parsing (tolerant)
+    first_line = lines[0]
+    if 'SIP/2.0' in first_line:
         parts = first_line.split()
         if len(parts) >= 2:
             result['status_code'] = parts[1]
             if len(parts) > 2:
                 result['status_message'] = ' '.join(parts[2:])
     else:
-        result['method'] = first_line.split()[0]
-    
-    # Parse headers
-    for line in headers.split('\r\n')[1:]:
-        if ': ' in line:
-            key, val = line.split(': ', 1)
-            result['headers'][key.strip().upper()] = val.strip()
-    
-    # Parse body if present
-    if len(parts) > 1:
-        body = parts[1].strip()
-        if body:
-            # Try to parse as custom data (key:value pairs)
-            custom_data = {}
-            for line in body.split('\r\n'):
-                if ': ' in line:
-                    key, val = line.split(': ', 1)
-                    custom_data[key.strip()] = val.strip()
+        try:
+            result['method'] = first_line.split()[0]
+        except IndexError:
+            pass
+
+    # Header parsing (tolerant)
+    body_start = len(lines)
+    for i, line in enumerate(lines[1:]):
+        if not line.strip():
+            body_start = i + 1
+            break
+        if ':' not in line:
+            continue  # Skip invalid headers
             
-            if custom_data:
-                result['custom_data'] = custom_data
-            else:
-                result['body'] = body
-    
+        parts = line.split(':', 1)
+        key = parts[0].strip().upper()
+        result['headers'][key] = parts[1].strip()
+
+    # Body parsing (optimiert für Server-Antworten)
+    if len(lines) > body_start:
+        body = '\n'.join(lines[body_start:])
+        
+        # Priority 1: Phonebook Update (JSON)
+        try:
+            data = json.loads(body)
+            if isinstance(data, dict):
+                result['custom_data'] = data
+                if data.get('MESSAGE_TYPE') == 'PHONEBOOK_UPDATE':
+                    result['ui_actions'].append(('update_phonebook', data))
+        except json.JSONDecodeError:
+            # Priority 2: Key-Value Pairs
+            result['custom_data'] = dict(
+                line.split(':', 1) 
+                for line in body.split('\n') 
+                if ':' in line
+            )
+
+    # Client-spezifische Aktionen
+    if 'PONG' in result.get('custom_data', {}):
+        result['ui_actions'].append(('pong_received', None))
+        
+    if 'MERKLE_ROOT' in result.get('custom_data', {}):
+        if not verify_merkle_integrity(
+            result['custom_data'].get('ALL_KEYS', []),
+            result['custom_data']['MERKLE_ROOT']
+        ):
+            result['ui_actions'].append(('security_alert', 'Merkle verification failed'))
+
     return result
 def connection_loop(client_socket, server_ip, message_handler=None):
     """
