@@ -281,6 +281,25 @@ def handle_sip_message(raw_data):
     except Exception as e:
         print(f"SIP-Parsingfehler: {e}")
         return None
+def load_client_name():
+    """Lädt den Client-Namen aus einer lokalen Datei oder fordert den Benutzer zur Eingabe auf."""
+    if os.path.exists("client_name.txt"):
+        with open("client_name.txt", "r") as file:
+            return file.read().strip()
+    
+    # If we're not in the main thread, return a default name
+    if threading.current_thread() is not threading.main_thread():
+        return "default_client"
+    
+    # Only show dialog in main thread
+    client_name = simpledialog.askstring("Name", "Gib deinen Namen ein:")
+    if client_name:
+        with open("client_name.txt", "w") as file:
+            file.write(client_name)
+        return client_name
+    else:
+        messagebox.showerror("Fehler", "Kein Name eingegeben. Abbruch.")
+        return None
 def encrypt_phonebook_data(phonebook_json, client_public_key_pem):
     """Enhanced encryption with full debugging"""
     print("\n=== SERVER ENCRYPTION PROCESS ===")
