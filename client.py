@@ -380,14 +380,21 @@ def build_sip_request(method, recipient, client_name, server_ip, server_port):
     )
 
 def build_sip_message(method, recipient, custom_data={}):
-    """Kompatible SIP-Nachrichtenerstellung"""
-    local_ip = socket.gethostbyname(socket.gethostname())
-    body = "\r\n".join(f"{k}: {v}" for k, v in custom_data.items())
+    """Erweitere SIP-Nachrichtenerstellung mit JSON-Unterstützung"""
+    # Entscheide ob Body JSON oder Key-Value sein soll
+    if any(isinstance(v, (dict, list)) for v in custom_data.values()):
+        body = json.dumps(custom_data, separators=(',', ':'))
+        content_type = "application/json"
+    else:
+        body = "\r\n".join(f"{k}: {v}" for k, v in custom_data.items())
+        content_type = "text/plain"
     
     return (
         f"{method} sip:{recipient} SIP/2.0\r\n"
-        f"From: <sip:{load_client_name()}@{local_ip}>\r\n"
+        f"From: <sip:{'server' if hasattr(self, 'host') else load_client_name()}@"
+        f"{self.host if hasattr(self, 'host') else socket.gethostbyname(socket.gethostname())}>\r\n"
         f"To: <sip:{recipient}>\r\n"
+        f"Content-Type: {content_type}\r\n"
         f"Content-Length: {len(body)}\r\n\r\n"
         f"{body}"
     )
