@@ -1329,61 +1329,80 @@ class PHONEBOOK(ctk.CTk):
             return False
     
     def _process_binary_phonebook(self, binary_data):
-        """Process encrypted binary phonebook updates with complete error handling"""
-        try:
-            print(f"\n[CLIENT] Processing binary phonebook ({len(binary_data)} bytes)")
-            print(f"Hex header: {binary_data[:32].hex()}")
+        """Process encrypted binary phonebook updates with maximum debugging"""
+        print("\n=== BINARY PHONEBOOK PROCESSING START ===")
+        print(f"[RAW DATA] Length: {len(binary_data)} bytes")
+        print(f"[RAW DATA] Hex head: {binary_data[:64].hex()}")
+        print(f"[RAW DATA] Hex tail: {binary_data[-32:].hex() if len(binary_data) > 32 else ''}")
     
-            # 1. Validate frame structure
-            if len(binary_data) < 256:
-                print("[ERROR] Data too short (minimum 256 bytes required)")
+        try:
+            # 1. Validate basic structure
+            if not isinstance(binary_data, bytes):
+                print("[ERROR] Input is not bytes")
                 return False
     
-            # 2. Split into encrypted parts
+            if len(binary_data) < 256:
+                print("[ERROR] Data shorter than minimum RSA block size (256 bytes)")
+                print(f"Received: {len(binary_data)} bytes")
+                return False
+    
+            # 2. Split data sections with boundary checks
             encrypted_secret = binary_data[:256]
             encrypted_phonebook = binary_data[256:]
-            print(f"[DEBUG] Encrypted secret (first 16): {encrypted_secret[:16].hex()}")
-            print(f"[DEBUG] Phonebook data length: {len(encrypted_phonebook)}")
-    
-            # 3. Load private key with validation
+            
+            print("\n=== DATA SECTIONS ===")
+            print(f"[SECRET] Length: {len(encrypted_secret)} bytes")
+            print(f"[SECRET] Hex: {encrypted_secret[:32].hex()}...{encrypted_secret[-32:].hex()}")
+            print(f"[PHONEBOOK] Length: {len(encrypted_phonebook)} bytes")
+            print(f"[PHONEBOOK] Hex head: {encrypted_phonebook[:32].hex()}")
+            
+            # 3. Cryptographic Material Validation
+            print("\n=== KEY LOADING ===")
             try:
                 with open("private_key.pem", "rb") as f:
                     priv_key_data = f.read()
+                    print(f"[KEY] File size: {len(priv_key_data)} bytes")
+                    
                     if not priv_key_data:
                         print("[ERROR] Private key file is empty")
                         return False
                         
                     priv_key = RSA.load_key_string(priv_key_data)
+                    print(f"[KEY] Loaded RSA-{priv_key.size()} key")
+                    
                     if not priv_key.check_key():
-                        print("[ERROR] Invalid private key")
+                        print("[ERROR] Private key failed validation")
                         return False
                         
-                print("[DEBUG] Private key loaded and validated")
             except Exception as e:
-                print(f"[ERROR] Key loading failed: {str(e)}")
+                print(f"[KEY ERROR] {str(e)}")
                 traceback.print_exc()
                 return False
     
-            # 4. RSA Decryption with enhanced checks
+            # 4. RSA Decryption Phase
+            print("\n=== RSA DECRYPTION ===")
             try:
-                print("[DEBUG] Attempting RSA decryption...")
+                print(f"[RSA INPUT] Length: {len(encrypted_secret)}")
+                print(f"[RSA INPUT] Hex: {encrypted_secret[:32].hex()}...")
+                
                 decrypted_secret = priv_key.private_decrypt(
                     encrypted_secret,
                     RSA.pkcs1_padding
                 )
                 
                 if decrypted_secret is None:
-                    print("[ERROR] RSA decryption returned None")
-                    print("Possible causes:")
+                    print("[RSA ERROR] Decryption returned None")
+                    print("[TROUBLESHOOT] Possible causes:")
                     print("- Key mismatch (wrong private key)")
-                    print("- Corrupted encrypted data")
-                    print(f"Input sample: {encrypted_secret[:32].hex()}")
+                    print("- Corrupted input data")
+                    print("- Padding error")
                     return False
                     
-                print(f"[DEBUG] Decrypted secret length: {len(decrypted_secret)}")
+                print(f"[RSA OUTPUT] Length: {len(decrypted_secret)}")
+                print(f"[RSA OUTPUT] Hex: {decrypted_secret.hex()}")
                 
                 if not decrypted_secret.startswith(b"+++secret+++"):
-                    print("[ERROR] Invalid secret header")
+                    print("[ERROR] Missing secret header")
                     print(f"Header found: {decrypted_secret[:12]}")
                     print(f"Full secret: {decrypted_secret.hex()}")
                     return False
@@ -1391,48 +1410,66 @@ class PHONEBOOK(ctk.CTk):
                 secret = decrypted_secret[11:59]  # 16 IV + 32 key
                 iv = secret[:16]
                 aes_key = secret[16:]
-                print("[DEBUG] AES params extracted successfully")
+                
+                print("\n=== AES PARAMETERS ===")
+                print(f"[IV] Length: {len(iv)} bytes | Hex: {iv.hex()}")
+                print(f"[AES KEY] Length: {len(aes_key)} bytes | Hex: {aes_key.hex()[:16]}...")
     
             except RSA.RSAError as e:
-                print(f"[ERROR] RSA decryption failed: {str(e)}")
-                print(f"Key size: {priv_key.size()} bits")
-                print(f"Input size: {len(encrypted_secret)} bytes")
+                print(f"[RSA ERROR] {str(e)}")
+                print(f"[DETAILS] Key size: {priv_key.size()} bits")
+                print(f"[DETAILS] Input size: {len(encrypted_secret)} bytes")
+                traceback.print_exc()
                 return False
     
-            # 5. AES Decryption
+            # 5. AES Decryption Phase
+            print("\n=== AES DECRYPTION ===")
             try:
-                print("[DEBUG] Attempting AES decryption...")
+                print(f"[AES INPUT] Length: {len(encrypted_phonebook)}")
+                print(f"[AES INPUT] Hex head: {encrypted_phonebook[:32].hex()}")
+                
                 cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
-                decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
+                decrypted_data = cipher.update(encrypted_phonebook)
+                decrypted_data += cipher.final()
                 
-                print(f"[DEBUG] Decrypted {len(decrypted_data)} bytes")
-                print(f"Data start: {decrypted_data[:64].hex()}")
-    
-                # 6. Parse JSON
-                phonebook = json.loads(decrypted_data.decode('utf-8'))
-                print(f"[SUCCESS] Phonebook received ({len(phonebook)} entries)")
+                print(f"[AES OUTPUT] Length: {len(decrypted_data)}")
+                print(f"[AES OUTPUT] Hex head: {decrypted_data[:64].hex()}")
                 
-                # 7. Update UI
-                self.after(0, lambda: self.update_phonebook(phonebook))
-                return True
+                # 6. JSON Parsing
+                print("\n=== JSON PARSING ===")
+                try:
+                    phonebook = json.loads(decrypted_data.decode('utf-8'))
+                    print(f"[PHONEBOOK] Received {len(phonebook)} entries")
+                    print(f"[SAMPLE] First entry: {str(phonebook[0])[:120]}...")
+                    
+                    # 7. UI Update
+                    print("\n=== UI UPDATE ===")
+                    self.after(0, lambda: self.update_phonebook(phonebook))
+                    print("[SUCCESS] Phonebook update completed")
+                    return True
+                    
+                except json.JSONDecodeError as e:
+                    print(f"[JSON ERROR] {str(e)}")
+                    print(f"[DATA] Start: {decrypted_data[:200]}")
+                    print(f"[DATA] Hex: {decrypted_data[:64].hex()}")
+                except UnicodeDecodeError as e:
+                    print(f"[ENCODING ERROR] {str(e)}")
+                    print(f"[HEX DUMP] {decrypted_data[:128].hex()}")
     
             except EVP.EVPError as e:
-                print(f"[ERROR] AES decryption failed: {str(e)}")
-                print(f"Used IV: {iv.hex()}")
-                print(f"Used key: {aes_key.hex()[:16]}...")
-            except json.JSONDecodeError as e:
-                print(f"[ERROR] Invalid JSON: {str(e)}")
-                print(f"Data start: {decrypted_data[:100]}")
-            except UnicodeDecodeError as e:
-                print(f"[ERROR] Decoding failed: {str(e)}")
-                print(f"Hex dump: {decrypted_data[:64].hex()}")
-    
-            return False
+                print(f"[AES ERROR] {str(e)}")
+                print("[TROUBLESHOOT] Possible causes:")
+                print("- Incorrect AES key/IV")
+                print("- Corrupted ciphertext")
+                print("- Padding error")
+                traceback.print_exc()
     
         except Exception as e:
-            print(f"[CRITICAL] Unexpected error: {str(e)}")
+            print(f"[CRITICAL ERROR] {str(e)}")
             traceback.print_exc()
-            return False
+        
+        print("\n=== PROCESSING FAILED ===")
+        return False
     
     def _process_phonebook_update(self, message):
         """Processes phonebook update from parsed message with enhanced debugging"""
