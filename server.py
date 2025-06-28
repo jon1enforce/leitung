@@ -129,17 +129,21 @@ def load_server_publickey():
     with open("server_public_key.pem", "rb") as f:
         return f.read().decode('utf-8')
 
-
 def normalize_key(key):
+    """Normalisiert öffentliche Schlüssel für konsistenten Vergleich"""
     if not key or "-----BEGIN PUBLIC KEY-----" not in key:
-        return None  # Statt leerem String None zurückgeben
+        return None
+    
     # Extrahiere nur den Base64-Inhalt zwischen den PEM-Markern
-    key_content = "".join(
-        key.split("-----BEGIN PUBLIC KEY-----")[1]
-        .split("-----END PUBLIC KEY-----")[0]
-        .strip().split()
-    )
-    return key_content if key_content else None
+    try:
+        key_content = "".join(
+            key.split("-----BEGIN PUBLIC KEY-----")[1]
+            .split("-----END PUBLIC KEY-----")[0]
+            .strip().split()
+        )
+        return key_content if key_content else None
+    except Exception:
+        return None
 
 
 def merge_public_keys(keys):
