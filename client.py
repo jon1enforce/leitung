@@ -1329,33 +1329,81 @@ class PHONEBOOK(ctk.CTk):
             return False
     
     def _process_binary_phonebook(self, binary_data):
-        """Verarbeitet direkt empfangene Binärdaten als Phonebook-Update"""
+        """Process encrypted binary phonebook updates with full error handling"""
         try:
-            # Versuche die Binärdaten als SIP-Nachricht mit JSON-Body zu parsen
-            parts = binary_data.split(b'\r\n\r\n', 1)
-            if len(parts) < 2:
+            print(f"\n[CLIENT] Processing binary phonebook ({len(binary_data)} bytes)")
+            print(f"Hex header: {binary_data[:16].hex()}")
+    
+            # 1. Check minimum length (encrypted secret + minimal phonebook)
+            if len(binary_data) < 512:  # RSA-2048 verschlüsselter Secret + minimaler Payload
+                print("[ERROR] Data too short for encrypted phonebook")
                 return False
-                
-            headers = parts[0].decode('utf-8', errors='ignore')
-            body = parts[1]
-            
-            # Versuche den Body als JSON zu parsen
+    
+            # 2. Extract encrypted parts (adapt these indices based on your protocol)
+            encrypted_secret = binary_data[:256]  # RSA-verschlüsselter AES-Key
+            encrypted_phonebook = binary_data[256:]
+            print(f"[DEBUG] Encrypted secret: {len(encrypted_secret)} bytes")
+            print(f"[DEBUG] Encrypted phonebook: {len(encrypted_phonebook)} bytes")
+    
+            # 3. Decrypt AES secret with private key
             try:
-                data = json.loads(body.decode('utf-8'))
-            except:
-                # Falls direkte JSON-Dekodierung fehlschlägt, versuche Base64
-                try:
-                    decoded = base64.b64decode(body)
-                    data = json.loads(decoded.decode('utf-8'))
-                except:
+                with open("private_key.pem", "rb") as f:
+                    priv_key = RSA.load_key_string(f.read())
+                
+                decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
+                
+                # Check secret header
+                if not decrypted_secret.startswith(b"+++secret+++"):
+                    print("[ERROR] Invalid secret header in decrypted data")
+                    print(f"Header: {decrypted_secret[:12]}")
                     return False
                     
-            if isinstance(data, dict) and data.get('MESSAGE_TYPE') == 'PHONEBOOK_UPDATE':
-                return self._process_phonebook_update(data)
+                secret = decrypted_secret[11:59]  # 48 bytes (16 IV + 32 key)
+                iv = secret[:16]
+                aes_key = secret[16:]
+                print("[DEBUG] AES decryption parameters:")
+                print(f"IV: {iv.hex()[:8]}...")
+                print(f"Key: {aes_key.hex()[:8]}...")
+    
+            except RSA.RSAError as e:
+                print(f"[ERROR] RSA decryption failed: {e}")
+                return False
+    
+            # 4. Decrypt phonebook with AES
+            try:
+                cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)  # 0 = decrypt
+                decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
                 
+                print(f"[DEBUG] Decrypted phonebook: {len(decrypted_data)} bytes")
+                print(f"Sample: {decrypted_data[:100].hex()}")
+    
+                # 5. Parse JSON phonebook
+                phonebook = json.loads(decrypted_data.decode('utf-8'))
+                print(f"[SUCCESS] Phonebook received with {len(phonebook)} entries")
+                
+                # 6. Update UI in main thread
+                self.after(0, lambda: self.update_phonebook(phonebook))
+                
+                # Store secret for future communications
+                self.current_secret = secret
+                if hasattr(self, 'secret_vault'):
+                    self.secret_vault.store(secret)
+                    
+                return True
+    
+            except EVP.EVPError as e:
+                print(f"[ERROR] AES decryption failed: {e}")
+            except json.JSONDecodeError as e:
+                print(f"[ERROR] Invalid JSON: {e}")
+                print(f"Hex dump: {decrypted_data[:100].hex()}")
+            except UnicodeDecodeError as e:
+                print(f"[ERROR] Decoding failed: {e}")
+    
             return False
+    
         except Exception as e:
-            print(f"[CLIENT] Binary phonebook processing failed: {str(e)}")
+            print(f"[CRITICAL] Phonebook processing failed: {e}")
+            traceback.print_exc()
             return False
     
     def _process_phonebook_update(self, message):
