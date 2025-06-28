@@ -1091,36 +1091,37 @@ class PHONEBOOK(ctk.CTk):
         # self.initiate_call(entry['id'], entry['name'])
 
     def update_phonebook(self, phonebook_data):
-        """Aktualisiert das Telefonbuch mit sortierten Client-Daten"""
+        """Aktualisiert die Phonebook-Anzeige mit Client-Daten"""
+        print(f"\n[UI] Updating phonebook with {len(phonebook_data)} entries")
+        
         # Lösche vorhandene Einträge
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
         
         self.entry_buttons = []
         
-        # Sicherstellen, dass es sich um eine Liste von Dictionaries handelt
+        # Sicherstellen, dass es sich um eine Liste handelt
         if not isinstance(phonebook_data, list):
-            print("[ERROR] Invalid phonebook data format")
+            print("[UI ERROR] Invalid phonebook data format")
             return
         
-        # Nur Client-Einträge mit numerischer ID anzeigen
-        valid_entries = [
-            entry for entry in phonebook_data
-            if isinstance(entry, dict) and 
-            str(entry.get('id', '')).isdigit() and 
-            entry.get('name') and 
-            not entry.get('name', '').lower() == 'server'
-        ]
-        
-        # Nach ID sortieren
-        valid_entries.sort(key=lambda x: int(x['id']))
-        
-        # Einträge erstellen
-        for entry in valid_entries:
+        # Erstelle Einträge für jeden gültigen Client
+        for entry in phonebook_data:
+            if not isinstance(entry, dict):
+                continue
+                
+            client_id = entry.get('id', '')
+            client_name = entry.get('name', '')
+            
+            if not str(client_id).isdigit() or not client_name:
+                continue
+                
+            print(f"[UI] Adding client {client_id}: {client_name}")
+            
             btn = ctk.CTkButton(
                 self.scrollable_frame,
-                text=f"{entry['id']}: {entry['name']}",
-                fg_color="#006400",  # Dunkelgrün
+                text=f"{client_id}: {client_name}",
+                fg_color="#006400",
                 text_color="white",
                 font=("Helvetica", 14),
                 height=50,
@@ -1132,6 +1133,7 @@ class PHONEBOOK(ctk.CTk):
         
         # Aktualisiere den Canvas
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        print("[UI] Phonebook update complete")
 
     def load_phonebook(self):
         if not self.client_socket:
