@@ -3,6 +3,8 @@
 #include <fcntl.h>
 #include <unistd.h>
 #include <string.h>
+#include <sys/mman.h>  // Für mlock()
+#include <errno.h>
 
 void secure_erase(void *ptr, size_t len) {
     volatile char *vptr = (volatile char *)ptr;
