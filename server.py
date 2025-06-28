@@ -809,88 +809,139 @@ class Server:
             print(f"Fehler bei der Verschlüsselung des Telefonbuchs: {e}")
             return ""
     def broadcast_phonebook(self):
-        """Broadcastet das aktuelle Phonebook an alle verbundenen Clients mit ausführlichem Debugging"""
+        """Broadcastet das aktuelle Phonebook an alle verbundenen Clients mit erweitertem Debugging und Fehlerbehandlung"""
         print("\n=== SERVER BROADCAST PHONEBOOK START ===")
+        print(f"[DEBUG] Starting phonebook broadcast at {time.strftime('%Y-%m-%d %H:%M:%S')}")
         
         def _broadcast_to_client(client_id, client_data, phonebook_data):
+            """Hilfsfunktion für den Versand an einzelne Clients"""
             try:
-                print(f"[DEBUG] Preparing broadcast for client {client_id}...")
+                print(f"\n[DEBUG] Preparing broadcast for client {client_id} ({client_data.get('name', 'no-name')})")
                 
-                # 1. Generiere neues 48-Byte Geheimnis für diese Session
-                print("[DEBUG] Generating new 48-byte secret...")
-                secret = b"+++secret+++" + self.generate_secret()
-                print(f"[DEBUG] Generated secret (len={len(secret)}): {secret[:16].hex()}...")
-                
-                # 2. Lade Client Public Key
+                # 1. Validierung der Client-Daten
+                if not client_data.get('public_key'):
+                    print("[ERROR] Client has no public key")
+                    return False
+                    
+                if not client_data.get('socket'):
+                    print("[ERROR] Client has no active socket")
+                    return False
+    
+                # 2. Generiere neues 48-Byte Geheimnis
+                print("[DEBUG] Generating new secret...")
+                try:
+                    secret = b"+++secret+++" + self.generate_secret()
+                    if len(secret) != 59:  # 11 Byte Header + 48 Byte Nutzdaten
+                        print(f"[ERROR] Invalid secret length: {len(secret)}")
+                        return False
+                    print(f"[DEBUG] Generated secret (len={len(secret)}): {secret[:16].hex(' ')}...")
+                except Exception as e:
+                    print(f"[ERROR] Secret generation failed: {str(e)}")
+                    return False
+    
+                # 3. Lade Client Public Key
                 print("[DEBUG] Loading client public key...")
                 try:
                     client_pubkey = RSA.load_pub_key_bio(
                         BIO.MemoryBuffer(client_data['public_key'].encode()))
                     print("[DEBUG] Client public key loaded successfully")
+                    
+                    # Teste den Key mit einer kleinen Verschlüsselung
+                    test_enc = client_pubkey.public_encrypt(b'test', RSA.pkcs1_padding)
+                    if not test_enc:
+                        print("[ERROR] Client public key test failed")
+                        return False
                 except Exception as e:
-                    print(f"[ERROR] Failed to load client public key: {str(e)}")
+                    print(f"[ERROR] Failed to load/validate client public key: {str(e)}")
+                    traceback.print_exc()
+                    return False
+    
+                # 4. Verschlüssele das Secret
+                print("[DEBUG] Encrypting secret with client public key...")
+                try:
+                    encrypted_secret = client_pubkey.public_encrypt(secret, RSA.pkcs1_padding)
+                    if len(encrypted_secret) != 512:  # 4096-bit RSA sollte 512 Bytes ergeben
+                        print(f"[ERROR] Invalid encrypted secret length: {len(encrypted_secret)}")
+                        return False
+                    print(f"[DEBUG] Secret encrypted (len={len(encrypted_secret)})")
+                except Exception as e:
+                    print(f"[ERROR] Secret encryption failed: {str(e)}")
+                    return False
+    
+                # 5. Verschlüssele das Phonebook mit AES
+                print("[DEBUG] Encrypting phonebook with AES...")
+                try:
+                    iv = secret[11:27]  # 16 Bytes IV (nach dem Header)
+                    aes_key = secret[27:59]  # 32 Bytes AES-256 Schlüssel
+                    
+                    print(f"[DEBUG] AES IV: {iv.hex(' ')}")
+                    print(f"[DEBUG] AES Key: {aes_key[:8].hex(' ')}...")
+                    
+                    cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 1)
+                    plaintext = json.dumps(phonebook_data).encode('utf-8')
+                    print(f"[DEBUG] Plaintext (len={len(plaintext)}): {plaintext[:100]}...")
+                    
+                    encrypted_phonebook = cipher.update(plaintext) + cipher.final()
+                    if not encrypted_phonebook:
+                        print("[ERROR] Phonebook encryption returned empty result")
+                        return False
+                        
+                    print(f"[DEBUG] Encrypted phonebook (len={len(encrypted_phonebook)})")
+                except Exception as e:
+                    print(f"[ERROR] Phonebook encryption failed: {str(e)}")
+                    traceback.print_exc()
+                    return False
+    
+                # 6. Baue SIP-Nachricht
+                print("[DEBUG] Building SIP message...")
+                try:
+                    message_data = {
+                        "MESSAGE_TYPE": "PHONEBOOK_UPDATE",
+                        "TIMESTAMP": int(time.time()),
+                        "ENCRYPTED_SECRET": base64.b64encode(encrypted_secret).decode('utf-8'),
+                        "ENCRYPTED_PHONEBOOK": base64.b64encode(encrypted_phonebook).decode('utf-8'),
+                        "CLIENT_ID": client_id
+                    }
+                    
+                    response = self.build_sip_message(
+                        "MESSAGE",
+                        client_data['name'],
+                        message_data
+                    )
+                    
+                    print(f"[DEBUG] SIP message size: {len(response)} bytes")
+                except Exception as e:
+                    print(f"[ERROR] Message building failed: {str(e)}")
+                    return False
+    
+                # 7. Sende Nachricht
+                print("[DEBUG] Sending message to client...")
+                try:
+                    with self.client_send_lock:
+                        client_socket = client_data['socket']
+                        if client_socket:
+                            client_socket.settimeout(10.0)
+                            send_frame(client_socket, response)
+                            print("[DEBUG] Message sent successfully")
+                            return True
+                        else:
+                            print("[ERROR] Client socket not available")
+                            return False
+                except Exception as e:
+                    print(f"[ERROR] Message sending failed: {str(e)}")
                     return False
                     
-                # 3. Verschlüssele das Secret mit Client-Public-Key
-                print("[DEBUG] Encrypting secret with client public key...")
-                encrypted_secret = client_pubkey.public_encrypt(
-                    secret, 
-                    RSA.pkcs1_padding
-                )
-                print(f"[DEBUG] Secret encrypted (len={len(encrypted_secret)})")
-                
-                # 4. Verschlüssele das Telefonbuch mit AES
-                print("[DEBUG] Encrypting phonebook with AES...")
-                iv = secret[:16]  # Ersten 16 Bytes als IV
-                aes_key = secret[16:]  # Rest als AES-256 Schlüssel
-                print(f"[DEBUG] AES IV: {iv.hex()}")
-                print(f"[DEBUG] AES Key: {aes_key[:8].hex()}...")
-                
-                cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 1)
-                plaintext = json.dumps(phonebook_data).encode('utf-8')
-                print(f"[DEBUG] Plaintext phonebook (len={len(plaintext)}): {plaintext[:100]}...")
-                
-                encrypted_phonebook = cipher.update(plaintext) + cipher.final()
-                print(f"[DEBUG] Encrypted phonebook (len={len(encrypted_phonebook)})")
-                
-                # 5. Baue SIP-Nachricht
-                print("[DEBUG] Building SIP message...")
-                message_data = {
-                    "MESSAGE_TYPE": "PHONEBOOK_UPDATE",
-                    "TIMESTAMP": str(int(time.time())),
-                    "ENCRYPTED_SECRET": base64.b64encode(encrypted_secret).decode(),
-                    "ENCRYPTED_PHONEBOOK": base64.b64encode(encrypted_phonebook).decode(),
-                    "CLIENT_ID": client_id
-                }
-                
-                response = self.build_sip_message(
-                    "MESSAGE",
-                    client_data['name'],
-                    message_data
-                )
-                
-                # 6. Synchroner Versand mit Timeout
-                print("[DEBUG] Sending message to client...")
-                with self.client_send_lock:
-                    client_socket = client_data['socket']
-                    if client_socket:
-                        client_socket.settimeout(5.0)
-                        send_frame(client_socket, response)
-                        print("[DEBUG] Message sent successfully")
-                        return True
-                return False
-                
             except Exception as e:
-                print(f"[SERVER] Error sending to {client_id}: {str(e)}")
+                print(f"[CRITICAL] Broadcast to {client_id} failed: {str(e)}")
                 traceback.print_exc()
                 return False
     
         def _broadcast():
+            """Haupt-Broadcast-Funktion"""
             try:
-                print("\n[DEBUG] Starting phonebook broadcast process...")
+                print("\n[DEBUG] Starting broadcast process...")
                 
                 # 1. Aktive Clients filtern
-                print("[DEBUG] Filtering active clients...")
                 active_clients = {
                     cid: data for cid, data in self.clients.items() 
                     if data.get('socket') is not None and cid.isdigit()
@@ -920,7 +971,6 @@ class Server:
                     })
                 
                 print(f"[DEBUG] Prepared phonebook with {len(phonebook_data)} entries")
-                print(f"[DEBUG] Sample entry: {phonebook_data[0] if phonebook_data else 'None'}")
                 
                 if not phonebook_data:
                     print("[DEBUG] No valid client entries to broadcast")
@@ -928,26 +978,28 @@ class Server:
                 
                 # 3. Paralleler Versand mit Thread-Pool
                 print("[DEBUG] Starting parallel broadcast...")
+                success_count = 0
                 with ThreadPoolExecutor(max_workers=4) as executor:
                     futures = {
                         executor.submit(_broadcast_to_client, cid, data, phonebook_data): cid
                         for cid, data in active_clients.items()
                     }
                     
-                    for future in as_completed(futures, timeout=10.0):
+                    for future in as_completed(futures, timeout=15.0):
                         cid = futures[future]
                         try:
-                            success = future.result()
-                            if not success:
+                            if future.result():
+                                success_count += 1
+                            else:
                                 print(f"[WARNING] Failed to send to client {cid}")
                         except Exception as e:
                             print(f"[ERROR] Broadcast failed for {cid}: {str(e)}")
                             traceback.print_exc()
-                            
-                print("[DEBUG] Broadcast completed successfully")
+                
+                print(f"[DEBUG] Broadcast completed - {success_count}/{len(active_clients)} successful")
                 
             except Exception as e:
-                print(f"[CRITICAL] Broadcast failed: {str(e)}")
+                print(f"[CRITICAL] Broadcast process failed: {str(e)}")
                 traceback.print_exc()
     
         # Starte den Broadcast in einem neuen Thread
