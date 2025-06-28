@@ -1089,21 +1089,13 @@ class PHONEBOOK(ctk.CTk):
         # Hier können Sie die Logik für den Anruf implementieren
         # Beispiel:
         # self.initiate_call(entry['id'], entry['name'])
-
+    
     def update_phonebook(self, phonebook_data):
         """Aktualisiert die Phonebook-Anzeige mit Client-Daten"""
         print(f"\n[UI] Updating phonebook with {len(phonebook_data)} entries")
         
         # Lösche vorhandene Einträge
-        for widget in self.scrollable_frame.winfo_children():
-            widget.destroy()
-        
-        self.entry_buttons = []
-        
-        # Sicherstellen, dass es sich um eine Liste handelt
-        if not isinstance(phonebook_data, list):
-            print("[UI ERROR] Invalid phonebook data format")
-            return
+        self.scrollable_frame.after(0, lambda: [widget.destroy() for widget in self.scrollable_frame.winfo_children()])
         
         # Erstelle Einträge für jeden gültigen Client
         for entry in phonebook_data:
@@ -1118,22 +1110,26 @@ class PHONEBOOK(ctk.CTk):
                 
             print(f"[UI] Adding client {client_id}: {client_name}")
             
-            btn = ctk.CTkButton(
-                self.scrollable_frame,
-                text=f"{client_id}: {client_name}",
-                fg_color="#006400",
-                text_color="white",
-                font=("Helvetica", 14),
-                height=50,
-                corner_radius=10,
-                command=lambda e=entry: self.on_entry_click(e)
-            )
-            btn.pack(fill="x", pady=5, padx=5)
-            self.entry_buttons.append(btn)
+            # UI-Update muss im Hauptthread erfolgen
+            self.scrollable_frame.after(0, lambda e=entry: self._add_phonebook_entry(e))
         
         # Aktualisiere den Canvas
-        self.canvas.configure(scrollregion=self.canvas.bbox("all"))
+        self.scrollable_frame.after(0, lambda: self.canvas.configure(scrollregion=self.canvas.bbox("all")))
         print("[UI] Phonebook update complete")
+    
+    def _add_phonebook_entry(self, entry):
+        """Hilfsfunktion zum Hinzufügen eines Eintrags (im Hauptthread)"""
+        btn = ctk.CTkButton(
+            self.scrollable_frame,
+            text=f"{entry['id']}: {entry['name']}",
+            fg_color="#006400",
+            text_color="white",
+            font=("Helvetica", 14),
+            height=50,
+            corner_radius=10,
+            command=lambda e=entry: self.on_entry_click(e)
+        )
+        btn.pack(fill="x", pady=5, padx=5)
 
     def load_phonebook(self):
         if not self.client_socket:
