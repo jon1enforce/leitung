@@ -1396,7 +1396,7 @@ class PHONEBOOK(ctk.CTk):
             traceback.print_exc()
             return False
     
-     def _process_phonebook_update(self, message):
+    def _process_phonebook_update(self, message):
         """Processes phonebook update from parsed message with enhanced debugging"""
         print("\n=== PHONEBOOK UPDATE PROCESSING ===")
         print(f"[CLIENT] Received message type: {type(message)}")
