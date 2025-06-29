@@ -764,7 +764,7 @@ class Server:
                 print(f"[DEBUG][handle_communication_loop] Parsed message: {msg.get('method')}")
                 
                 # PING-PONG Handling with detailed debugging
-                if msg.get('method') == "MESSAGE" and msg.get('custom_data', {}).get("PING: true"):
+                if msg.get('method') == "MESSAGE" and "PING: true" in msg.get('raw_body', ''):
                     ping_counter += 1
                     current_time = time.time()
                     time_since_last_pong = current_time - last_pong_time
