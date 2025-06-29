@@ -1163,16 +1163,20 @@ class Server:
                 try:
                     with self.client_send_lock:
                         client_socket = client_data['socket']
-                        if client_socket:
+                        if client_socket and self._is_socket_alive(client_socket):  # Add socket check
                             client_socket.settimeout(10.0)
                             send_frame(client_socket, response)
                             print("[DEBUG] Message sent successfully")
                             return True
                         else:
-                            print("[ERROR] Client socket not available")
+                            print("[ERROR] Client socket not available or dead")
+                            if client_id in self.clients:  # Clean up dead client
+                                self.remove_client(client_id)
                             return False
                 except Exception as e:
                     print(f"[ERROR] Message sending failed: {str(e)}")
+                    if client_id in self.clients:  # Clean up on failure
+                        self.remove_client(client_id)
                     return False
                     
             except Exception as e:
