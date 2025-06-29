@@ -1381,41 +1381,46 @@ class PHONEBOOK(ctk.CTk):
             return False
     
     def handle_server_message(self, raw_data):
-        """Verarbeitet eingehende Nachrichten mit verbessertem Debugging"""
+        """Verarbeitet eingehende Nachrichten mit verbessertem Frame-Handling"""
         print("\n=== CLIENT MESSAGE HANDLING START ===")
         print(f"[DEBUG] Raw data type: {type(raw_data)}, length: {len(raw_data)}")
         
         try:
-            # 1. Versuche als SIP-Nachricht zu parsen
-            print("[DEBUG] Attempting to parse as SIP message...")
+            # 1. Frame-Header entfernen falls vorhanden
+            if len(raw_data) > 4:
+                frame_length = struct.unpack('!I', raw_data[:4])[0]
+                if frame_length == len(raw_data) - 4:  # Gültiger Frame
+                    raw_data = raw_data[4:]
+                    print("[DEBUG] Removed frame header")
+            
+            # 2. Versuche UTF-8 Decode für SIP-Nachrichten
             try:
                 message = raw_data.decode('utf-8')
                 sip_data = parse_sip_message(message)
                 
-                if not sip_data:
-                    print("[ERROR] Failed to parse SIP message structure")
-                    return False
+                if sip_data:
+                    print("[DEBUG] Successfully parsed as SIP text message")
+                    if sip_data.get('custom_data', {}).get('MESSAGE_TYPE') == 'PHONEBOOK_UPDATE':
+                        return self._process_phonebook_update(sip_data['custom_data'])
+                    return self._handle_standard_sip(sip_data)
                     
-                print(f"[DEBUG] Parsed SIP - Method: {sip_data.get('method')}, Status: {sip_data.get('status_code')}")
-                
-                # Phonebook Update behandeln
-                if sip_data.get('custom_data', {}).get('MESSAGE_TYPE') == 'PHONEBOOK_UPDATE':
-                    print("[DEBUG] Detected phonebook update message")
-                    return self._process_phonebook_update(sip_data['custom_data'])
-                    
-                return self._handle_standard_sip(sip_data)
-                
             except UnicodeDecodeError:
-                print("[DEBUG] UTF-8 decode failed, trying binary processing")
-                return self._process_binary_phonebook(raw_data)
+                print("[DEBUG] UTF-8 decode failed, processing as binary")
                 
+            # 3. Direkte Verarbeitung als verschlüsselte Daten
+            if len(raw_data) >= 512:  # Mindestlänge für verschlüsselte Daten
+                print("[DEBUG] Processing as encrypted phonebook data")
+                return self._process_encrypted_phonebook(raw_data)
+                
+            print("[ERROR] No valid message format detected")
+            return False
+            
         except Exception as e:
             print(f"[CRITICAL] Message handling failed: {str(e)}")
             traceback.print_exc()
             return False
         finally:
             print("=== CLIENT MESSAGE HANDLING END ===")
-
     
     def _process_encrypted_phonebook(self, encrypted_data):
         """Process encrypted phonebook data"""
