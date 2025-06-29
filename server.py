@@ -719,12 +719,17 @@ class Server:
             raise
     def _is_socket_alive(self, sock):
         """Prüft ob Socket noch verbunden ist"""
+        if sock is None:
+            return False
         try:
+            # Test if socket is writable without blocking
             sock.getpeername()
-            # Testet ob Socket schreibbar ist
-            sock.send(b'')  # Leeres Test-Packet
+            sock.send(b'')  # Test empty packet
             return True
-        except (OSError, ConnectionError, BrokenPipeError):
+        except (OSError, ConnectionError, BrokenPipeError, socket.error):
+            return False
+        except Exception as e:
+            print(f"Unexpected socket check error: {str(e)}")
             return False
     
     def handle_communication_loop(self, client_name, client_socket):
