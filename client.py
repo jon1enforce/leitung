@@ -921,49 +921,49 @@ def _load_libraries(self):
             }
         }
     
-            # Lade Bibliotheken mit Fallback-Mechanismus
-            def load_library(lib_type):
-                if normalized_arch not in LIBRARY_MAP:
-                    raise RuntimeError(f"Unsupported architecture: {arch} (normalized: {normalized_arch})")
-        
-                # Versuche primäre Bibliothek
-                primary_lib = LIBRARY_MAP[normalized_arch].get(lib_type)
-                if primary_lib:
-                    try:
-                        lib = ctypes.CDLL(f"./{primary_lib}")
-                        print(f"Successfully loaded {lib_type} lib: {primary_lib}")
-                        return lib
-                    except Exception as e:
-                        print(f"Error loading primary {lib_type} lib {primary_lib}: {str(e)}")
-        
-                # Fallback für ARM64
-                if normalized_arch == 'arm64' and lib_type == 'vault':
-                    fallback_lib = LIBRARY_MAP['arm64'].get('fallback')
-                    try:
-                        lib = ctypes.CDLL(f"./{fallback_lib}")
-                        print(f"Using fallback {lib_type} lib: {fallback_lib}")
-                        return lib
-                    except Exception as e:
-                        print(f"Error loading fallback {lib_type} lib {fallback_lib}: {str(e)}")
-        
-                raise RuntimeError(f"Failed to load {lib_type} library for architecture {arch}")
-        
-            try:
-                # Lade Bibliotheken
-                self.lib = load_library('vault')
-                self.gen_lib = load_library('generator')
-        
-                # Funktionen definieren
-                self.lib.vault_create.restype = ctypes.c_void_p
-                self.lib.vault_load.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte)]
-                self.lib.vault_retrieve.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte)]
-                self.lib.vault_wipe.argtypes = [ctypes.c_void_p]
-                
-                self.gen_lib.generate_secret.argtypes = [ctypes.POINTER(ctypes.c_ubyte)]
-                self.gen_lib.generate_secret.restype = None
-        
-            except Exception as e:
-                raise RuntimeError(f"Critical library loading error: {str(e)}")
+        # Lade Bibliotheken mit Fallback-Mechanismus
+        def load_library(lib_type):
+            if normalized_arch not in LIBRARY_MAP:
+                raise RuntimeError(f"Unsupported architecture: {arch} (normalized: {normalized_arch})")
+    
+            # Versuche primäre Bibliothek
+            primary_lib = LIBRARY_MAP[normalized_arch].get(lib_type)
+            if primary_lib:
+                try:
+                    lib = ctypes.CDLL(f"./{primary_lib}")
+                    print(f"Successfully loaded {lib_type} lib: {primary_lib}")
+                    return lib
+                except Exception as e:
+                    print(f"Error loading primary {lib_type} lib {primary_lib}: {str(e)}")
+    
+            # Fallback für ARM64
+            if normalized_arch == 'arm64' and lib_type == 'vault':
+                fallback_lib = LIBRARY_MAP['arm64'].get('fallback')
+                try:
+                    lib = ctypes.CDLL(f"./{fallback_lib}")
+                    print(f"Using fallback {lib_type} lib: {fallback_lib}")
+                    return lib
+                except Exception as e:
+                    print(f"Error loading fallback {lib_type} lib {fallback_lib}: {str(e)}")
+    
+            raise RuntimeError(f"Failed to load {lib_type} library for architecture {arch}")
+    
+        try:
+            # Lade Bibliotheken
+            self.lib = load_library('vault')
+            self.gen_lib = load_library('generator')
+    
+            # Funktionen definieren
+            self.lib.vault_create.restype = ctypes.c_void_p
+            self.lib.vault_load.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte)]
+            self.lib.vault_retrieve.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte)]
+            self.lib.vault_wipe.argtypes = [ctypes.c_void_p]
+            
+            self.gen_lib.generate_secret.argtypes = [ctypes.POINTER(ctypes.c_ubyte)]
+            self.gen_lib.generate_secret.restype = None
+    
+        except Exception as e:
+            raise RuntimeError(f"Critical library loading error: {str(e)}")
     
     def create(self) -> bool:
         """Erstellt einen neuen Vault"""
