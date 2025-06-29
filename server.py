@@ -797,7 +797,8 @@ class Server:
             self.process_merkle_tree(client_name, client_socket)
             
             # Phase 7: Phonebook asynchron broadcasten (nicht blockierend)
-            threading.Thread(target=self.broadcast_phonebook, daemon=True).start()
+            #+++threading.Thread(target=self.broadcast_phonebook, daemon=True).start()
+            threading.Timer(0.5, self.broadcast_phonebook).start()
             
             # Phase 8: Hauptkommunikationsschleife starten (blockierend)
             self.handle_communication_loop(client_name, client_socket)
