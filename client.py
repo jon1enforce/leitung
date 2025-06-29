@@ -562,7 +562,9 @@ def connection_loop(client_socket, server_ip, message_handler=None):
         try:
             # 1. Ping senden (bestehende Logik)
             ping_msg = build_sip_message("MESSAGE", server_ip, {"PING": "true"})
+            print(ping_msg)
             client_socket.sendall(ping_msg.encode('utf-8'))
+            print("DEBUG:ping gesendet+++")
             
             # 2. Auf Antwort warten mit erweiterter Verarbeitung
             client_socket.settimeout(pong_timeout)
