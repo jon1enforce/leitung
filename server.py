@@ -773,17 +773,16 @@ class Server:
                 if msg.get('method') == "MESSAGE" and msg.get('headers', {}).get("PING") == "true":
                     ping_counter += 1
                     current_time = time.time()
-                    time_since_last_pong = current_time - last_pong_time
                     
-                    # Enhanced debug output
-                    print(f"\n=== PING DETECTED [{ping_counter}] ===")
+                    print(f"\n=== PING VERIFIED ===")
                     print(f"Client: {client_name}")
-                    print(f"Raw body: {msg.get('raw_body', '')[:100]}...")
-                    print(f"Custom data: {msg.get('custom_data', {})}")
-                    print(f"Last pong: {last_pong_time} ({time_since_last_pong:.2f}s ago)")
-                    
-                    # Always respond to PING immediately (removed delay check)
-                    pong_counter += 1
+                    print(f"Socket status before send: {'alive' if self._is_socket_alive(client_socket) else 'dead'}")
+                
+                    if not self._is_socket_alive(client_socket):
+                        print(f"[ERROR] Socket dead for {client_name}, cannot send PONG")
+                        self.remove_client(client_id)
+                        break
+                
                     pong_msg = self.build_sip_message(
                         "MESSAGE",
                         client_name,
@@ -794,44 +793,22 @@ class Server:
                             "SERVER_TIME": time.strftime("%Y-%m-%d %H:%M:%S")
                         }
                     )
-                    
+                
                     try:
                         with self.client_send_lock:
-                            # Socket diagnostics before sending
-                            print(f"[SOCKET] FD: {client_socket.fileno()}, "
-                                  f"Timeout: {client_socket.gettimeout()}, "
-                                  f"Peer: {client_socket.getpeername()}")
-                            
-                            # Send with verification
-                            start_time = time.time()
+                            print(f"[SENDING] PONG to {client_name}")
                             send_frame(client_socket, pong_msg)
-                            send_duration = time.time() - start_time
-                            
+                            print(f"[SUCCESS] PONG sent to {client_name}")
                             last_pong_time = current_time
-                            print(f"PONG sent in {send_duration:.3f}s. "
-                                  f"Counter: {pong_counter}, "
-                                  f"Size: {len(pong_msg)} bytes")
                             
-                            # Verify socket still alive
-                            try:
-                                client_socket.getpeername()
-                            except Exception as e:
-                                print(f"[WARNING] Socket may be dead after send: {str(e)}")
-                                raise
-                            
+                    except (BrokenPipeError, ConnectionResetError, OSError) as e:
+                        print(f"[SEND_FAILED] Client {client_name} disconnected: {str(e)}")
+                        self.remove_client(client_id)
+                        break
                     except Exception as e:
-                        print(f"!!! PONG SEND FAILURE !!!")
-                        print(f"Error: {type(e).__name__}: {str(e)}")
-                        print(f"Client: {client_name}, PONG attempt: {pong_counter}")
+                        print(f"[ERROR] Unexpected send error: {type(e).__name__}: {str(e)}")
                         traceback.print_exc()
-                        
-                        # Close connection on failure
-                        try:
-                            client_socket.close()
-                        except:
-                            pass
-                        
-                        break  # Exit communication loop
+                        continue
                 
                 elif msg.get('custom_data', {}).get('CLIENT_SECRET'):
                     print("[DEBUG][handle_communication_loop] Handling CLIENT_SECRET")
