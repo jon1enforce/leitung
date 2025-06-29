@@ -404,6 +404,18 @@ class Server:
             f"Content-Length: {len(body)}\r\n\r\n"
             f"{body}"
         )
+    def build_pong_response(self, client_name):
+        current_time = time.time()
+        return self.build_sip_message(
+            "MESSAGE",
+            client_name,
+            {
+                "PONG": "true",
+                "TIMESTAMP": current_time,
+                "COUNTER": self.pong_counter,
+            },
+            content_type="text/plain"
+        )
     def parse_sip_message(self, message):
         """
         Server-spezifischer Parser mit:
