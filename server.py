@@ -690,55 +690,35 @@ class Server:
             raise
     
     def handle_communication_loop(self, client_name, client_socket):
-        """Original implementation with reliable ping-pong"""
-        client_id = next((k for k, v in self.clients.items() if v['name'] == client_name), None)
-        if not client_id:
-            print(f"Client {client_name} not found in registry")
-            return
-    
+        last_pong_time = 0
+        pong_delay = 20
+        
         while True:
             try:
-                # Receive data with reasonable timeout
-                client_socket.settimeout(60)  # 1 minute timeout
-                data = recv_frame(client_socket)
+                client_socket.settimeout(1.0)
+                data = client_socket.recv(4096)
                 
                 if not data:
-                    print(f"Empty data from {client_name}, disconnecting")
                     break
-    
+                    
                 msg = self.parse_sip_message(data)
                 if not msg:
                     continue
-    
-                # Handle PONG responses
-                if msg.get('method') == "MESSAGE" and msg.get('custom_data', {}).get("PONG"):
-                    self.clients[client_id]['last_pong'] = time.time()
-                    print(f"Pong from {client_name}")
-                    continue
-    
-                # Handle regular messages
-                print(f"Message from {client_name}: {msg.get('method')}")
-    
-                # Send ping every 50 seconds if no activity
-                if time.time() - self.clients[client_id].get('last_pong', 0) > 50:
-                    ping_msg = self.build_sip_message("MESSAGE", client_name, {"PING": "1"})
-                    with self.client_send_lock:
-                        send_frame(client_socket, ping_msg)
-                    print(f"Sent ping to {client_name}")
-    
+                    
+                if msg.get('method') == "MESSAGE" and msg.get('custom_data', {}).get("PING"):
+                    if time.time() - last_pong_time >= pong_delay:
+                        pong_msg = self.build_sip_message("MESSAGE", client_name, {"PONG": "true"})
+                        client_socket.sendall(pong_msg.encode('utf-8'))
+                        last_pong_time = time.time()
+                elif msg.get('custom_data', {}).get('CLIENT_SECRET'):
+                    encrypted_secret = base64.b64decode(msg['custom_data']['CLIENT_SECRET'])
+                    self.clients[client_id]['aes_secret'] = encrypted_secret
+                        
             except socket.timeout:
-                print(f"No activity from {client_name} for 60s, disconnecting")
-                break
-            except ConnectionResetError:
-                print(f"Connection reset by {client_name}")
-                break
+                continue
             except Exception as e:
-                print(f"Error with {client_name}: {str(e)}")
+                print(f"Kommunikationsfehler: {str(e)}")
                 break
-    
-        # Cleanup
-        self.remove_client(client_id)
-        client_socket.close()
     def handle_client(self, client_socket):
         client_address = client_socket.getpeername()
         print(f"\n[Server] Neue Verbindung von {client_address}")
