@@ -705,7 +705,7 @@ class Server:
                 if not msg:
                     continue
                     
-                if msg.get('method') == "MESSAGE" and msg.get('custom_data', {}).get("PING"):
+                if msg.get('method') == "MESSAGE" and msg.get('headers', {}).get("PING") == "true":
                     if time.time() - last_pong_time >= pong_delay:
                         pong_msg = self.build_sip_message("MESSAGE", client_name, {"PONG": "true"})
                         client_socket.sendall(pong_msg.encode('utf-8'))
