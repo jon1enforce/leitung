@@ -758,10 +758,23 @@ class Server:
                     
                 msg = self.parse_sip_message(data)
                 # PING-PONG Handling with enhanced reliability
-                print(msg.get('method'))
-                print(msg.get('raw_body', ''))
-                if msg.get('method') == "MESSAGE" and ("PING: true" in msg.get('raw_body', '') or 
-                                                      msg.get('custom_data', {}).get("PING") == "true"):
+                # Erweiterte Debug-Ausgaben VOR der Bedingung
+                print("\n=== DEBUG BEFORE PING CHECK ===")
+                print(f"Message method: '{msg.get('method')}'")  # Sollte "MESSAGE" sein
+                print(f"Raw body content: '{msg.get('raw_body', '')}'")  # Sollte "PING: true" enthalten
+                print(f"Custom data contents: {msg.get('custom_data', {})}")  # Sollte {"PING": "true"} sein
+                print(f"Message object full structure:\n{json.dumps(msg, indent=2, default=str)}")
+                
+                # Überarbeitete Bedingung mit Fallbacks
+                is_message = msg.get('method') == "MESSAGE"
+                contains_ping = ("PING: true" in msg.get('raw_body', '').upper() or 
+                                msg.get('custom_data', {}).get("PING", "").upper() == "TRUE")
+                
+                print(f"\nCondition check results:")
+                print(f"- is_message: {is_message}")
+                print(f"- contains_ping: {contains_ping}")
+
+                if is_message and contains_ping:
                     ping_counter += 1
                     current_time = time.time()
                     time_since_last_pong = current_time - last_pong_time
