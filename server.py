@@ -741,7 +741,10 @@ class Server:
                     
                 print(f"[DEBUG][handle_communication_loop] Received {len(data)} bytes")
                 print(f"[DEBUG][handle_communication_loop] First 32 bytes (hex): {' '.join(f'{b:02x}' for b in data[:32])}")
-                
+                print('data+++')
+                print(data)
+                print('data.decode+++')
+                print(data.decode())
                 # Frame-Header Erkennung (wenn vorhanden)
                 if len(data) > 4 and data.startswith(b'MES'):  # Beginn von "MESSAGE"
                     try:
