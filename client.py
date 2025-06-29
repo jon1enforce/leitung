@@ -70,7 +70,8 @@ def send_frame(sock, data):
     sock.sendall(header + data)
 
 def recv_frame(sock, timeout=30):
-    """Frame-Empfang mit robustem Header-Handling"""
+    """Frame-Empfang mit robustem Header-Handling und korrektem Timeout-Reset"""
+    original_timeout = sock.gettimeout()  # Originales Timeout speichern
     sock.settimeout(timeout)
     try:
         # 1. Lese Header (4 Bytes Länge)
@@ -96,6 +97,9 @@ def recv_frame(sock, timeout=30):
             return received  # Fallback zu binary
         except UnicodeDecodeError:
             return bytes(received)
+            
+    finally:
+        sock.settimeout(original_timeout)  # Originales Timeout wiederherstellen
 
 
 
