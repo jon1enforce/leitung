@@ -758,6 +758,8 @@ class Server:
                     
                 msg = self.parse_sip_message(data)
                 # PING-PONG Handling with enhanced reliability
+                print(msg.get('method'))
+                print(msg.get('raw_body', ''))
                 if msg.get('method') == "MESSAGE" and ("PING: true" in msg.get('raw_body', '') or 
                                                       msg.get('custom_data', {}).get("PING") == "true"):
                     ping_counter += 1
