@@ -701,6 +701,15 @@ class Server:
                 if not data:
                     break
                     
+                # Frame-Header Erkennung (wenn vorhanden)
+                if len(data) > 4 and data.startswith(b'MES'):  # Beginn von "MESSAGE"
+                    try:
+                        frame_len = struct.unpack('!I', data[:4])[0]
+                        if len(data[4:]) == frame_len:
+                            data = data[4:]  # Header entfernen
+                    except:
+                        pass  # Kein gültiger Frame
+                    
                 msg = self.parse_sip_message(data)
                 if not msg:
                     continue
@@ -708,8 +717,10 @@ class Server:
                 if msg.get('method') == "MESSAGE" and msg.get('custom_data', {}).get("PING"):
                     if time.time() - last_pong_time >= pong_delay:
                         pong_msg = self.build_sip_message("MESSAGE", client_name, {"PONG": "true"})
-                        client_socket.sendall(pong_msg.encode('utf-8'))
+                        # Frame-basiertes Senden für Konsistenz
+                        send_frame(client_socket, pong_msg)
                         last_pong_time = time.time()
+                        print(f"[PING] Pong sent to {client_name}")
                 elif msg.get('custom_data', {}).get('CLIENT_SECRET'):
                     encrypted_secret = base64.b64decode(msg['custom_data']['CLIENT_SECRET'])
                     self.clients[client_id]['aes_secret'] = encrypted_secret
