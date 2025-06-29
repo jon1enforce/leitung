@@ -26,37 +26,66 @@ def send_frame(sock, data):
     sock.sendall(header + data)
 
 def recv_frame(sock, timeout=30):
-    """Improved frame receiver with binary support"""
+    """Improved frame receiver with binary support with EXTENSIVE DEBUGGING"""
+    print(f"\n[DEBUG][recv_frame] ENTER - timeout={timeout}")
     sock.settimeout(timeout)
+    
     try:
         # Read header
+        print("[DEBUG][recv_frame] Waiting for header (4 bytes)...")
         header = sock.recv(4)
+        print(f"[DEBUG][recv_frame] Received header: {len(header)} bytes")
+        
         if len(header) != 4:
+            print("[ERROR][recv_frame] Invalid header length - connection closed?")
             return None
             
         length = struct.unpack('!I', header)[0]
+        print(f"[DEBUG][recv_frame] Frame length from header: {length} bytes")
+        
         if length > 10 * 1024 * 1024:  # 10MB max
-            raise ValueError("Frame too large")
+            raise ValueError(f"[ERROR][recv_frame] Frame too large: {length} bytes")
         
         # Read body
         received = bytearray()
-        while len(received) < length:
-            chunk = sock.recv(min(length - len(received), 4096))
-            if not chunk:
-                raise ConnectionError("Connection closed prematurely")
-            received.extend(chunk)
+        bytes_remaining = length
+        chunk_count = 0
         
-        print(f"\n[FRAME DEBUG] Received {length} bytes")
-        print(f"First 32 bytes (hex): {' '.join(f'{b:02x}' for b in received[:32])}")
+        print(f"[DEBUG][recv_frame] Starting to receive body (expecting {length} bytes)...")
+        while len(received) < length:
+            chunk_size = min(length - len(received), 4096)
+            print(f"[DEBUG][recv_frame][chunk {chunk_count}] Requesting {chunk_size} bytes...")
+            
+            chunk = sock.recv(chunk_size)
+            if not chunk:
+                raise ConnectionError("[ERROR][recv_frame] Connection closed prematurely during body")
+                
+            received.extend(chunk)
+            bytes_remaining = length - len(received)
+            chunk_count += 1
+            
+            print(f"[DEBUG][recv_frame][chunk {chunk_count}] Got {len(chunk)} bytes | Remaining: {bytes_remaining}")
+        
+        print(f"\n[DEBUG][recv_frame] COMPLETE - Received {length} bytes total")
+        print(f"[DEBUG][recv_frame] First 32 bytes (hex): {' '.join(f'{b:02x}' for b in received[:32])}")
+        print(f"[DEBUG][recv_frame] First 32 bytes (ascii): {received[:32].decode('ascii', errors='replace')}")
         
         # Try UTF-8 decode for SIP messages
         try:
-            return received.decode('utf-8')
+            decoded = received.decode('utf-8')
+            print("[DEBUG][recv_frame] Successfully decoded as UTF-8")
+            return decoded
         except UnicodeDecodeError:
-            return bytes(received)  # Return binary data if not UTF-8
+            print("[DEBUG][recv_frame] Could not decode as UTF-8, returning raw bytes")
+            return bytes(received)
             
-    except socket.timeout:
-        raise TimeoutError("Timeout waiting for frame")
+    except socket.timeout as e:
+        print(f"[ERROR][recv_frame] Timeout waiting for frame: {str(e)}")
+        raise TimeoutError(f"[recv_frame] Timeout waiting for frame: {str(e)}")
+    except Exception as e:
+        print(f"[ERROR][recv_frame] Unexpected error: {type(e).__name__}: {str(e)}")
+        traceback.print_exc()
+        raise
 def debug_print_key(key_type, key_data):
     """Print detailed key information"""
     print(f"\n=== {key_type.upper()} KEY DEBUG ===")
