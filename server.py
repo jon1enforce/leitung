@@ -757,45 +757,70 @@ class Server:
                         pass  # Kein gültiger Frame
                     
                 msg = self.parse_sip_message(data)
-                if not msg:
-                    print("[DEBUG][handle_communication_loop] Could not parse SIP message")
-                    continue
-                    
-                print(f"[DEBUG][handle_communication_loop] Parsed message: {msg.get('method')}")
-                
-                # PING-PONG Handling with detailed debugging
-                if msg.get('method') == "MESSAGE" and "PING: true" in msg.get('raw_body', ''):
+                # PING-PONG Handling with enhanced reliability
+                if msg.get('method') == "MESSAGE" and ("PING: true" in msg.get('raw_body', '') or 
+                                                      msg.get('custom_data', {}).get("PING") == "true"):
                     ping_counter += 1
                     current_time = time.time()
                     time_since_last_pong = current_time - last_pong_time
                     
-                    print(f"\n[DEBUG][PING-PONG][{ping_counter}] PING RECEIVED from {client_name}")
-                    print(f"[DEBUG][PING-PONG] Current time: {current_time}")
-                    print(f"[DEBUG][PING-PONG] Last pong time: {last_pong_time}")
-                    print(f"[DEBUG][PING-PONG] Time since last pong: {time_since_last_pong:.2f}s")
+                    # Enhanced debug output
+                    print(f"\n=== PING DETECTED [{ping_counter}] ===")
+                    print(f"Client: {client_name}")
+                    print(f"Raw body: {msg.get('raw_body', '')[:100]}...")
+                    print(f"Custom data: {msg.get('custom_data', {})}")
+                    print(f"Last pong: {last_pong_time} ({time_since_last_pong:.2f}s ago)")
                     
-                    if time_since_last_pong >= pong_delay:
-                        pong_counter += 1
-                        print(f"[DEBUG][PING-PONG][{pong_counter}] Sending PONG (delay threshold reached)")
-                        
-                        pong_msg = self.build_sip_message("MESSAGE", client_name, {
+                    # Always respond to PING immediately (removed delay check)
+                    pong_counter += 1
+                    pong_msg = self.build_sip_message(
+                        "MESSAGE",
+                        client_name,
+                        {
                             "PONG": "true",
                             "TIMESTAMP": current_time,
-                            "PONG_COUNTER": pong_counter
-                        })
+                            "PONG_COUNTER": pong_counter,
+                            "SERVER_TIME": time.strftime("%Y-%m-%d %H:%M:%S")
+                        }
+                    )
+                    
+                    try:
+                        with self.client_send_lock:
+                            # Socket diagnostics before sending
+                            print(f"[SOCKET] FD: {client_socket.fileno()}, "
+                                  f"Timeout: {client_socket.gettimeout()}, "
+                                  f"Peer: {client_socket.getpeername()}")
+                            
+                            # Send with verification
+                            start_time = time.time()
+                            send_frame(client_socket, pong_msg)
+                            send_duration = time.time() - start_time
+                            
+                            last_pong_time = current_time
+                            print(f"PONG sent in {send_duration:.3f}s. "
+                                  f"Counter: {pong_counter}, "
+                                  f"Size: {len(pong_msg)} bytes")
+                            
+                            # Verify socket still alive
+                            try:
+                                client_socket.getpeername()
+                            except Exception as e:
+                                print(f"[WARNING] Socket may be dead after send: {str(e)}")
+                                raise
+                            
+                    except Exception as e:
+                        print(f"!!! PONG SEND FAILURE !!!")
+                        print(f"Error: {type(e).__name__}: {str(e)}")
+                        print(f"Client: {client_name}, PONG attempt: {pong_counter}")
+                        traceback.print_exc()
                         
+                        # Close connection on failure
                         try:
-                            with self.client_send_lock:
-                                print(f"[DEBUG][PING-PONG] Acquired send lock for PONG")
-                                client_socket.settimeout(10.0)
-                                send_frame(client_socket, pong_msg)
-                                last_pong_time = current_time
-                                print(f"[DEBUG][PING-PONG] PONG sent successfully (counter={pong_counter})")
-                        except Exception as e:
-                            print(f"[ERROR][PING-PONG] Failed to send PONG: {type(e).__name__}: {str(e)}")
-                            traceback.print_exc()
-                    else:
-                        print(f"[DEBUG][PING-PONG] Not sending PONG (delay not reached: {time_since_last_pong:.2f}s < {pong_delay}s)")
+                            client_socket.close()
+                        except:
+                            pass
+                        
+                        break  # Exit communication loop
                 
                 elif msg.get('custom_data', {}).get('CLIENT_SECRET'):
                     print("[DEBUG][handle_communication_loop] Handling CLIENT_SECRET")
