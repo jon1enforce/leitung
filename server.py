@@ -701,26 +701,30 @@ class Server:
                 if not data:
                     break
                     
-                # DEBUG: Raw message inspection
-                print(f"[RAW RECV] {data[:100]}...")  # Show first 100 bytes
-
+                # Handle both framed and non-framed messages
+                try:
+                    # Try to parse as framed message first
+                    if len(data) > 4:
+                        frame_len = struct.unpack('!I', data[:4])[0]
+                        if frame_len == len(data[4:]):
+                            data = data[4:]  # Remove frame header
+                except:
+                    pass  # Fall back to raw message processing
+                    
                 msg = self.parse_sip_message(data)
                 if not msg:
                     continue
                     
-                # DEBUG: Show parsed message structure
-                print(f"[PARSED] Method: {msg.get('method')}, Custom: {msg.get('custom_data')}")
-
                 if msg.get('method') == "MESSAGE":
-                    custom_data = msg.get('custom_data', {})
-                    # Enhanced ping detection
-                    if "PING" in custom_data:
-                        print(f"[PING DETECTED] From {client_name}: {custom_data['PING']}")
+                    # More robust ping detection
+                    ping_value = str(msg.get('custom_data', {}).get("PING", "")).lower()
+                    if ping_value in ("true", "1", "yes"):
                     if time.time() - last_pong_time >= pong_delay:
                         pong_msg = self.build_sip_message("MESSAGE", client_name, {"PONG": "true"})
-                        client_socket.sendall(pong_msg.encode('utf-8'))
+                        # Always use framing for responses
+                        send_frame(client_socket, pong_msg)
                         last_pong_time = time.time()
-                        print(f"[PONG SENT] To {client_name} at {time.time()}")
+                        print(f"[PING] Responded to ping from {client_name}")
                 elif msg.get('custom_data', {}).get('CLIENT_SECRET'):
                     encrypted_secret = base64.b64decode(msg['custom_data']['CLIENT_SECRET'])
                     self.clients[client_id]['aes_secret'] = encrypted_secret
