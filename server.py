@@ -695,44 +695,54 @@ class Server:
         
         while True:
             try:
-                client_socket.settimeout(0.1)
-                data = client_socket.recv(4096)
+                # Änderung 1: Längeres Timeout für stabilere Verbindung
+                client_socket.settimeout(1.0)  # 1 Sekunde statt 0.1
+                
+                # Änderung 2: Frame-basiertes Empfangen
+                data = recv_frame(client_socket, timeout=1.0)
                 
                 if not data:
+                    print(f"[{client_name}] Verbindung geschlossen")
                     break
                     
-                # Handle both framed and non-framed messages
-                try:
-                    # Try to parse as framed message first
-                    if len(data) > 4:
-                        frame_len = struct.unpack('!I', data[:4])[0]
-                        if frame_len == len(data[4:]):
-                            data = data[4:]  # Remove frame header
-                except:
-                    pass  # Fall back to raw message processing
-                    
+                # Debug-Ausgabe der Rohdaten
+                print(f"[{client_name}] Empfangene Daten ({len(data)} bytes): {str(data)[:100]}...")
+                
                 msg = self.parse_sip_message(data)
                 if not msg:
+                    print(f"[{client_name}] Ungültige Nachricht")
                     continue
                     
+                # Verbesserte Ping-Erkennung
                 if msg.get('method') == "MESSAGE":
-                    # More robust ping detection
-                    ping_value = str(msg.get('custom_data', {}).get("PING", "")).lower()
-                    if ping_value in ("true", "1", "yes"):
-                    if time.time() - last_pong_time >= pong_delay:
-                        pong_msg = self.build_sip_message("MESSAGE", client_name, {"PONG": "true"})
-                        # Always use framing for responses
-                        send_frame(client_socket, pong_msg)
-                        last_pong_time = time.time()
-                        print(f"[PING] Responded to ping from {client_name}")
+                    custom_data = msg.get('custom_data', {})
+                    if "PING" in custom_data:
+                        print(f"[{client_name}] Ping empfangen: {custom_data['PING']}")
+                        if time.time() - last_pong_time >= pong_delay:
+                            pong_msg = self.build_sip_message("MESSAGE", client_name, {
+                                "PONG": "true",
+                                "TIMESTAMP": str(time.time())
+                            })
+                            # Frame-basiertes Senden
+                            send_frame(client_socket, pong_msg)
+                            last_pong_time = time.time()
+                            print(f"[{client_name}] Pong gesendet")
+                
+                # Bestehende Secret-Verarbeitung
                 elif msg.get('custom_data', {}).get('CLIENT_SECRET'):
                     encrypted_secret = base64.b64decode(msg['custom_data']['CLIENT_SECRET'])
                     self.clients[client_id]['aes_secret'] = encrypted_secret
+                    print(f"[{client_name}] Secret empfangen")
                         
             except socket.timeout:
+                # Regulärer Timeout - Verbindung bleibt bestehen
                 continue
+            except ConnectionResetError:
+                print(f"[{client_name}] Verbindung verloren")
+                break
             except Exception as e:
-                print(f"Kommunikationsfehler: {str(e)}")
+                print(f"[{client_name}] Fehler: {str(e)}")
+                traceback.print_exc()
                 break
     def handle_client(self, client_socket):
         client_address = client_socket.getpeername()
