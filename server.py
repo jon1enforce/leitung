@@ -778,11 +778,7 @@ class Server:
                 print(f"Raw body content: '{msg.get('raw_body', '')}'")  # Sollte "PING: true" enthalten
                 print(f"Custom data contents: {msg.get('custom_data', {})}")  # Sollte {"PING": "true"} sein
                 print(f"Message object full structure:\n{json.dumps(msg, indent=2, default=str)}")
-                
-                
-                print(f"\nCondition check results:")
-                print(f"- is_message: {is_message}")
-                print(f"- contains_ping: {contains_ping}")
+
 
                 if msg.get('method') == "MESSAGE" and msg.get('headers', {}).get("PING") == "true":
                     ping_counter += 1
