@@ -1055,6 +1055,36 @@ class Server:
         except Exception as e:
             print(f"Fehler bei der Verschlüsselung des Telefonbuchs: {e}")
             return ""
+    def get_disk_entropy(self, size):
+        """
+        Lese zufällige Daten von der Festplatte (z. B. /dev/urandom).
+        :param size: Anzahl der zu lesenden Bytes.
+        :return: Zufällige Daten als Bytes.
+        """
+        try:
+            with open("/dev/urandom", "rb") as f:
+                return f.read(size)
+        except Exception as e:
+            print("Fehler beim Lesen der Festplatten-Entropie:", e)
+            return None
+    def generate_secret(self):
+        """Erzeuge ein 48-Byte-Geheimnis (16 IV + 32 AES Key)"""
+        # Erzeuge den IV (16 Bytes)
+        iv_part1 = os.urandom(8)
+        iv_part2 = self.get_disk_entropy(8)
+        if not iv_part2:
+            raise RuntimeError("Konnte die Festplatten-Entropie nicht lesen.")
+        iv = iv_part1 + iv_part2
+        
+        # Erzeuge den AES-Schlüssel (32 Bytes)
+        key_part1 = os.urandom(16)
+        key_part2 = self.get_disk_entropy(16)
+        if not key_part2:
+            raise RuntimeError("Konnte die Festplatten-Entropie nicht lesen.")
+        aes_key = key_part1 + key_part2
+        
+        # Kombiniere IV und Schlüssel (48 Bytes total)
+        return iv + aes_key
     def broadcast_phonebook(self):
         """Broadcastet das aktuelle Phonebook an alle verbundenen Clients"""
         print("\n[Server] Starting phonebook broadcast...")
@@ -1087,7 +1117,7 @@ class Server:
                 
             try:
                 # 1. Generiere neues 48-Byte Geheimnis
-                secret = generate_secret()
+                secret = self.generate_secret()
                 if len(secret) != 48:
                     print(f"[ERROR] Invalid secret length: {len(secret)}")
                     continue
