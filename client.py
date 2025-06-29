@@ -634,103 +634,64 @@ def extract_server_public_key(sip_data, raw_response=None):
     return None            
 def start_connection(server_ip, server_port, client_name, client_socket, message_handler=None):
     try:
+        # 1. Lade Client Public Key
         client_pubkey = load_publickey()
-        print("+++client_pubkey+++")
-        print(client_pubkey)
-        # Sicherstellen, dass der Key vollständig ist
         if not client_pubkey or "-----END PUBLIC KEY-----" not in client_pubkey:
             raise ValueError("Invalid client public key format")
 
-        # Key in den Body der Nachricht einfügen
+        # 2. Baue REGISTER Nachricht
         request = (
             f"REGISTER sip:{server_ip} SIP/2.0\r\n"
             f"From: <sip:{client_name}@{socket.gethostbyname(socket.gethostname())}>\r\n"
             f"To: <sip:{server_ip}>\r\n"
             f"Content-Type: text/plain\r\n"
             f"Content-Length: {len(client_pubkey)}\r\n\r\n"
-            f"{client_pubkey}"  # Rohdaten ohne zusätzliche Formatierung
+            f"{client_pubkey}"
         )
         
-        print(f"\n[Client] Sending full public key...")
+        # 3. Sende Registrierung
         send_frame(client_socket, request)
         
+        # 4. Warte auf Server-Antwort
         response = recv_frame(client_socket)
         if not response:
             raise ConnectionError("Empty response from server")
 
-        print(f"\n[Client] Raw Server Response:\n{response}\n")
-        
-        sip_data = parse_sip_message(response)  # Diese Variable wird verwendet
+        sip_data = parse_sip_message(response)
         if not sip_data:
             raise ValueError("Invalid SIP response format")
 
-        # Check if this is a 200 OK response
-        if sip_data.get('status_code') != '200':
-            raise ValueError(f"Server returned error: {sip_data.get('status_code', 'Unknown')}")
+        # 5. Extrahiere Server Public Key
+        server_public_key = extract_server_public_key(sip_data, response)
+        if not server_public_key:
+            raise ValueError("No valid server public key received")
 
-        # Extract server public key - KORREKTE Variablenverwendung
-        server_public_key = extract_server_public_key(sip_data, response)  # sip_data statt sip_msg
-        
-        if not server_public_key or not server_public_key.startswith('-----BEGIN'):
-            print(f"Invalid server key format: {server_public_key[:100]}...")
-            raise ValueError("Invalid server public key format")
+        # 6. Warte auf Merkle Tree Nachricht
+        merkle_response = recv_frame(client_socket)
+        if not merkle_response:
+            raise ConnectionError("No Merkle response from server")
 
-        print(f"\n[Client] Extracted Server Key:\n{server_public_key}")
+        merkle_data = parse_sip_message(merkle_response)
+        if not merkle_data:
+            raise ValueError("Invalid Merkle response format")
 
-        # Wait for Merkle root message with timeout
-        try:
-            merkle_response = recv_frame(client_socket)
-            if not merkle_response:
-                raise ConnectionError("Empty Merkle response from server")
+        # 7. Verifiziere Merkle Tree
+        all_keys = []
+        if 'ALL_KEYS' in merkle_data.get('custom_data', {}):
+            all_keys = json.loads(merkle_data['custom_data']['ALL_KEYS'])
+            
+        merkle_root = merkle_data.get('custom_data', {}).get('MERKLE_ROOT')
+        if not merkle_root:
+            raise ValueError("No Merkle root in response")
+
+        if not verify_merkle_integrity(all_keys, merkle_root):
+            raise ValueError("Merkle integrity check failed")
+
+        # 8. Starte Kommunikationsschleife
+        connection_loop(client_socket, server_ip, message_handler)
         
-            print(f"\n[Client] Raw Merkle Response:\n{merkle_response}\n")
-        
-            merkle_data = parse_sip_message(merkle_response)
-# Nach dem Empfang der Merkle-Antwort:
-            all_keys = []
-            merkle_root = None
-            
-            if merkle_data and 'custom_data' in merkle_data:
-                if 'ALL_KEYS' in merkle_data['custom_data']:
-                    try:
-                        all_keys = json.loads(merkle_data['custom_data']['ALL_KEYS'])
-                        print(f"[Client] Received {len(all_keys)} keys from server")
-                    except json.JSONDecodeError as e:
-                        print(f"[Client] Error parsing keys: {e}")
-            
-                if 'MERKLE_ROOT' in merkle_data['custom_data']:
-                    merkle_root = merkle_data['custom_data']['MERKLE_ROOT']
-            
-            # Keine zusätzlichen Keys mehr hinzufügen - vertraue der Server-Liste
-            if not merkle_root:
-                if '\r\n\r\n' in merkle_response:
-                    body = merkle_response.split('\r\n\r\n')[1]
-                    for line in body.split('\n'):
-                        if line.startswith('MERKLE_ROOT:'):
-                            merkle_root = line.split('MERKLE_ROOT:')[1].strip()
-                            break
-            
-            if not merkle_root:
-                raise ValueError("No Merkle root in response")
-            
-            # Direkte Verifikation ohne Modifikation der Key-Liste
-            if not verify_merkle_integrity(all_keys, merkle_root):
-                messagebox.showerror("Security Error", 
-                    "Integrity check failed!\n"
-                    "Possible key manipulation detected.\n"
-                    "Connection terminated.")
-                client_socket.close()
-                return
-        
-            # Start main communication loop
-            connection_loop(client_socket, server_ip, message_handler)
-        
-        except socket.timeout:
-            print("Timeout waiting for Merkle root message")
-            raise ConnectionError("Timeout waiting for Merkle verification")
-            
     except Exception as e:
-        print(f"[Client] Critical error: {str(e)}")
+        print(f"[Client] Connection error: {str(e)}")
         if client_socket:
             client_socket.close()
         raise
@@ -1383,46 +1344,36 @@ class PHONEBOOK(ctk.CTk):
             return False
     
     def handle_server_message(self, raw_data):
-        """Verarbeitet eingehende Nachrichten mit verbessertem Frame-Handling"""
-        print("\n=== CLIENT MESSAGE HANDLING START ===")
-        print(f"[DEBUG] Raw data type: {type(raw_data)}, length: {len(raw_data)}")
+        """Verarbeitet eingehende Nachrichten vom Server"""
+        print("\n[Client] Handling server message...")
         
         try:
-            # 1. Frame-Header entfernen falls vorhanden
-            if len(raw_data) > 4:
-                frame_length = struct.unpack('!I', raw_data[:4])[0]
-                if frame_length == len(raw_data) - 4:  # Gültiger Frame
-                    raw_data = raw_data[4:]
-                    print("[DEBUG] Removed frame header")
-            
-            # 2. Versuche UTF-8 Decode für SIP-Nachrichten
-            try:
-                message = raw_data.decode('utf-8')
-                sip_data = parse_sip_message(message)
+            # Versuche als SIP-Nachricht zu parsen
+            if isinstance(raw_data, bytes):
+                try:
+                    message = raw_data.decode('utf-8')
+                except UnicodeDecodeError:
+                    return self._process_binary_phonebook(raw_data)
+            else:
+                message = raw_data
+    
+            sip_data = parse_sip_message(message)
+            if not sip_data:
+                print("[ERROR] Failed to parse SIP message")
+                return False
+    
+            # Phonebook Update behandeln
+            if sip_data.get('custom_data', {}).get('MESSAGE_TYPE') == 'PHONEBOOK_UPDATE':
+                print("[DEBUG] Processing phonebook update")
+                return self._process_phonebook_update(sip_data['custom_data'])
                 
-                if sip_data:
-                    print("[DEBUG] Successfully parsed as SIP text message")
-                    if sip_data.get('custom_data', {}).get('MESSAGE_TYPE') == 'PHONEBOOK_UPDATE':
-                        return self._process_phonebook_update(sip_data['custom_data'])
-                    return self._handle_standard_sip(sip_data)
-                    
-            except UnicodeDecodeError:
-                print("[DEBUG] UTF-8 decode failed, processing as binary")
-                
-            # 3. Direkte Verarbeitung als verschlüsselte Daten
-            if len(raw_data) >= 512:  # Mindestlänge für verschlüsselte Daten
-                print("[DEBUG] Processing as encrypted phonebook data")
-                return self._process_encrypted_phonebook(raw_data)
-                
-            print("[ERROR] No valid message format detected")
-            return False
+            # Standard SIP-Nachrichten
+            return self._handle_standard_sip(sip_data)
             
         except Exception as e:
-            print(f"[CRITICAL] Message handling failed: {str(e)}")
+            print(f"[ERROR] Message handling failed: {str(e)}")
             traceback.print_exc()
             return False
-        finally:
-            print("=== CLIENT MESSAGE HANDLING END ===")
     
     def _process_encrypted_phonebook(self, encrypted_data):
         """Process encrypted phonebook data"""
@@ -1526,104 +1477,43 @@ class PHONEBOOK(ctk.CTk):
             traceback.print_exc()
             return False
     
-    def _process_phonebook_update(self, message):
-        """Verarbeitet Phonebook-Updates mit vollständiger Entschlüsselung und ausführlichem Debugging"""
-        print("\n=== CLIENT PHONEBOOK UPDATE PROCESSING ===")
+    def _process_phonebook_update(self, message_data):
+        """Verarbeitet Phonebook-Updates vom Server"""
+        print("\n[Client] Processing phonebook update...")
         
         try:
-            # 1. Validierung der Eingangsdaten
-            print("[DEBUG] Validating input message...")
-            if not isinstance(message, dict):
-                print("[ERROR] Invalid message format - not a dictionary")
-                return False
-    
-            # 2. Extrahiere verschlüsselte Daten
-            print("[DEBUG] Extracting encrypted data from message...")
-            try:
-                encrypted_secret = base64.b64decode(message['ENCRYPTED_SECRET'])
-                encrypted_phonebook = base64.b64decode(message['ENCRYPTED_PHONEBOOK'])
-                print(f"[DEBUG] Encrypted secret length: {len(encrypted_secret)}")
-                print(f"[DEBUG] Encrypted phonebook length: {len(encrypted_phonebook)}")
-            except KeyError as e:
-                print(f"[ERROR] Missing required field: {str(e)}")
-                return False
-            except binascii.Error as e:
-                print(f"[ERROR] Base64 decoding failed: {str(e)}")
-                return False
-    
-            # 3. Entschlüssele das Geheimnis
-            print("[DEBUG] Decrypting secret with private key...")
-            try:
-                with open("private_key.pem", "rb") as f:
-                    priv_key = RSA.load_key_string(f.read())
-                    print("[DEBUG] Private key loaded successfully")
-                    
-                decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
-                print(f"[DEBUG] Decrypted secret (len={len(decrypted_secret)}): {decrypted_secret[:16].hex()}...")
-            except Exception as e:
-                print(f"[ERROR] Failed to decrypt secret: {str(e)}")
-                return False
-    
-            # 4. Validiere das Geheimnis
-            print("[DEBUG] Validating decrypted secret...")
+            # 1. Extrahiere verschlüsselte Daten
+            encrypted_secret = base64.b64decode(message_data['ENCRYPTED_SECRET'])
+            encrypted_phonebook = base64.b64decode(message_data['ENCRYPTED_PHONEBOOK'])
+            
+            # 2. Entschlüssele das Geheimnis
+            with open("private_key.pem", "rb") as f:
+                priv_key = RSA.load_key_string(f.read())
+                
+            decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
             if not decrypted_secret.startswith(b"+++secret+++"):
-                print("[ERROR] Invalid secret format - missing overhead")
+                print("[ERROR] Invalid secret format")
                 return False
                 
-            secret = decrypted_secret[11:59]  # 48 Bytes
+            secret = decrypted_secret[11:59]  # 48 bytes
             iv = secret[:16]
             aes_key = secret[16:]
-            print(f"[DEBUG] IV: {iv.hex()}")
-            print(f"[DEBUG] AES Key: {aes_key[:8].hex()}...")
-    
-            # 5. Entschlüssele das Phonebook
-            print("[DEBUG] Decrypting phonebook with AES...")
-            try:
-                cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
-                decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
-                print(f"[DEBUG] Decrypted data (len={len(decrypted_data)}): {decrypted_data[:100]}...")
-            except Exception as e:
-                print(f"[ERROR] AES decryption failed: {str(e)}")
-                return False
-    
-            # 6. Parse JSON-Daten
-            print("[DEBUG] Parsing decrypted JSON data...")
-            try:
-                phonebook_data = json.loads(decrypted_data.decode('utf-8'))
-                print(f"[DEBUG] Raw phonebook data: {phonebook_data}")
-            except json.JSONDecodeError as e:
-                print(f"[ERROR] JSON decode failed: {str(e)}")
-                print(f"[DEBUG] Problematic data: {decrypted_data[:200]}")
-                return False
-    
-            # 7. Filtere gültige Einträge
-            print("[DEBUG] Validating phonebook entries...")
-            valid_entries = []
-            for entry in phonebook_data:
-                try:
-                    if (isinstance(entry, dict) and 
-                        str(entry.get('id', '')).isdigit() and 
-                        entry.get('name')):
-                        print(f"[DEBUG] Valid entry found: {entry['id']}: {entry['name']}")
-                        valid_entries.append(entry)
-                except Exception as e:
-                    print(f"[WARNING] Invalid entry skipped: {str(e)}")
-    
-            # 8. Aktualisiere UI
-            if valid_entries:
-                print(f"[DEBUG] Updating UI with {len(valid_entries)} valid entries")
-                self.after(0, lambda: self.update_phonebook(valid_entries))
-                return True
-            else:
-                print("[ERROR] No valid entries found in phonebook")
-                return False
-                
+            
+            # 3. Entschlüssele das Phonebook
+            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
+            decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
+            
+            # 4. Parse JSON
+            phonebook_data = json.loads(decrypted_data.decode('utf-8'))
+            
+            # 5. Aktualisiere UI
+            self.after(0, lambda: self.update_phonebook(phonebook_data))
+            return True
+            
         except Exception as e:
-            print(f"[CRITICAL] Processing error: {str(e)}")
+            print(f"[ERROR] Phonebook processing failed: {str(e)}")
             traceback.print_exc()
             return False
-        finally:
-            print("=== CLIENT PHONEBOOK UPDATE PROCESSING END ===")
     
     def store_secret_safely(self, secret):
         """Sichert das Geheimnis mit SecureVault"""
