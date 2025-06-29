@@ -701,33 +701,34 @@ class Server:
                 if not data:
                     break
                     
-                # Debug: Log raw data length and start of message
-                print(f"[COMM LOOP] Received {len(data)} bytes: {data[:32]}...") 
-                    
+                # DEBUG: Raw message inspection
+                print(f"[RAW RECV] {data[:100]}...")  # Show first 100 bytes
+
                 msg = self.parse_sip_message(data)
                 if not msg:
                     continue
                     
+                # DEBUG: Show parsed message structure
+                print(f"[PARSED] Method: {msg.get('method')}, Custom: {msg.get('custom_data')}")
+
                 if msg.get('method') == "MESSAGE":
-                    # Erweiterte Ping-Erkennung mit mehr Formaten
-                    ping_value = str(msg.get('custom_data', {}).get("PING", "")).lower()
-                    if ping_value in ("true", "1", "yes"):
-                        if time.time() - last_pong_time >= pong_delay:
-                            pong_msg = self.build_sip_message("MESSAGE", client_name, {"PONG": "true"})
-                            # Frame-basiertes Senden für Konsistenz
-                            send_frame(client_socket, pong_msg)
-                            last_pong_time = time.time()
-                            print(f"[PING] Responded to {client_name}")
+                    custom_data = msg.get('custom_data', {})
+                    # Enhanced ping detection
+                    if "PING" in custom_data:
+                        print(f"[PING DETECTED] From {client_name}: {custom_data['PING']}")
+                    if time.time() - last_pong_time >= pong_delay:
+                        pong_msg = self.build_sip_message("MESSAGE", client_name, {"PONG": "true"})
+                        client_socket.sendall(pong_msg.encode('utf-8'))
+                        last_pong_time = time.time()
+                        print(f"[PONG SENT] To {client_name} at {time.time()}")
                 elif msg.get('custom_data', {}).get('CLIENT_SECRET'):
                     encrypted_secret = base64.b64decode(msg['custom_data']['CLIENT_SECRET'])
                     self.clients[client_id]['aes_secret'] = encrypted_secret
-                    print(f"[SECRET] Stored secret for {client_name}")
                         
             except socket.timeout:
                 continue
             except Exception as e:
                 print(f"Kommunikationsfehler: {str(e)}")
-                traceback.print_exc()  # Detaillierter Error-Output
                 break
     def handle_client(self, client_socket):
         client_address = client_socket.getpeername()
