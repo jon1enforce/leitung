@@ -70,37 +70,32 @@ def send_frame(sock, data):
     sock.sendall(header + data)
 
 def recv_frame(sock, timeout=30):
-    """Improved frame receiver with binary support"""
+    """Frame-Empfang mit robustem Header-Handling"""
     sock.settimeout(timeout)
     try:
-        # Read header
+        # 1. Lese Header (4 Bytes Länge)
         header = sock.recv(4)
         if len(header) != 4:
             return None
             
         length = struct.unpack('!I', header)[0]
-        if length > 10 * 1024 * 1024:  # 10MB max
-            raise ValueError("Frame too large")
         
-        # Read body
+        # 2. Lese Body
         received = bytearray()
         while len(received) < length:
             chunk = sock.recv(min(length - len(received), 4096))
             if not chunk:
                 raise ConnectionError("Connection closed prematurely")
             received.extend(chunk)
-        
-        print(f"\n[FRAME DEBUG] Received {length} bytes")
-        print(f"First 32 bytes (hex): {' '.join(f'{b:02x}' for b in received[:32])}")
-        
-        # Try UTF-8 decode for SIP messages
-        try:
-            return received.decode('utf-8')
-        except UnicodeDecodeError:
-            return bytes(received)  # Return binary data if not UTF-8
             
-    except socket.timeout:
-        raise TimeoutError("Timeout waiting for frame")
+        # 3. Versuche UTF-8 Decode nur für SIP-Nachrichten
+        try:
+            decoded = received.decode('utf-8')
+            if decoded.startswith(('SIP/2.0', 'MESSAGE', 'REGISTER')):
+                return decoded
+            return received  # Fallback zu binary
+        except UnicodeDecodeError:
+            return bytes(received)
 
 
 
