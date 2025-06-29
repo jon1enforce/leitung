@@ -695,29 +695,33 @@ class Server:
         
         while True:
             try:
-                client_socket.settimeout(0.1)
-                data = client_socket.recv(4096)
-                
+                # Änderung 1: Frame-basiertes Empfangen verwenden
+                data = recv_frame(client_socket, timeout=30)  # Längeren Timeout
                 if not data:
                     break
                     
+                # Änderung 2: Debug-Ausgabe hinzufügen
+                print(f"[SERVER] Received data: {data[:100]}...")
+                
                 msg = self.parse_sip_message(data)
                 if not msg:
                     continue
                     
-                if msg.get('method') == "MESSAGE" and msg.get('custom_data', {}).get("PING"):
-                    if time.time() - last_pong_time >= pong_delay:
-                        pong_msg = self.build_sip_message("MESSAGE", client_name, {"PONG": "true"})
-                        client_socket.sendall(pong_msg.encode('utf-8'))
-                        last_pong_time = time.time()
-                elif msg.get('custom_data', {}).get('CLIENT_SECRET'):
-                    encrypted_secret = base64.b64decode(msg['custom_data']['CLIENT_SECRET'])
-                    self.clients[client_id]['aes_secret'] = encrypted_secret
-                        
+                # Änderung 3: Bessere Ping-Erkennung
+                if msg.get('method') == "MESSAGE":
+                    custom_data = msg.get('custom_data', {})
+                    if "PING" in custom_data and custom_data["PING"].lower() == "true":
+                        current_time = time.time()
+                        if current_time - last_pong_time >= pong_delay:
+                            pong_msg = self.build_sip_message("MESSAGE", client_name, {"PONG": "true"})
+                            send_frame(client_socket, pong_msg)  # Frame-basiertes Senden
+                            last_pong_time = current_time
+                            print("[SERVER] Sent PONG response")
+                            
             except socket.timeout:
                 continue
             except Exception as e:
-                print(f"Kommunikationsfehler: {str(e)}")
+                print(f"[SERVER] Communication error: {str(e)}")
                 break
     def handle_client(self, client_socket):
         client_address = client_socket.getpeername()
