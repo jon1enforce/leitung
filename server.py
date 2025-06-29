@@ -690,46 +690,99 @@ class Server:
             raise
     
     def handle_communication_loop(self, client_name, client_socket):
+        """Handles ongoing communication with detailed PING-PONG debugging"""
+        print(f"\n[DEBUG][handle_communication_loop] ENTER for client: {client_name}")
+        
         last_pong_time = 0
         pong_delay = 20
+        ping_counter = 0
+        pong_counter = 0
         
         while True:
             try:
+                # Set short timeout to allow periodic checks
                 client_socket.settimeout(0.1)
+                
+                print(f"[DEBUG][handle_communication_loop][{time.time()}] Waiting for data...")
                 data = client_socket.recv(4096)
                 
                 if not data:
+                    print("[ERROR][handle_communication_loop] Empty data received - connection closed?")
                     break
                     
+                print(f"[DEBUG][handle_communication_loop] Received {len(data)} bytes")
+                print(f"[DEBUG][handle_communication_loop] First 32 bytes (hex): {' '.join(f'{b:02x}' for b in data[:32])}")
+                
                 # Frame-Header Erkennung (wenn vorhanden)
                 if len(data) > 4 and data.startswith(b'MES'):  # Beginn von "MESSAGE"
                     try:
                         frame_len = struct.unpack('!I', data[:4])[0]
                         if len(data[4:]) == frame_len:
+                            print("[DEBUG][handle_communication_loop] Detected framed message")
                             data = data[4:]  # Header entfernen
                     except:
+                        print("[DEBUG][handle_communication_loop] No valid frame header detected")
                         pass  # Kein gültiger Frame
                     
                 msg = self.parse_sip_message(data)
                 if not msg:
+                    print("[DEBUG][handle_communication_loop] Could not parse SIP message")
                     continue
                     
+                print(f"[DEBUG][handle_communication_loop] Parsed message: {msg.get('method')}")
+                
+                # PING-PONG Handling with detailed debugging
                 if msg.get('method') == "MESSAGE" and msg.get('custom_data', {}).get("PING"):
-                    if time.time() - last_pong_time >= pong_delay:
-                        pong_msg = self.build_sip_message("MESSAGE", client_name, {"PONG": "true"})
-                        # Frame-basiertes Senden für Konsistenz
-                        send_frame(client_socket, pong_msg)
-                        last_pong_time = time.time()
-                        print(f"[PING] Pong sent to {client_name}")
+                    ping_counter += 1
+                    current_time = time.time()
+                    time_since_last_pong = current_time - last_pong_time
+                    
+                    print(f"\n[DEBUG][PING-PONG][{ping_counter}] PING RECEIVED from {client_name}")
+                    print(f"[DEBUG][PING-PONG] Current time: {current_time}")
+                    print(f"[DEBUG][PING-PONG] Last pong time: {last_pong_time}")
+                    print(f"[DEBUG][PING-PONG] Time since last pong: {time_since_last_pong:.2f}s")
+                    
+                    if time_since_last_pong >= pong_delay:
+                        pong_counter += 1
+                        print(f"[DEBUG][PING-PONG][{pong_counter}] Sending PONG (delay threshold reached)")
+                        
+                        pong_msg = self.build_sip_message("MESSAGE", client_name, {
+                            "PONG": "true",
+                            "TIMESTAMP": current_time,
+                            "PONG_COUNTER": pong_counter
+                        })
+                        
+                        try:
+                            with self.client_send_lock:
+                                print(f"[DEBUG][PING-PONG] Acquired send lock for PONG")
+                                client_socket.settimeout(10.0)
+                                send_frame(client_socket, pong_msg)
+                                last_pong_time = current_time
+                                print(f"[DEBUG][PING-PONG] PONG sent successfully (counter={pong_counter})")
+                        except Exception as e:
+                            print(f"[ERROR][PING-PONG] Failed to send PONG: {type(e).__name__}: {str(e)}")
+                            traceback.print_exc()
+                    else:
+                        print(f"[DEBUG][PING-PONG] Not sending PONG (delay not reached: {time_since_last_pong:.2f}s < {pong_delay}s)")
+                
                 elif msg.get('custom_data', {}).get('CLIENT_SECRET'):
-                    encrypted_secret = base64.b64decode(msg['custom_data']['CLIENT_SECRET'])
-                    self.clients[client_id]['aes_secret'] = encrypted_secret
+                    print("[DEBUG][handle_communication_loop] Handling CLIENT_SECRET")
+                    try:
+                        encrypted_secret = base64.b64decode(msg['custom_data']['CLIENT_SECRET'])
+                        self.clients[client_id]['aes_secret'] = encrypted_secret
+                        print("[DEBUG][handle_communication_loop] Stored CLIENT_SECRET successfully")
+                    except Exception as e:
+                        print(f"[ERROR][handle_communication_loop] Failed to handle CLIENT_SECRET: {str(e)}")
                         
             except socket.timeout:
+                #print("[DEBUG][handle_communication_loop] Socket timeout (normal for non-blocking)")
                 continue
             except Exception as e:
-                print(f"Kommunikationsfehler: {str(e)}")
+                print(f"\n[ERROR][handle_communication_loop] Communication error: {type(e).__name__}: {str(e)}")
+                traceback.print_exc()
                 break
+        
+        print(f"[DEBUG][handle_communication_loop] EXIT for client: {client_name}")
     def handle_client(self, client_socket):
         client_address = client_socket.getpeername()
         print(f"\n[Server] Neue Verbindung von {client_address}")
