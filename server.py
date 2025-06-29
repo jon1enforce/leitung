@@ -765,16 +765,12 @@ class Server:
                 print(f"Custom data contents: {msg.get('custom_data', {})}")  # Sollte {"PING": "true"} sein
                 print(f"Message object full structure:\n{json.dumps(msg, indent=2, default=str)}")
                 
-                # Überarbeitete Bedingung mit Fallbacks
-                is_message = msg.get('method') == "MESSAGE"
-                contains_ping = ("PING: true" in msg.get('raw_body', '').upper() or 
-                                msg.get('custom_data', {}).get("PING", "").upper() == "TRUE")
                 
                 print(f"\nCondition check results:")
                 print(f"- is_message: {is_message}")
                 print(f"- contains_ping: {contains_ping}")
 
-                if is_message and contains_ping:
+                if msg.get('method') == "MESSAGE" and msg.get('headers', {}).get("PING") == "true":
                     ping_counter += 1
                     current_time = time.time()
                     time_since_last_pong = current_time - last_pong_time
