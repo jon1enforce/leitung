@@ -690,66 +690,48 @@ class Server:
             raise
     
     def handle_communication_loop(self, client_name, client_socket):
-        """Hauptkommunikationsschleife mit verbessertem Ping-Pong"""
-        client_id = next((k for k, v in self.clients.items() if v.get('name') == client_name), None)
-        if not client_id:
-            print(f"[ERROR] Client {client_name} not found in clients dict")
-            return
-    
-        last_ping_time = 0
-        ping_interval = 60  # Sekunden zwischen Pings
-        timeout = 70  # Sekunden bis Timeout
-    
+        """Original version with improved ping-pong handling"""
+        last_pong_time = time.time()
+        pong_timeout = 70
+        
         while True:
             try:
-                # 1. Regelmäßig Ping senden
-                current_time = time.time()
-                if current_time - last_ping_time >= ping_interval:
+                client_socket.settimeout(1.0)
+                data = recv_frame(client_socket)
+                
+                if not data:
+                    break
+                    
+                msg = self.parse_sip_message(data)
+                if not msg:
+                    continue
+                    
+                # Handle PONG responses
+                if msg.get('method') == "MESSAGE" and msg.get('custom_data', {}).get("PONG"):
+                    last_pong_time = time.time()
+                    print(f"[PONG] Received from {client_name}")
+                    continue
+                    
+                # Handle other messages
+                print(f"[MSG] Received from {client_name}: {msg.get('method')}")
+                
+                # Check timeout
+                if time.time() - last_pong_time > pong_timeout:
+                    print(f"[TIMEOUT] No pong from {client_name} for {pong_timeout}s")
+                    break
+                    
+            except socket.timeout:
+                # Send ping periodically
+                if time.time() - last_pong_time > 60:  # Send ping every 60s
                     ping_msg = self.build_sip_message("MESSAGE", client_name, {"PING": "1"})
                     with self.client_send_lock:
                         send_frame(client_socket, ping_msg)
-                    self.clients[client_id]['last_ping'] = current_time
-                    last_ping_time = current_time
                     print(f"[PING] Sent to {client_name}")
-    
-                # 2. Auf Nachrichten warten
-                client_socket.settimeout(1)  # Kurzes Timeout für häufige Checks
-                data = recv_frame(client_socket)
-                
-                if data:
-                    msg = self.parse_sip_message(data)
-                    if msg:
-                        # Pong verarbeiten
-                        if msg.get('custom_data', {}).get("PONG"):
-                            self.clients[client_id]['last_pong'] = time.time()
-                            print(f"[PONG] Received from {client_name}")
-                        
-                        # Andere Nachrichten verarbeiten
-                        elif msg.get('method') != "MESSAGE" or not msg.get('custom_data', {}).get("PING"):
-                            print(f"[MSG] Received from {client_name}: {msg.get('method')}")
-    
-                # 3. Timeout prüfen
-                if 'last_ping' in self.clients[client_id] and 'last_pong' in self.clients[client_id]:
-                    if self.clients[client_id]['last_ping'] > self.clients[client_id]['last_pong']:
-                        if time.time() - self.clients[client_id]['last_ping'] > timeout:
-                            print(f"[TIMEOUT] Client {client_name} did not respond")
-                            break
-    
-            except socket.timeout:
                 continue
-            except ConnectionError:
-                print(f"[CONNECTION] Client {client_name} disconnected")
-                break
+                
             except Exception as e:
-                print(f"[ERROR] Communication error with {client_name}: {str(e)}")
+                print(f"Communication error with {client_name}: {str(e)}")
                 break
-    
-        # Aufräumen
-        self.remove_client(client_id)
-        try:
-            client_socket.close()
-        except:
-            pass
     def handle_client(self, client_socket):
         client_address = client_socket.getpeername()
         print(f"\n[Server] Neue Verbindung von {client_address}")
