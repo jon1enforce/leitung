@@ -495,59 +495,62 @@ def build_sip_message(method, recipient, custom_data={}, from_server=False, host
         f"Content-Length: {len(body)}\r\n\r\n"
         f"{body}"
     )
+def validate_pong(pong_data):
+    required_fields = ['PONG', 'TIMESTAMP', 'COUNTER']
+    if not all(field in pong_data.get('headers', {}) for field in required_fields):
+        return False
+    
+    try:
+        timestamp = float(pong_data['headers']['TIMESTAMP'])
+        counter = int(pong_data['headers']['COUNTER'])
+        
+        # Validate timestamp is recent (within 60 seconds)
+        if abs(time.time() - timestamp) > 60:
+            return False
+            
+        return True
+    except (ValueError, KeyError):
+        return False
 def parse_sip_message(message):
-    """Original-Implementierung mit Merkle-Tree-Support"""
     if isinstance(message, bytes):
-        message = message.decode('utf-8')
+        try:
+            message = message.decode('utf-8')
+        except UnicodeDecodeError:
+            return None
     
-    message = message.strip()
-    if not message:
-        return None
-    
-    lines = [line.strip() for line in message.replace('\r\n', '\n').split('\n') if line.strip()]
+    lines = message.split('\r\n')
     result = {'headers': {}, 'custom_data': {}}
     
-    # Erste Zeile (Request/Response-Line)
-    first_line = lines[0]
-    if first_line.startswith('SIP/2.0'):
-        parts = first_line.split(maxsplit=2)
-        if len(parts) >= 2:
-            result['status_code'] = parts[1]
-            if len(parts) > 2:
-                result['status_message'] = parts[2]
+    # Parse first line
+    if lines[0].startswith('SIP/2.0'):
+        result['status_code'] = lines[0].split()[1]
     else:
-        result['method'] = first_line.split()[0]
+        result['method'] = lines[0].split()[0]
     
-    # Header parsen
-    for line in lines[1:]:
-        if ':' in line:
-            key, val = line.split(':', 1)
-            key = key.strip().upper()
-            val = val.strip()
-            
-            if key == "CONTENT-LENGTH":
-                try:
-                    result['content_length'] = int(val)
-                except ValueError:
-                    pass
-            elif key not in result['headers']:
-                result['headers'][key] = val
+    # Parse headers
+    body_start = len(lines)
+    for i, line in enumerate(lines[1:]):
+        if not line.strip():
+            body_start = i + 2
+            break
+        if ': ' in line:
+            key, val = line.split(': ', 1)
+            result['headers'][key.upper()] = val.strip()
     
-    # Body verarbeiten (für MERKLE_ROOT und ALL_KEYS)
-    if 'content_length' in result and result['content_length'] > 0:
-        body_lines = lines[len(result['headers']) + 1:]
-        body = '\n'.join(body_lines)
-        
+    # Parse body
+    if len(lines) > body_start:
+        body = '\r\n'.join(lines[body_start:])
         try:
+            result['custom_data'] = json.loads(body)
+        except json.JSONDecodeError:
+            # Fallback to key:value parsing
             result['custom_data'] = dict(
-                line.split(':', 1)
-                for line in body.splitlines()
-                if ':' in line
+                line.split(': ', 1)
+                for line in body.split('\r\n')
+                if ': ' in line
             )
-        except Exception:
-            result['body'] = body
     
-    return result if ('method' in result or 'status_code' in result) else None
+    return result
 def connection_loop(client_socket, server_ip, message_handler=None):
     """
     Erweiterte Verbindungsschleife mit:
