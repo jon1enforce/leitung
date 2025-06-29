@@ -848,56 +848,122 @@ class SecureVault:
         self.gen_lib = None
         self._load_libraries()
         
+def _load_libraries(self):
+    """Lädt alle benötigten Bibliotheken für die aktuelle Architektur mit erweiterter ARM64-Erkennung"""
+    arch = platform.machine().lower()
+    print(f"[DEBUG] Detected architecture: {arch}")  # Debug-Ausgabe
+
+    # Erweitertes Mapping für ARM-Architekturen
+    ARCH_ALIASES = {
+        'aarch64': 'arm64',
+        'armv8l': 'arm64',
+        'armv8b': 'arm64',
+        'arm64': 'arm64',
+        'armv7l': 'armv7',
+        'armv7': 'armv7'
+    }
+    
+    # Normalisiere die Architekturbezeichnung
+    normalized_arch = ARCH_ALIASES.get(arch, arch)
+    print(f"[DEBUG] Normalized architecture: {normalized_arch}")
+
+    # Bibliotheks-Mapping mit Prioritäten
+    LIBRARY_MAP = {
+        'arm64': {
+            'vault': 'libauslagern_arm64.so',
+            'generator': 'libsecuregen_arm64.so',
+            'fallback': 'libauslagern_armv7.so'  # Fallback für ARMv7-Kompatibilität
+        },
+        'armv7': {
+            'vault': 'libauslagern_armv7.so',
+            'generator': 'libsecuregen_armv7.so'
+        },
+        'x86_64': {
+            'vault': 'libauslagern_x86_64.so',
+            'generator': 'libsecuregen_x86_64.so'
+        }
+    }
+
+        # Lade Bibliotheken mit Fallback-Mechanismus
     def _load_libraries(self):
-        """Lädt alle benötigten Bibliotheken für die aktuelle Architektur"""
+        """Lädt alle benötigten Bibliotheken für die aktuelle Architektur mit erweiterter ARM64-Erkennung"""
         arch = platform.machine().lower()
-        
-        # Mapping für die Auslagerungsbibliotheken
-        vault_lib_mapping = {
-            ('x86_64', 'amd64'): "libauslagern_x86_64.so",
-            ('aarch64', 'arm64'): "libauslagern_arm64.so",
-            ('armv7l',): "libauslagern_armv7.so"
+        print(f"[DEBUG] Detected architecture: {arch}")  # Debug-Ausgabe
+    
+        # Erweitertes Mapping für ARM-Architekturen
+        ARCH_ALIASES = {
+            'aarch64': 'arm64',
+            'armv8l': 'arm64',
+            'armv8b': 'arm64',
+            'arm64': 'arm64',
+            'armv7l': 'armv7',
+            'armv7': 'armv7'
         }
         
-        # Mapping für die Generierungsbibliotheken
-        gen_lib_mapping = {
-            ('x86_64', 'amd64'): "libsecuregen_x86_64.so",
-            ('aarch64', 'arm64'): "libsecuregen_arm64.so",
-            ('armv7l',): "libsecuregen_armv7.so"
+        # Normalisiere die Architekturbezeichnung
+        normalized_arch = ARCH_ALIASES.get(arch, arch)
+        print(f"[DEBUG] Normalized architecture: {normalized_arch}")
+    
+        # Bibliotheks-Mapping mit Prioritäten
+        LIBRARY_MAP = {
+            'arm64': {
+                'vault': 'libauslagern_arm64.so',
+                'generator': 'libsecuregen_arm64.so',
+                'fallback': 'libauslagern_armv7.so'  # Fallback für ARMv7-Kompatibilität
+            },
+            'armv7': {
+                'vault': 'libauslagern_armv7.so',
+                'generator': 'libsecuregen_armv7.so'
+            },
+            'x86_64': {
+                'vault': 'libauslagern_x86_64.so',
+                'generator': 'libsecuregen_x86_64.so'
+            }
         }
+    
+            # Lade Bibliotheken mit Fallback-Mechanismus
+            def load_library(lib_type):
+                if normalized_arch not in LIBRARY_MAP:
+                    raise RuntimeError(f"Unsupported architecture: {arch} (normalized: {normalized_arch})")
         
-        # Lade Auslagerungsbibliothek
-        for arch_patterns, lib_name in vault_lib_mapping.items():
-            if arch in arch_patterns:
-                try:
-                    self.lib = ctypes.CDLL(f"./{lib_name}")
-                    print(f"Successfully loaded vault lib: {lib_name}")
-                    break
-                except Exception as e:
-                    print(f"Error loading vault lib {lib_name}: {str(e)}")
-        else:
-            raise RuntimeError(f"Unsupported architecture for vault: {arch}")
+                # Versuche primäre Bibliothek
+                primary_lib = LIBRARY_MAP[normalized_arch].get(lib_type)
+                if primary_lib:
+                    try:
+                        lib = ctypes.CDLL(f"./{primary_lib}")
+                        print(f"Successfully loaded {lib_type} lib: {primary_lib}")
+                        return lib
+                    except Exception as e:
+                        print(f"Error loading primary {lib_type} lib {primary_lib}: {str(e)}")
         
-        # Lade Generierungsbibliothek
-        for arch_patterns, lib_name in gen_lib_mapping.items():
-            if arch in arch_patterns:
-                try:
-                    self.gen_lib = ctypes.CDLL(f"./{lib_name}")
-                    print(f"Successfully loaded generator lib: {lib_name}")
-                    break
-                except Exception as e:
-                    print(f"Error loading generator lib {lib_name}: {str(e)}")
-        else:
-            raise RuntimeError(f"Unsupported architecture for generator: {arch}")
+                # Fallback für ARM64
+                if normalized_arch == 'arm64' and lib_type == 'vault':
+                    fallback_lib = LIBRARY_MAP['arm64'].get('fallback')
+                    try:
+                        lib = ctypes.CDLL(f"./{fallback_lib}")
+                        print(f"Using fallback {lib_type} lib: {fallback_lib}")
+                        return lib
+                    except Exception as e:
+                        print(f"Error loading fallback {lib_type} lib {fallback_lib}: {str(e)}")
         
-        # Funktionen definieren
-        self.lib.vault_create.restype = ctypes.c_void_p
-        self.lib.vault_load.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte)]
-        self.lib.vault_retrieve.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte)]
-        self.lib.vault_wipe.argtypes = [ctypes.c_void_p]
+                raise RuntimeError(f"Failed to load {lib_type} library for architecture {arch}")
         
-        self.gen_lib.generate_secret.argtypes = [ctypes.POINTER(ctypes.c_ubyte)]
-        self.gen_lib.generate_secret.restype = None
+            try:
+                # Lade Bibliotheken
+                self.lib = load_library('vault')
+                self.gen_lib = load_library('generator')
+        
+                # Funktionen definieren
+                self.lib.vault_create.restype = ctypes.c_void_p
+                self.lib.vault_load.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte)]
+                self.lib.vault_retrieve.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ubyte)]
+                self.lib.vault_wipe.argtypes = [ctypes.c_void_p]
+                
+                self.gen_lib.generate_secret.argtypes = [ctypes.POINTER(ctypes.c_ubyte)]
+                self.gen_lib.generate_secret.restype = None
+        
+            except Exception as e:
+                raise RuntimeError(f"Critical library loading error: {str(e)}")
     
     def create(self) -> bool:
         """Erstellt einen neuen Vault"""
