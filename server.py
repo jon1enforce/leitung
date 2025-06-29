@@ -730,7 +730,7 @@ class Server:
         while True:
             try:
                 # Set short timeout to allow periodic checks
-                client_socket.settimeout(0.1)
+                client_socket.settimeout(60)
                 
                 print(f"[DEBUG][handle_communication_loop][{time.time()}] Waiting for data...")
                 data = client_socket.recv(4096)
