@@ -712,12 +712,12 @@ class Server:
                     # Erweiterte Ping-Erkennung mit mehr Formaten
                     ping_value = str(msg.get('custom_data', {}).get("PING", "")).lower()
                     if ping_value in ("true", "1", "yes"):
-                    if time.time() - last_pong_time >= pong_delay:
-                        pong_msg = self.build_sip_message("MESSAGE", client_name, {"PONG": "true"})
-                        # Frame-basiertes Senden für Konsistenz
-                        send_frame(client_socket, pong_msg)
-                        last_pong_time = time.time()
-                        print(f"[PING] Responded to {client_name}")
+                        if time.time() - last_pong_time >= pong_delay:
+                            pong_msg = self.build_sip_message("MESSAGE", client_name, {"PONG": "true"})
+                            # Frame-basiertes Senden für Konsistenz
+                            send_frame(client_socket, pong_msg)
+                            last_pong_time = time.time()
+                            print(f"[PING] Responded to {client_name}")
                 elif msg.get('custom_data', {}).get('CLIENT_SECRET'):
                     encrypted_secret = base64.b64decode(msg['custom_data']['CLIENT_SECRET'])
                     self.clients[client_id]['aes_secret'] = encrypted_secret
