@@ -550,49 +550,51 @@ def parse_sip_message(message):
     
     return result if ('method' in result or 'status_code' in result) else None
 def connection_loop(client_socket, server_ip, message_handler=None):
-    """Original reliable implementation with ping support"""
-    last_activity = time.time()
+    """
+    Erweiterte Verbindungsschleife mit:
+    - Ping/Pong-Mechanismus (bestehende Funktionalität)
+    - Nachrichtenweiterleitung an optionalen Handler
+    """
+    ping_interval = 60
+    pong_timeout = 70
     
     while True:
         try:
-            # Set reasonable timeout
-            client_socket.settimeout(60)
+            # 1. Ping senden (bestehende Logik)
+            ping_msg = build_sip_message("MESSAGE", server_ip, {"PING": "true"})
+            client_socket.sendall(ping_msg.encode('utf-8'))
             
-            # Receive data
-            data = recv_frame(client_socket)
-            if not data:
-                print("Server closed connection")
-                break
-
-            # Handle PING requests
-            if isinstance(data, str) and "PING" in data:
-                pong_msg = build_sip_message("MESSAGE", server_ip, {"PONG": "1"})
-                client_socket.sendall(pong_msg.encode('utf-8'))
-                print("Responded to ping")
-                continue
-
-            # Process other messages
-            if message_handler:
-                message_handler(data)
-            last_activity = time.time()
-
-        except socket.timeout:
-            # Send ping if no activity for 50s
-            if time.time() - last_activity > 50:
-                ping_msg = build_sip_message("MESSAGE", server_ip, {"PING": "1"})
-                client_socket.sendall(ping_msg.encode('utf-8'))
-                print("Sent ping to server")
-                last_activity = time.time()
-            continue
+            # 2. Auf Antwort warten mit erweiterter Verarbeitung
+            client_socket.settimeout(pong_timeout)
+            try:
+                response = client_socket.recv(4096)
+                if not response:
+                    print("Leere Antwort vom Server")
+                    continue
+                    
+                # Falls ein Message-Handler existiert, Nachricht weiterleiten
+                if message_handler:
+                    message_handler(response)
+                else:
+                    # Originale Ping/Pong-Verarbeitung
+                    pong_data = parse_sip_message(response)
+                    if pong_data:
+                        pong_value = (pong_data.get('custom_data', {}).get("PONG", "") or 
+                                     pong_data.get('headers', {}).get("PONG", ""))
+                        if str(pong_value).lower() in ("true", "1", "yes"):
+                            print(f"Pong erhalten um {time.strftime('%H:%M:%S')}")
+                            
+            except socket.timeout:
+                print(f"Timeout: Kein Pong innerhalb von {pong_timeout}s")
+                
+            time.sleep(ping_interval)
             
-        except ConnectionResetError:
-            print("Server reset connection")
-            break
+        except ConnectionError as e:
+            print(f"Verbindungsfehler: {str(e)}")
+            return False
         except Exception as e:
-            print(f"Connection error: {str(e)}")
-            break
-
-    client_socket.close()
+            print(f"Unerwarteter Fehler: {str(e)}")
+            continue
 def extract_server_public_key(sip_data, raw_response=None):
     """
     Extrahiert den Server-Public-Key aus SIP-Daten mit mehreren Fallbacks
