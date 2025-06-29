@@ -717,6 +717,15 @@ class Server:
         except Exception as e:
             print(f"Fehler beim Merkle-Tree: {str(e)}")
             raise
+    def _is_socket_alive(self, sock):
+        """Prüft ob Socket noch verbunden ist"""
+        try:
+            sock.getpeername()
+            # Testet ob Socket schreibbar ist
+            sock.send(b'')  # Leeres Test-Packet
+            return True
+        except (OSError, ConnectionError, BrokenPipeError):
+            return False
     
     def handle_communication_loop(self, client_name, client_socket):
         """Handles ongoing communication with detailed PING-PONG debugging"""
