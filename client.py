@@ -550,53 +550,49 @@ def parse_sip_message(message):
     
     return result if ('method' in result or 'status_code' in result) else None
 def connection_loop(client_socket, server_ip, message_handler=None):
-    """Original connection loop with fixed ping-pong"""
-    ping_interval = 60
-    last_ping_time = 0
+    """Original reliable implementation with ping support"""
+    last_activity = time.time()
     
     while True:
         try:
-            # Send ping periodically
-            if time.time() - last_ping_time > ping_interval:
-                ping_msg = build_sip_message("MESSAGE", server_ip, {"PING": "1"})
-                client_socket.sendall(ping_msg.encode('utf-8'))
-                last_ping_time = time.time()
-                print(f"[PING] Sent to server")
+            # Set reasonable timeout
+            client_socket.settimeout(60)
             
-            # Wait for response with timeout
-            client_socket.settimeout(70)  # Matches server's pong_timeout
-            response = client_socket.recv(4096)
-            
-            if not response:
-                print("Empty response from server")
-                continue
-                
+            # Receive data
+            data = recv_frame(client_socket)
+            if not data:
+                print("Server closed connection")
+                break
+
             # Handle PING requests
-            if b"PING" in response:
+            if isinstance(data, str) and "PING" in data:
                 pong_msg = build_sip_message("MESSAGE", server_ip, {"PONG": "1"})
                 client_socket.sendall(pong_msg.encode('utf-8'))
-                print(f"[PONG] Sent to server")
+                print("Responded to ping")
                 continue
-                
-            # Forward other messages to handler
+
+            # Process other messages
             if message_handler:
-                try:
-                    if isinstance(response, bytes):
-                        response = response.decode('utf-8')
-                    message_handler(response)
-                except Exception as e:
-                    print(f"Error in message handler: {str(e)}")
-                    
+                message_handler(data)
+            last_activity = time.time()
+
         except socket.timeout:
-            print("Timeout waiting for server response")
+            # Send ping if no activity for 50s
+            if time.time() - last_activity > 50:
+                ping_msg = build_sip_message("MESSAGE", server_ip, {"PING": "1"})
+                client_socket.sendall(ping_msg.encode('utf-8'))
+                print("Sent ping to server")
+                last_activity = time.time()
             continue
-        except ConnectionError as e:
-            print(f"Connection error: {str(e)}")
+            
+        except ConnectionResetError:
+            print("Server reset connection")
             break
         except Exception as e:
-            print(f"Unexpected error: {str(e)}")
+            print(f"Connection error: {str(e)}")
             break
 
+    client_socket.close()
 def extract_server_public_key(sip_data, raw_response=None):
     """
     Extrahiert den Server-Public-Key aus SIP-Daten mit mehreren Fallbacks
