@@ -25,6 +25,21 @@ from PySide2.QtQuick import QQuickView
 from PySide2.QtQml import QQmlApplicationEngine
 from PySide2.QtWidgets import QApplication, QMessageBox
 
+try:
+    hashlib.sha3_256(b'').digest()  # Test ob verfügbar
+    USE_PYSHA3 = False
+except (AttributeError, ValueError):
+    # Fallback auf pysha3 für Python 3.5
+    try:
+        import sha3  # pysha3 Paket
+        USE_PYSHA3 = True
+    except ImportError:
+        raise ImportError(
+            "SHA3 benötigt 'pysha3' unter Python 3.5.\n"
+            "Installieren mit: pip install pysha3"
+        )
+
+
 
 BUFFER_SIZE = 4096
 
@@ -51,7 +66,7 @@ def load_client_name():
                 return file.read().strip()
         return ""
     except Exception as e:
-        print(f"Fehler beim Namen laden: {e}")
+        print("Fehler beim Namen laden: {}".format(e))
         return ""
 def send_frame(sock, data):
     """Verschickt Daten mit Längenprefix"""
@@ -81,8 +96,8 @@ def recv_frame(sock, timeout=30):
                 raise ConnectionError("Connection closed prematurely")
             received.extend(chunk)
         
-        print(f"\n[FRAME DEBUG] Received {length} bytes")
-        print(f"First 32 bytes (hex): {' '.join(f'{b:02x}' for b in received[:32])}")
+        print("\n[FRAME DEBUG] Received {} bytes".format(length))
+        print("First 32 bytes (hex): {}".format(' '.join('{:02x}'.format(b) for b in received[:32])))
         
         # Try UTF-8 decode for SIP messages
         try:
@@ -128,7 +143,27 @@ def normalize_key(key):
 
 
 def quantum_safe_hash(data):
-    return hashlib.sha3_256(data.encode('utf-8')).hexdigest()
+    """
+    Garantiert konsistenten SHA3-256-Hash:
+    - Automatische Handhabung von Strings und Bytes
+    - Nutzt pysha3 als Fallback für Python 3.5
+    - Klare Fehlermeldung bei fehlender SHA-3-Implementierung
+    """
+    if isinstance(data, str):
+        data = data.encode('utf-8')  # Nur einmal encoden!
+    
+    try:
+        if USE_PYSHA3 == False:
+            return hashlib.sha3_256(data).hexdigest()
+        else:
+            import sha3  # pysha3-Backup
+            return sha3.sha3_256(data).hexdigest()
+    except ImportError as e:
+        raise RuntimeError(
+            "SHA3-256 benötigt 'pysha3' unter Python 3.5.\n"
+            "Installieren mit: pip install pysha3\n"
+            f"Originalfehler: {str(e)}"
+        ) from e
 
 def build_merkle_tree(data_blocks):
     data_blocks = list(data_blocks)
@@ -176,21 +211,21 @@ def verify_merkle_integrity(all_keys, received_root_hash):
 
     # 3. Zusammenführung mit Trennzeichen
     merged = "|||".join(normalized_keys)
-    print(f"[Client] Merged keys (len={len(merged)}): {merged[:100]}...")
+    print("[Client] Merged keys (len={}): {}...".format(len(merged), merged[:100]))
 
     # 4. Merkle Root berechnen
     calculated_hash = build_merkle_tree([merged])
-    print(f"[Client] Calculated hash: {calculated_hash}")
-    print(f"Received hash:   {received_root_hash}")
+    print("[Client] Calculated hash: {}".format(calculated_hash))
+    print("Received hash: {}".format(received_root_hash))
     
     return calculated_hash == received_root_hash
 
 def debug_print_key(key_type, key_data):
     """Print detailed key information"""
-    print(f"\n=== {key_type.upper()} KEY DEBUG ===")
+    print("\n=== {} KEY DEBUG ===".format(key_type.upper()))
     print(f"Length: {len(key_data)} bytes")
     print(f"First 32 bytes (hex): {' '.join(f'{b:02x}' for b in key_data[:32])}")
-    print(f"First 32 bytes (ascii): {key_data[:32].decode('ascii', errors='replace')}")
+    print("[DEBUG] First 32 bytes (ascii): {}".format(key_data[:32].decode('ascii', errors='replace')))
     if len(key_data) > 32:
         print(f"Last 32 bytes (hex): {' '.join(f'{b:02x}' for b in key_data[-32:])}")
     print("="*50)
@@ -202,7 +237,9 @@ def validate_key_pair(private_key, public_key):
         test_msg = b"TEST_MESSAGE_" + os.urandom(16)
         
         # Encrypt with public key
-        pub_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(public_key))
+        # Für Python 3.5 mit M2Crypto 0.38.0:
+        bio = BIO.MemoryBuffer(public_key)
+        pub_key = RSA.load_pub_key_bio(bio._ptr())  # _ptr() gibt den internen BIO-Pointer zurück
         encrypted = pub_key.public_encrypt(test_msg, RSA.pkcs1_padding)
         
         # Decrypt with private key
@@ -258,13 +295,25 @@ def generate_secret():
     return secret
 
 # Funktion zur Generierung von dynamischem Padding mit SHA-3, quantesicher:
+
 def generate_dynamic_padding(data, key):
-    # Verwende SHA-3, um eine schlüsselabhängige Padding-Länge zu generieren
-    sha3 = hashlib.sha3_256()
-    sha3.update(key)  # Der Schlüssel wird als Seed für SHA-3 verwendet
-    padding_length = (sha3.digest()[0] % 16) + 1  # Mindestens 1 Byte, maximal 16 Bytes
-    padding = bytes([padding_length] * padding_length)
-    return padding
+    """
+    Generiert dynamisches Padding mit SHA3-256:
+    - Konsistente Ergebnisse über Python-Versionen
+    - Automatische String/Byte-Handhabung
+    - 1-16 Byte Padding-Länge
+    """
+    if isinstance(key, str):
+        key = key.encode('utf-8')
+    
+    # SHA3-256 Hash berechnen
+    if USE_PYSHA3:
+        hash_obj = sha3.sha3_256(key)
+    else:
+        hash_obj = hashlib.sha3_256(key)
+    
+    padding_length = (hash_obj.digest()[0] % 16) + 1
+    return bytes([padding_length] * padding_length)
 
 # Funktion zum Hinzufügen von dynamischem Padding
 def add_dynamic_padding(data, key):
@@ -305,7 +354,7 @@ def decrypt_phonebook_data(encrypted_data, private_key_pem):
         return json.loads(decrypted_data.decode('utf-8'))
         
     except Exception as e:
-        print(f"Decryption error: {e}")
+        print("Decryption error: {}".format(e))
         raise
 
 def decrypt_audio_chunk(chunk, key, seed):
@@ -685,7 +734,7 @@ def start_connection(server_ip, server_port, client_name, client_socket, message
                         all_keys = json.loads(merkle_data['custom_data']['ALL_KEYS'])
                         print(f"[Client] Received {len(all_keys)} keys from server")
                     except json.JSONDecodeError as e:
-                        print(f"[Client] Error parsing keys: {e}")
+                        print("[Client] Error parsing keys: {}".format(e))
             
                 if 'MERKLE_ROOT' in merkle_data['custom_data']:
                     merkle_root = merkle_data['custom_data']['MERKLE_ROOT']
@@ -803,7 +852,7 @@ def send_audio_stream(key, seed, target_ip, target_port):
                 encrypted_chunk = encrypt_audio_chunk(chunk, key, seed)
                 s.sendall(encrypted_chunk)
         except Exception as e:
-            print(f"Fehler beim Senden von Audio: {e}")
+            print("Fehler beim Senden von Audio: {}".format(e))
         finally:
             stream.stop_stream()
             stream.close()
@@ -827,7 +876,7 @@ def receive_audio_stream(key, seed):
                 decrypted_chunk = decrypt_audio_chunk(encrypted_chunk, key, iv)
                 stream.write(decrypted_chunk)
         except Exception as e:
-            print(f"Fehler beim Empfangen von Audio: {e}")
+            print("Fehler beim Empfangen von Audio: {}".format(e))
         finally:
             stream.stop_stream()
             stream.close()
@@ -883,7 +932,7 @@ class SecureVault:
         self.vault = self.lib.vault_create()
         return bool(self.vault)
     
-    def generate_secret(self) -> Optional[int]:
+    def generate_secret(self):
         """Generiert ein 48-Byte Geheimnis und gibt nur die Speicheradresse zurück"""
         if not self.gen_lib:
             return None
@@ -891,14 +940,14 @@ class SecureVault:
         self.gen_lib.generate_secret(buf)
         return ctypes.addressof(buf)
     
-    def store(self, secret_ptr: int) -> bool:
+    def store(self, secret_ptr):
         """Speichert ein Geheimnis (nur über Speicheradresse)"""
         if not self.vault or not secret_ptr:
             return False
         self.lib.vault_load(ctypes.c_void_p(self.vault), ctypes.c_void_p(secret_ptr))
         return True
     
-    def retrieve(self) -> Optional[int]:
+    def retrieve(self):
         """Holt das Geheimnis zurück (gibt nur Speicheradresse zurück)"""
         if not self.vault:
             return None
@@ -1019,7 +1068,7 @@ class PHONEBOOK(QObject):
             self.aes_key = secret[16:48]
             
         except Exception as e:
-            print(f"Fehler beim Senden des Geheimnisses: {e}")
+            print("Fehler beim Senden des Geheimnisses: {}".format(e))
 
     @Slot(str, str)
     def on_connect_click(self, server_ip, server_port):
@@ -1094,7 +1143,7 @@ class PHONEBOOK(QObject):
                 phonebook_data = json.loads(response)
                 self.update_phonebook(phonebook_data)
         except Exception as e:
-            self._connection_status = f"Fehler beim Laden des Telefonbuchs: {e}"
+            self._connection_status = "Fehler beim Laden des Telefonbuchs: {}".format(e)
             self.connectionStatusChanged.emit(self._connection_status)
 
     def update_phonebook(self, phonebook_data):
@@ -1127,7 +1176,7 @@ class PHONEBOOK(QObject):
             self._call_status = "Anruf gestartet"
             self.callStatusChanged.emit(self._call_status)
         except Exception as e:
-            self._call_status = f"Anruf fehlgeschlagen: {e}"
+            self._call_status = "Anruf fehlgeschlagen: {}".format(e)
             self.callStatusChanged.emit(self._call_status)
 
     @Slot()
@@ -1185,7 +1234,7 @@ class PHONEBOOK(QObject):
             messagebox.showinfo("Anruf", f"Verbunden mit {caller_name}")
             
         except Exception as e:
-            print(f"Fehler bei Anrufannahme: {e}")
+            print("Fehler bei Anrufannahme: {}".format(e))
             if 'CALLER_NAME' in sip_data['custom_data']:
                 # Sende Ablehnung
                 response = self.build_sip_message(
@@ -1250,7 +1299,7 @@ class PHONEBOOK(QObject):
     def handle_server_message(self, raw_data):
         """Verarbeitet eingehende Nachrichten mit verbessertem Debugging"""
         print("\n=== CLIENT MESSAGE HANDLING START ===")
-        print(f"[DEBUG] Raw data type: {type(raw_data)}, length: {len(raw_data)}")
+        print("[DEBUG] Raw data type: {}, length: {}".format(type(raw_data), len(raw_data)))
         
         try:
             # 1. Versuche als SIP-Nachricht zu parsen
@@ -1291,13 +1340,12 @@ class PHONEBOOK(QObject):
         try:
             # Validate minimum length
             if len(encrypted_data) < 512:
-                print(f"[ERROR] Data too short ({len(encrypted_data)} bytes)")
+                print("[ERROR] Data too short ({} bytes)".format(len(encrypted_data)))
                 return False
                 
             encrypted_secret = encrypted_data[:512]
             encrypted_phonebook = encrypted_data[512:]
-            
-            print(f"[DEBUG] Encrypted secret (512 bytes): {encrypted_secret[:16].hex(' ')}...")
+            print("[DEBUG] Encrypted secret (512 bytes): {}...".format(' '.join('{:02x}'.format(b) for b in encrypted_secret[:16])))
             print(f"[DEBUG] Encrypted phonebook ({len(encrypted_phonebook)} bytes): {encrypted_phonebook[:16].hex(' ')}...")
     
             # Load private key
@@ -1371,7 +1419,8 @@ class PHONEBOOK(QObject):
                         encrypted_phonebook = base64.b64decode(phonebook_part)
                         return self._process_encrypted_phonebook(encrypted_secret + encrypted_phonebook)
                     except binascii.Error as e:
-                        print(f"[ERROR] Base64 decode failed: {e}")
+                        print("[ERROR] Base64 decode failed: {}".format(e))
+
             
             # Fallback to direct processing if no SIP headers found
             if len(framed_data) >= 512:
@@ -1433,7 +1482,7 @@ class PHONEBOOK(QObject):
             secret = decrypted_secret[11:59]  # 48 Bytes
             iv = secret[:16]
             aes_key = secret[16:]
-            print(f"[DEBUG] IV: {iv.hex()}")
+            print("[DEBUG] IV: {}".format(''.join('{:02x}'.format(b) for b in iv)))
             print(f"[DEBUG] AES Key: {aes_key[:8].hex()}...")
     
             # 5. Entschlüssele das Phonebook
@@ -1452,7 +1501,7 @@ class PHONEBOOK(QObject):
                 phonebook_data = json.loads(decrypted_data.decode('utf-8'))
                 print(f"[DEBUG] Raw phonebook data: {phonebook_data}")
             except json.JSONDecodeError as e:
-                print(f"[ERROR] JSON decode failed: {str(e)}")
+                print("[ERROR] JSON decode failed: {}".format(str(e)))
                 print(f"[DEBUG] Problematic data: {decrypted_data[:200]}")
                 return False
     
@@ -1496,7 +1545,7 @@ class PHONEBOOK(QObject):
             buf = (ctypes.c_ubyte * 48)(*secret)
             self.secret_vault.store(ctypes.addressof(buf))
         except Exception as e:
-            print(f"Warnung: Geheimnis konnte nicht sicher gespeichert werden: {e}")
+            print("Warnung: Geheimnis konnte nicht sicher gespeichert werden: {0}".format(e))
             # Fallback: Temporär in Memory behalten
             self.temp_secret = secret
 
