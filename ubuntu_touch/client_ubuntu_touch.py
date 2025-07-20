@@ -158,12 +158,12 @@ def quantum_safe_hash(data):
         else:
             import sha3  # pysha3-Backup
             return sha3.sha3_256(data).hexdigest()
-    except ImportError as e:
-        raise RuntimeError(
-            "SHA3-256 benötigt 'pysha3' unter Python 3.5.\n"
-            "Installieren mit: pip install pysha3\n"
-            f"Originalfehler: {str(e)}"
-        ) from e
+	except ImportError as e:
+		raise RuntimeError(
+			"SHA3-256 benötigt 'pysha3' unter Python 3.5.\n"
+			"Installieren mit: pip install pysha3\n"
+			"Originalfehler: " + str(e)
+		) from e
 
 def build_merkle_tree(data_blocks):
     data_blocks = list(data_blocks)
