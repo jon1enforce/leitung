@@ -13,5 +13,7 @@ gcc -shared -fPIC -o auslagern.so auslagern.c \
     -Wl,-z,now,-z,relro,-z,noexecstack
 
 ___________________________________________________
-
-python3 client.py
+linux/unix/bsd:  
+python3 client.py  
+ubuntu touch:    
+click install --allow-untrusted ~/Downloads/com.ubuntu.developer.username.leitung_0.1_all.click
