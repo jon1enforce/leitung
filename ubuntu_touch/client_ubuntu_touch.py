@@ -196,7 +196,7 @@ def verify_merkle_integrity(all_keys, received_root_hash):
             seen_keys.add(normalized)
             unique_keys.append(key)
     
-    print(f"[Client] Unique keys after deduplication: {len(unique_keys)}")
+    print("[Client] Unique keys after deduplication: {}".format(len(unique_keys)))
     
     # 2. Normalisierung und Validierung
     normalized_keys = []
@@ -223,11 +223,10 @@ def verify_merkle_integrity(all_keys, received_root_hash):
 def debug_print_key(key_type, key_data):
     """Print detailed key information"""
     print("\n=== {} KEY DEBUG ===".format(key_type.upper()))
-    print(f"Length: {len(key_data)} bytes")
-    print(f"First 32 bytes (hex): {' '.join(f'{b:02x}' for b in key_data[:32])}")
-    print("[DEBUG] First 32 bytes (ascii): {}".format(key_data[:32].decode('ascii', errors='replace')))
+    print("Length: {} bytes".format(len(key_data)))
+    print("First 32 bytes (hex): {}".format(' '.join('{:02x}'.format(b) for b in key_data[:32])))    print("[DEBUG] First 32 bytes (ascii): {}".format(key_data[:32].decode('ascii', errors='replace')))
     if len(key_data) > 32:
-        print(f"Last 32 bytes (hex): {' '.join(f'{b:02x}' for b in key_data[-32:])}")
+        print("Last 32 bytes (hex): {}".format(' '.join('{:02x}'.format(b) for b in key_data[-32:])))
     print("="*50)
 
 def validate_key_pair(private_key, public_key):
@@ -253,7 +252,7 @@ def validate_key_pair(private_key, public_key):
             print("[KEY VALIDATION] Key pair does not match!")
             return False
     except Exception as e:
-        print(f"[KEY VALIDATION ERROR] {str(e)}")
+        print("[KEY VALIDATION ERROR] {}".format(str(e)))
         return False
 
 def get_disk_entropy(size):
@@ -448,7 +447,8 @@ def receive_audio_stream(key,seed):
         s.listen(1)
         print("Warte auf Verbindung...")
         conn, addr = s.accept()
-        print(f"Verbunden mit {addr}")
+        print("Verbunden mit {}".format(addr))
+
 
         # Empfange den IV zuerst
         a_seed = conn.recv(SEED)
@@ -486,20 +486,31 @@ def build_sip_request(method, recipient, client_name, server_ip, server_port):
     
     # Wichtige Änderungen:
     local_port = random.randint(32768, 60999)  # IANA empfohlener ephemeral port range
-    call_id = f"{uuid.uuid4()}@{server_ip}"
-    branch_id = f"z9hG4bK{random.randint(1000,9999)}"
+    call_id = "{}@{}".format(uuid.uuid4(), server_ip)
+    branch_id = "z9hG4bK{}".format(random.randint(1000, 9999))
     tag = random.randint(1000,9999)
 
     return (
-        f"{method} sip:{recipient}@{server_ip}:{server_port} SIP/2.0\r\n"
-        f"Via: SIP/2.0/UDP {local_ip}:{local_port};rport;branch={branch_id}\r\n"
-        f"Max-Forwards: 70\r\n"
-        f"From: <sip:{client_name}@{server_ip}>;tag={tag}\r\n"
-        f"To: <sip:{recipient}@{server_ip}>\r\n"
-        f"Call-ID: {call_id}\r\n"
-        f"CSeq: 1 {method}\r\n"
-        f"Contact: <sip:{client_name}@{local_ip}:{local_port}>\r\n"
-        f"Content-Length: 0\r\n\r\n"
+        "{method} sip:{recipient}@{server_ip}:{server_port} SIP/2.0\r\n"
+        "Via: SIP/2.0/UDP {local_ip}:{local_port};rport;branch={branch_id}\r\n"
+        "Max-Forwards: 70\r\n"
+        "From: <sip:{client_name}@{server_ip}>;tag={tag}\r\n"
+        "To: <sip:{recipient}@{server_ip}>\r\n"
+        "Call-ID: {call_id}\r\n"
+        "CSeq: 1 {method}\r\n"
+        "Contact: <sip:{client_name}@{local_ip}:{local_port}>\r\n"
+        "Content-Length: 0\r\n\r\n"
+    ).format(
+        method=method,
+        recipient=recipient,
+        server_ip=server_ip,
+        server_port=server_port,
+        local_ip=local_ip,
+        local_port=local_port,
+        branch_id=branch_id,
+        client_name=client_name,
+        tag=tag,
+        call_id=call_id
     )
 
 def build_sip_message(method, recipient, custom_data={}, from_server=False, host=None):
@@ -517,24 +528,32 @@ def build_sip_message(method, recipient, custom_data={}, from_server=False, host
         body = json.dumps(custom_data, separators=(',', ':'))
         content_type = "application/json"
     else:
-        body = "\r\n".join(f"{k}: {v}" for k, v in custom_data.items())
+        body = "\r\n".join("{}: {}".format(k, v) for k, v in custom_data.items())
         content_type = "text/plain"
     
     # Absenderadresse bestimmen
     if from_server:
-        from_header = f"<sip:server@{host}>" if host else "<sip:server>"
+        from_header = "<sip:server@{}>".format(host) if host else "<sip:server>"
     else:
         client_name = load_client_name()
         client_ip = socket.gethostbyname(socket.gethostname())
-        from_header = f"<sip:{client_name}@{client_ip}>"
+        from_header = "<sip:{}@{}>".format(client_name, client_ip)
+
     
     return (
-        f"{method} sip:{recipient} SIP/2.0\r\n"
-        f"From: {from_header}\r\n"
-        f"To: <sip:{recipient}>\r\n"
-        f"Content-Type: {content_type}\r\n"
-        f"Content-Length: {len(body)}\r\n\r\n"
-        f"{body}"
+        "{method} sip:{recipient} SIP/2.0\r\n"
+        "From: {from_header}\r\n"
+        "To: <sip:{recipient}>\r\n"
+        "Content-Type: {content_type}\r\n"
+        "Content-Length: {content_length}\r\n\r\n"
+        "{body}"
+    ).format(
+        method=method,
+        recipient=recipient,
+        from_header=from_header,
+        content_type=content_type,
+        content_length=len(body),
+        body=body
     )
 def parse_sip_message(message):
     """Original-Implementierung mit Merkle-Tree-Support"""
@@ -624,18 +643,19 @@ def connection_loop(client_socket, server_ip, message_handler=None):
                         pong_value = (pong_data.get('custom_data', {}).get("PONG", "") or 
                                      pong_data.get('headers', {}).get("PONG", ""))
                         if str(pong_value).lower() in ("true", "1", "yes"):
-                            print(f"Pong erhalten um {time.strftime('%H:%M:%S')}")
+                            print("Pong erhalten um {}".format(time.strftime('%H:%M:%S')))
+
                             
             except socket.timeout:
-                print(f"Timeout: Kein Pong innerhalb von {pong_timeout}s")
-                
-            time.sleep(ping_interval)
-            
+                print("Timeout: Kein Pong innerhalb von {}s".format(pong_timeout))
+                time.sleep(ping_interval)
+    
         except ConnectionError as e:
-            print(f"Verbindungsfehler: {str(e)}")
+            print("Verbindungsfehler: {}".format(str(e)))
             return False
+    
         except Exception as e:
-            print(f"Unerwarteter Fehler: {str(e)}")
+            print("Unerwarteter Fehler: {}".format(str(e)))
             continue
 def extract_server_public_key(sip_data, raw_response=None):
     """
@@ -681,22 +701,29 @@ def start_connection(server_ip, server_port, client_name, client_socket, message
 
         # Key in den Body der Nachricht einfügen
         request = (
-            f"REGISTER sip:{server_ip} SIP/2.0\r\n"
-            f"From: <sip:{client_name}@{socket.gethostbyname(socket.gethostname())}>\r\n"
-            f"To: <sip:{server_ip}>\r\n"
-            f"Content-Type: text/plain\r\n"
-            f"Content-Length: {len(client_pubkey)}\r\n\r\n"
-            f"{client_pubkey}"  # Rohdaten ohne zusätzliche Formatierung
+            "REGISTER sip:{} SIP/2.0\r\n"
+            "From: <sip:{}@{}>\r\n"
+            "To: <sip:{}>\r\n"
+            "Content-Type: text/plain\r\n"
+            "Content-Length: {}\r\n\r\n"
+            "{}"
+        ).format(
+            server_ip,
+            client_name,
+            socket.gethostbyname(socket.gethostname()),
+            server_ip,
+            len(client_pubkey),
+            client_pubkey
         )
-        
-        print(f"\n[Client] Sending full public key...")
+                
+        print("\n[Client] Sending full public key...")
         send_frame(client_socket, request)
-        
+
         response = recv_frame(client_socket)
         if not response:
             raise ConnectionError("Empty response from server")
 
-        print(f"\n[Client] Raw Server Response:\n{response}\n")
+        print("\n[Client] Raw Server Response:\n{}\n".format(response))
         
         sip_data = parse_sip_message(response)  # Diese Variable wird verwendet
         if not sip_data:
@@ -704,24 +731,24 @@ def start_connection(server_ip, server_port, client_name, client_socket, message
 
         # Check if this is a 200 OK response
         if sip_data.get('status_code') != '200':
-            raise ValueError(f"Server returned error: {sip_data.get('status_code', 'Unknown')}")
+            raise ValueError("Server returned error: {}".format(sip_data.get('status_code', 'Unknown')))
 
         # Extract server public key - KORREKTE Variablenverwendung
         server_public_key = extract_server_public_key(sip_data, response)  # sip_data statt sip_msg
         
         if not server_public_key or not server_public_key.startswith('-----BEGIN'):
-            print(f"Invalid server key format: {server_public_key[:100]}...")
+            print("Invalid server key format: {}...".format(server_public_key[:100]))
             raise ValueError("Invalid server public key format")
 
-        print(f"\n[Client] Extracted Server Key:\n{server_public_key}")
+        print("\n[Client] Extracted Server Key:\n{}".format(server_public_key))
 
         # Wait for Merkle root message with timeout
         try:
             merkle_response = recv_frame(client_socket)
             if not merkle_response:
                 raise ConnectionError("Empty Merkle response from server")
-        
-            print(f"\n[Client] Raw Merkle Response:\n{merkle_response}\n")
+            
+            print("\n[Client] Raw Merkle Response:\n{}\n".format(merkle_response))
         
             merkle_data = parse_sip_message(merkle_response)
 # Nach dem Empfang der Merkle-Antwort:
@@ -732,7 +759,7 @@ def start_connection(server_ip, server_port, client_name, client_socket, message
                 if 'ALL_KEYS' in merkle_data['custom_data']:
                     try:
                         all_keys = json.loads(merkle_data['custom_data']['ALL_KEYS'])
-                        print(f"[Client] Received {len(all_keys)} keys from server")
+                        print("[Client] Received {} keys from server".format(len(all_keys)))
                     except json.JSONDecodeError as e:
                         print("[Client] Error parsing keys: {}".format(e))
             
@@ -768,7 +795,7 @@ def start_connection(server_ip, server_port, client_name, client_socket, message
             raise ConnectionError("Timeout waiting for Merkle verification")
             
     except Exception as e:
-        print(f"[Client] Critical error: {str(e)}")
+        print("[Client] Critical error: {}".format(str(e)))
         if client_socket:
             client_socket.close()
         raise
@@ -892,7 +919,8 @@ class SecureVault:
     def _load_libraries(self):
         """Lädt alle benötigten Bibliotheken für die aktuelle Architektur mit erweiterter ARM64-Erkennung"""
         arch = platform.machine().lower()
-        print(f"[DEBUG] Detected architecture: {arch}")  # Debug-Ausgabe
+        print("[DEBUG] Detected architecture: {}".format(arch))
+  # Debug-Ausgabe
     
         # Erweitertes Mapping für ARM-Architekturen
         ARCH_ALIASES = {
@@ -906,7 +934,7 @@ class SecureVault:
         
         # Normalisiere die Architekturbezeichnung
         normalized_arch = ARCH_ALIASES.get(arch, arch)
-        print(f"[DEBUG] Normalized architecture: {normalized_arch}")
+        print("[DEBUG] Normalized architecture: {}".format(normalized_arch))
     
         # Bibliotheks-Mapping mit Prioritäten
         LIBRARY_MAP = {
@@ -1032,7 +1060,7 @@ class PHONEBOOK(QObject):
     def _handle_standard_sip(self, sip_data):
         """Verarbeitet reguläre SIP-Nachrichten"""
         # Hier können andere SIP-Nachrichten behandelt werden
-        print(f"[CLIENT] Handling standard SIP message: {sip_data}")
+        print("[CLIENT] Handling standard SIP message: {}".format(sip_data))
         return True
 
     def send_client_secret(self):
@@ -1093,7 +1121,7 @@ class PHONEBOOK(QObject):
                 self.server_ip = server_ip
                 self.server_port = port
                 
-                self._connection_status = f"Verbunden mit {server_ip}:{port}"
+                self._connection_status = "Verbunden mit {}:{}".format(server_ip, port)
                 self.connectionStatusChanged.emit(self._connection_status)
                 
                 threading.Thread(
@@ -1110,16 +1138,16 @@ class PHONEBOOK(QObject):
                 self.connectionStatusChanged.emit(self._connection_status)
                 self.cleanup_connection()
             except OSError as e:
-                self._connection_status = f"Netzwerkfehler: {str(e)}"
+                self._connection_status = "Netzwerkfehler: {}".format(str(e))
                 self.connectionStatusChanged.emit(self._connection_status)
                 self.cleanup_connection()
     
         except ValueError as e:
-            self._connection_status = f"Ungültige Eingabe: {str(e)}"
+            self._connection_status = "Ungültige Eingabe: {}".format(str(e))
             self.connectionStatusChanged.emit(self._connection_status)
             self.cleanup_connection()
         except Exception as e:
-            self._connection_status = f"Unerwarteter Fehler: {str(e)}"
+            self._connection_status = "Unerwarteter Fehler: {}".format(str(e))
             self.connectionStatusChanged.emit(self._connection_status)
             self.cleanup_connection()
 
@@ -1161,7 +1189,7 @@ class PHONEBOOK(QObject):
     def on_entry_click(self, index):
         if 0 <= index < len(self.phonebook_entries):
             entry = self.phonebook_entries[index]
-            print(f"Selected entry: {entry['id']}: {entry['name']}")
+            print("Selected entry: {}: {}".format(entry['id'], entry['name']))
             self.initiate_call(entry)
 
     @Slot()
@@ -1231,7 +1259,8 @@ class PHONEBOOK(QObject):
             aes_key = secret[16:]
             start_audio_streams(caller_ip, caller_port, aes_key, iv)
             
-            messagebox.showinfo("Anruf", f"Verbunden mit {caller_name}")
+            messagebox.showinfo("Anruf", "Verbunden mit {}".format(caller_name))
+
             
         except Exception as e:
             print("Fehler bei Anrufannahme: {}".format(e))
@@ -1281,7 +1310,8 @@ class PHONEBOOK(QObject):
             aes_key = secret[16:]
             start_audio_streams(recipient['ip'], recipient['port'], aes_key, iv)
             
-            messagebox.showinfo("Anruf", f"Verbinde mit {recipient['name']}...")
+            messagebox.showinfo("Anruf", "Verbinde mit {}...".format(recipient['name']))
+
             
         except Exception as e:
             messagebox.showerror("Anruf fehlgeschlagen", str(e))
@@ -1312,8 +1342,10 @@ class PHONEBOOK(QObject):
                     print("[ERROR] Failed to parse SIP message structure")
                     return False
                     
-                print(f"[DEBUG] Parsed SIP - Method: {sip_data.get('method')}, Status: {sip_data.get('status_code')}")
-                
+                print("[DEBUG] Parsed SIP - Method: {}, Status: {}".format(
+                    sip_data.get('method', 'N/A'),
+                    sip_data.get('status_code', 'N/A')
+                ))                
                 # Phonebook Update behandeln
                 if sip_data.get('custom_data', {}).get('MESSAGE_TYPE') == 'PHONEBOOK_UPDATE':
                     print("[DEBUG] Detected phonebook update message")
@@ -1326,7 +1358,7 @@ class PHONEBOOK(QObject):
                 return self._process_binary_phonebook(raw_data)
                 
         except Exception as e:
-            print(f"[CRITICAL] Message handling failed: {str(e)}")
+            print("[CRITICAL] Message handling failed: {}".format(str(e)))
             traceback.print_exc()
             return False
         finally:
@@ -1346,8 +1378,10 @@ class PHONEBOOK(QObject):
             encrypted_secret = encrypted_data[:512]
             encrypted_phonebook = encrypted_data[512:]
             print("[DEBUG] Encrypted secret (512 bytes): {}...".format(' '.join('{:02x}'.format(b) for b in encrypted_secret[:16])))
-            print(f"[DEBUG] Encrypted phonebook ({len(encrypted_phonebook)} bytes): {encrypted_phonebook[:16].hex(' ')}...")
-    
+            print("[DEBUG] Encrypted phonebook ({} bytes): {}...".format(
+                len(encrypted_phonebook),
+                ' '.join('{:02x}'.format(b) for b in encrypted_phonebook[:16])
+            ))    
             # Load private key
             with open("private_key.pem", "rb") as f:
                 priv_key = RSA.load_key_string(f.read())
@@ -1368,21 +1402,21 @@ class PHONEBOOK(QObject):
             
             # Parse phonebook
             phonebook_data = json.loads(decrypted_data.decode('utf-8'))
-            print(f"[DEBUG] Received phonebook with {len(phonebook_data)} entries")
+            print("[DEBUG] Received phonebook with {} entries".format(len(phonebook_data)))
             
             # Update UI in main thread
             self.after(0, lambda: self.update_phonebook(phonebook_data))
             return True
             
         except Exception as e:
-            print(f"[DECRYPTION ERROR] {str(e)}")
+            print("[DECRYPTION ERROR] {}".format(str(e)))
             traceback.print_exc()
             return False
     
     def _process_binary_phonebook(self, framed_data):
         """Process framed SIP messages with encrypted payload"""
         print("\n=== PROCESSING FRAMED SIP MESSAGE ===")
-        print(f"[FRAME] Length: {len(framed_data)} bytes")
+        print("[FRAME] Length: {} bytes".format(len(framed_data)))
         
         try:
             # Skip frame header if present (first 4 bytes)
@@ -1431,7 +1465,7 @@ class PHONEBOOK(QObject):
             return False
             
         except Exception as e:
-            print(f"[CRITICAL ERROR] {str(e)}")
+            print("[CRITICAL ERROR] {}".format(str(e)))
             traceback.print_exc()
             return False
     
@@ -1451,13 +1485,13 @@ class PHONEBOOK(QObject):
             try:
                 encrypted_secret = base64.b64decode(message['ENCRYPTED_SECRET'])
                 encrypted_phonebook = base64.b64decode(message['ENCRYPTED_PHONEBOOK'])
-                print(f"[DEBUG] Encrypted secret length: {len(encrypted_secret)}")
-                print(f"[DEBUG] Encrypted phonebook length: {len(encrypted_phonebook)}")
+                print("[DEBUG] Encrypted secret length: {}".format(len(encrypted_secret)))
+                print("[DEBUG] Encrypted phonebook length: {}".format(len(encrypted_phonebook)))
             except KeyError as e:
-                print(f"[ERROR] Missing required field: {str(e)}")
+                print("[ERROR] Missing required field: {}".format(str(e)))
                 return False
             except binascii.Error as e:
-                print(f"[ERROR] Base64 decoding failed: {str(e)}")
+                print("[ERROR] Base64 decoding failed: {}".format(str(e)))
                 return False
     
             # 3. Entschlüssele das Geheimnis
@@ -1468,9 +1502,11 @@ class PHONEBOOK(QObject):
                     print("[DEBUG] Private key loaded successfully")
                     
                 decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
-                print(f"[DEBUG] Decrypted secret (len={len(decrypted_secret)}): {decrypted_secret[:16].hex()}...")
-            except Exception as e:
-                print(f"[ERROR] Failed to decrypt secret: {str(e)}")
+                print("[DEBUG] Decrypted secret (len={}): {}...".format(
+                    len(decrypted_secret),
+                    ''.join('{:02x}'.format(b) for b in decrypted_secret[:16])  # Hex conversion without .hex()
+                ))            except Exception as e:
+                print("[ERROR] Failed to decrypt secret: {}".format(str(e)))
                 return False
     
             # 4. Validiere das Geheimnis
@@ -1483,26 +1519,41 @@ class PHONEBOOK(QObject):
             iv = secret[:16]
             aes_key = secret[16:]
             print("[DEBUG] IV: {}".format(''.join('{:02x}'.format(b) for b in iv)))
-            print(f"[DEBUG] AES Key: {aes_key[:8].hex()}...")
+            print("[DEBUG] AES Key: {}...".format(''.join('{:02x}'.format(b) for b in aes_key[:8])))
     
             # 5. Entschlüssele das Phonebook
             print("[DEBUG] Decrypting phonebook with AES...")
             try:
                 cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
                 decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
-                print(f"[DEBUG] Decrypted data (len={len(decrypted_data)}): {decrypted_data[:100]}...")
+                
+                print("[DEBUG] Decrypted data (len={}): {}...".format(
+                    len(decrypted_data),
+                    decrypted_data[:100].decode('utf-8', errors='replace')
+                ))
+            except EVP.EVPError as e:
+                error_msg = "AES decryption failed: {}".format(str(e))
+                print("[ERROR] {}".format(error_msg))
+                logging.error(error_msg, exc_info=True)
+                return False
             except Exception as e:
-                print(f"[ERROR] AES decryption failed: {str(e)}")
+                error_msg = "Unexpected error during decryption: {}".format(str(e))
+                print("[CRITICAL] {}".format(error_msg))
+                logging.critical(error_msg, exc_info=True)
                 return False
     
             # 6. Parse JSON-Daten
             print("[DEBUG] Parsing decrypted JSON data...")
             try:
                 phonebook_data = json.loads(decrypted_data.decode('utf-8'))
-                print(f"[DEBUG] Raw phonebook data: {phonebook_data}")
+                print("[DEBUG] Raw phonebook data: {}".format(phonebook_data))
             except json.JSONDecodeError as e:
                 print("[ERROR] JSON decode failed: {}".format(str(e)))
-                print(f"[DEBUG] Problematic data: {decrypted_data[:200]}")
+                # Safe debug output for potentially sensitive data
+                print("[DEBUG] Problematic data ({} bytes): {}".format(
+                    len(decrypted_data),
+                    repr(decrypted_data[:200].decode('utf-8', errors='replace'))
+                ))
                 return False
     
             # 7. Filtere gültige Einträge
@@ -1513,14 +1564,17 @@ class PHONEBOOK(QObject):
                     if (isinstance(entry, dict) and 
                         str(entry.get('id', '')).isdigit() and 
                         entry.get('name')):
-                        print(f"[DEBUG] Valid entry found: {entry['id']}: {entry['name']}")
+                        print("[DEBUG] Valid entry found: {}: {}".format(
+                            entry['id'],
+                            entry['name']
+                        ))
                         valid_entries.append(entry)
                 except Exception as e:
-                    print(f"[WARNING] Invalid entry skipped: {str(e)}")
+                    print("[WARNING] Invalid entry skipped: {}".format(str(e)))
     
             # 8. Aktualisiere UI
             if valid_entries:
-                print(f"[DEBUG] Updating UI with {len(valid_entries)} valid entries")
+                print("[DEBUG] Updating UI with {} valid entries".format(len(valid_entries)))
                 self.after(0, lambda: self.update_phonebook(valid_entries))
                 return True
             else:
@@ -1528,7 +1582,7 @@ class PHONEBOOK(QObject):
                 return False
                 
         except Exception as e:
-            print(f"[CRITICAL] Processing error: {str(e)}")
+            print("[CRITICAL] Processing error: {}".format(str(e)))
             traceback.print_exc()
             return False
         finally:
