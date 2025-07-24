@@ -19,11 +19,11 @@ import ctypes
 import platform
 import traceback
 from typing import Optional
-from PySide2.QtCore import QObject, Signal, Slot, Property, QUrl
-from PySide2.QtGui import QGuiApplication
-from PySide2.QtQuick import QQuickView
-from PySide2.QtQml import QQmlApplicationEngine
-from PySide2.QtWidgets import QApplication, QMessageBox
+from qt_compat import (
+    QObject, Signal, Slot, Property, QUrl,
+    QGuiApplication, QQuickView, QQmlApplicationEngine,
+    QApplication, QMessageBox
+)
 
 try:
     hashlib.sha3_256(b'').digest()  # Test ob verfügbar
