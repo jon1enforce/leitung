@@ -224,7 +224,8 @@ def debug_print_key(key_type, key_data):
     """Print detailed key information"""
     print("\n=== {} KEY DEBUG ===".format(key_type.upper()))
     print("Length: {} bytes".format(len(key_data)))
-    print("First 32 bytes (hex): {}".format(' '.join('{:02x}'.format(b) for b in key_data[:32])))    print("[DEBUG] First 32 bytes (ascii): {}".format(key_data[:32].decode('ascii', errors='replace')))
+    print("First 32 bytes (hex): {}".format(' '.join('{:02x}'.format(b) for b in key_data[:32])))    
+    print("[DEBUG] First 32 bytes (ascii): {}".format(key_data[:32].decode('ascii', errors='replace')))
     if len(key_data) > 32:
         print("Last 32 bytes (hex): {}".format(' '.join('{:02x}'.format(b) for b in key_data[-32:])))
     print("="*50)
