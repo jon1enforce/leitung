@@ -1,45 +1,251 @@
-import QtQuick 2.9
-import QtQuick.Controls 2.2
-import QtQuick.Layouts 1.3
+import QtQuick 2.7
+import QtQuick.Controls 2.2 as QT
+import Ubuntu.Components 1.3 as UT
+import QtQuick.Layouts 1.2
 
-ApplicationWindow {
+Item {
     id: root
-    title: "PHONEBOOK, mein Telefonbuch"
-    width: 600
-    height: 1000
-    visible: true
-    color: "black"
-
-    // Color definitions
-    readonly property color darkGreen: "#006400"
-    readonly property color darkBlue: "#00008B"
-    readonly property color white: "#FFFFFF"
+    property bool isUbuntuTouch: typeof UT.UbuntuColors !== 'undefined'
     
-    property int buttonHeight: 60
-    property int margin: 10
+    // Farbdefinitionen
+    readonly property color darkGreen: isUbuntuTouch ? UT.UbuntuColors.green : "#006400"
+    readonly property color darkBlue: isUbuntuTouch ? UT.UbuntuColors.blue : "#00008B"
+    readonly property color red: isUbuntuTouch ? UT.UbuntuColors.red : "#FF0000"
+    readonly property color white: isUbuntuTouch ? UT.Theme.palette.normal.backgroundText : "#FFFFFF"
+    readonly property color background: isUbuntuTouch ? UT.Theme.palette.normal.background : "black"
+    readonly property color darkGrey: isUbuntuTouch ? UT.UbuntuColors.darkGrey : "#333333"
 
-    TabBar {
-        id: tabBar
-        width: parent.width
-        TabButton {
-            text: "Telefonbuch"
-            contentItem: Text {
-                text: parent.text
-                color: white
-                horizontalAlignment: Text.AlignHCenter
-                verticalAlignment: Text.AlignVCenter
+    // Größenanpassungen
+    property int buttonHeight: isUbuntuTouch ? units.gu(7) : 60
+    property int margin: isUbuntuTouch ? units.gu(2) : 10
+    property int entryHeight: Math.max(root.height / 12, isUbuntuTouch ? units.gu(8) : 60)
+    property int popupWidth: isUbuntuTouch ? units.gu(40) : 300
+    property int popupHeight: isUbuntuTouch ? units.gu(30) : 200
+
+    Loader {
+        anchors.fill: parent
+        sourceComponent: isUbuntuTouch ? utInterface : qtInterface
+    }
+
+    Component {
+        id: utInterface
+        UT.MainView {
+            id: mainView
+            width: units.gu(50)
+            height: units.gu(80)
+            anchorToKeyboard: true
+
+            UT.Page {
+                id: mainPage
+                header: UT.PageHeader {
+                    title: i18n.tr("PHONEBOOK")
+                }
+
+                Flickable {
+                    anchors {
+                        fill: parent
+                        bottomMargin: buttonHeight + margin * 2
+                    }
+                    contentHeight: column.height
+                    clip: true
+                    boundsBehavior: Flickable.DragAndOvershootBounds
+
+                    Column {
+                        id: column
+                        width: parent.width
+                        spacing: margin/2
+
+                        // Statusanzeige
+                        UT.ListItem {
+                            height: units.gu(5)
+                            Label {
+                                anchors.centerIn: parent
+                                text: phonebook.connectionStatus
+                                color: white
+                            }
+                            backgroundColor: darkGrey
+                        }
+
+                        // Telefonbuch-Einträge
+                        Repeater {
+                            model: phonebook.phonebookEntries
+                            delegate: UT.ListItem {
+                                height: entryHeight
+                                backgroundColor: darkGreen
+                                Label {
+                                    anchors.centerIn: parent
+                                    text: modelData.id + ": " + modelData.name
+                                    color: white
+                                    fontSize: "large"
+                                    elide: Text.ElideRight
+                                    maximumLineCount: 1
+                                    width: parent.width - units.gu(4)
+                                }
+                                onClicked: phonebook.on_entry_click(index)
+                                showDivider: false
+                            }
+                        }
+                    }
+                }
+
+                // Button-Leiste
+                RowLayout {
+                    anchors {
+                        bottom: parent.bottom
+                        left: parent.left
+                        right: parent.right
+                        margins: margin
+                    }
+                    height: buttonHeight
+                    spacing: margin
+
+                    UT.Button {
+                        Layout.fillWidth: true
+                        text: i18n.tr("Update")
+                        color: darkBlue
+                        onClicked: phonebook.load_phonebook()
+                    }
+
+                    UT.Button {
+                        Layout.fillWidth: true
+                        text: i18n.tr("Setup")
+                        color: darkBlue
+                        onClicked: serverPopup.show()
+                    }
+
+                    UT.Button {
+                        Layout.fillWidth: true
+                        text: i18n.tr("Hang Up")
+                        color: red
+                        onClicked: phonebook.on_hangup_click()
+                    }
+
+                    UT.Button {
+                        Layout.fillWidth: true
+                        text: i18n.tr("Call")
+                        color: darkGreen
+                        onClicked: phonebook.on_call_click()
+                    }
+                }
+
+                // Server Connection Popup für Ubuntu Touch
+                UT.Dialog {
+                    id: serverPopup
+                    title: i18n.tr("Serververbindung")
+                    Rectangle {
+                        width: popupWidth
+                        height: popupHeight
+                        color: background
+
+                        ColumnLayout {
+                            anchors {
+                                fill: parent
+                                margins: margin
+                            }
+                            spacing: margin
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                UT.Label {
+                                    text: i18n.tr("Server-IP:")
+                                    color: white
+                                }
+                                UT.TextField {
+                                    id: serverIpField
+                                    Layout.fillWidth: true
+                                    placeholderText: "192.168.1.100"
+                                    color: "black"
+                                    backgroundColor: "white"
+                                }
+                            }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                UT.Label {
+                                    text: i18n.tr("Port:")
+                                    color: white
+                                }
+                                UT.TextField {
+                                    id: serverPortField
+                                    Layout.fillWidth: true
+                                    placeholderText: "8080"
+                                    color: "black"
+                                    backgroundColor: "white"
+                                    inputMethodHints: Qt.ImhDigitsOnly
+                                }
+                            }
+
+                            Item { Layout.fillHeight: true }
+
+                            RowLayout {
+                                Layout.fillWidth: true
+                                spacing: margin
+
+                                UT.Button {
+                                    Layout.fillWidth: true
+                                    text: i18n.tr("Abbrechen")
+                                    color: red
+                                    onClicked: serverPopup.hide()
+                                }
+
+                                UT.Button {
+                                    Layout.fillWidth: true
+                                    text: i18n.tr("Verbinden")
+                                    color: darkGreen
+                                    onClicked: {
+                                        phonebook.on_connect_click(serverIpField.text, serverPortField.text)
+                                        serverPopup.hide()
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // Call Status Popup für Ubuntu Touch
+                UT.Dialog {
+                    id: callStatusPopup
+                    title: i18n.tr("Anrufstatus")
+                    Rectangle {
+                        width: popupWidth
+                        height: units.gu(10)
+                        color: darkBlue
+
+                        UT.Label {
+                            anchors.centerIn: parent
+                            text: phonebook.callStatus
+                            color: white
+                            fontSize: "large"
+                        }
+
+                        UT.Button {
+                            anchors {
+                                top: parent.top
+                                right: parent.right
+                                margins: margin/2
+                            }
+                            width: units.gu(4)
+                            height: units.gu(4)
+                            color: red
+                            iconName: "close"
+                            onClicked: callStatusPopup.hide()
+                        }
+                    }
+                }
             }
-            background: Rectangle { color: darkGreen }
         }
     }
 
-    StackLayout {
-        width: parent.width
-        height: parent.height - tabBar.height
-        currentIndex: tabBar.currentIndex
+    Component {
+        id: qtInterface
+        QT.ApplicationWindow {
+            id: window
+            title: "PHONEBOOK"
+            width: 600
+            height: 1000
+            visible: true
+            color: background
 
-        Item {
-            // Telefonbuch-Tab
             ColumnLayout {
                 anchors.fill: parent
                 spacing: margin
@@ -48,38 +254,41 @@ ApplicationWindow {
                 Rectangle {
                     Layout.fillWidth: true
                     height: 40
-                    color: "darkgrey"
-                    Text {
+                    color: darkGrey
+                    QT.Label {
                         anchors.centerIn: parent
                         text: phonebook.connectionStatus
                         color: white
-                        font.pixelSize: 16
                     }
                 }
 
-                // Telefonbuch-Einträge
-                ScrollView {
+                // Scrollbare Telefonbuchliste
+                QT.ScrollView {
                     Layout.fillWidth: true
                     Layout.fillHeight: true
                     clip: true
 
-                    ListView {
+                    QT.ListView {
                         id: listView
                         model: phonebook.phonebookEntries
+                        spacing: 2
                         delegate: Rectangle {
                             width: listView.width
-                            height: 60
+                            height: entryHeight
                             color: darkGreen
                             radius: 5
 
-                            Text {
+                            QT.Label {
                                 anchors.centerIn: parent
                                 text: modelData.id + ": " + modelData.name
                                 color: white
                                 font.pixelSize: 16
+                                elide: Text.ElideRight
+                                maximumLineCount: 1
+                                width: parent.width - 20
                             }
 
-                            MouseArea {
+                            QT.MouseArea {
                                 anchors.fill: parent
                                 onClicked: phonebook.on_entry_click(index)
                             }
@@ -87,242 +296,193 @@ ApplicationWindow {
                     }
                 }
 
-                // Steuerbuttons - now with equal width and proper colors
+                // Button-Leiste
                 RowLayout {
                     Layout.fillWidth: true
                     height: buttonHeight
                     spacing: margin
 
-                    Button {
+                    QT.Button {
                         Layout.fillWidth: true
                         text: "Update"
-                        onClicked: phonebook.load_phonebook()
-                        background: Rectangle { color: darkGreen }
-                        contentItem: Text {
+                        background: Rectangle { color: darkBlue }
+                        contentItem: QT.Label {
                             text: parent.text
                             color: white
                             horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
                         }
+                        onClicked: phonebook.load_phonebook()
                     }
 
-                    Button {
+                    QT.Button {
                         Layout.fillWidth: true
                         text: "Setup"
-                        onClicked: settingsPopup.open()
-                        background: Rectangle { color: darkGreen }
-                        contentItem: Text {
+                        background: Rectangle { color: darkBlue }
+                        contentItem: QT.Label {
                             text: parent.text
                             color: white
                             horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
                         }
+                        onClicked: serverPopup.open()
                     }
 
-                    Button {
+                    QT.Button {
                         Layout.fillWidth: true
                         text: "Hang Up"
-                        onClicked: phonebook.on_hangup_click()
-                        background: Rectangle { color: darkBlue }
-                        contentItem: Text {
+                        background: Rectangle { color: red }
+                        contentItem: QT.Label {
                             text: parent.text
                             color: white
                             horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
                         }
+                        onClicked: phonebook.on_hangup_click()
                     }
 
-                    Button {
+                    QT.Button {
                         Layout.fillWidth: true
                         text: "Call"
-                        onClicked: phonebook.on_call_click()
-                        background: Rectangle { color: darkBlue }
-                        contentItem: Text {
+                        background: Rectangle { color: darkGreen }
+                        contentItem: QT.Label {
                             text: parent.text
                             color: white
                             horizontalAlignment: Text.AlignHCenter
-                            verticalAlignment: Text.AlignVCenter
+                        }
+                        onClicked: phonebook.on_call_click()
+                    }
+                }
+            }
+
+            // Server Connection Popup für Desktop
+            QT.Popup {
+                id: serverPopup
+                width: popupWidth
+                height: popupHeight
+                x: (parent.width - width) / 2
+                y: (parent.height - height) / 2
+                modal: true
+                closePolicy: QT.Popup.CloseOnEscape | QT.Popup.CloseOnPressOutside
+                background: Rectangle {
+                    color: background
+                    border.color: darkGreen
+                    border.width: 2
+                    radius: 5
+                }
+
+                ColumnLayout {
+                    anchors {
+                        fill: parent
+                        margins: margin
+                    }
+                    spacing: margin
+
+                    QT.Label {
+                        text: "Serververbindung"
+                        font.bold: true
+                        color: white
+                        Layout.alignment: Qt.AlignHCenter
+                    }
+
+                    QT.TextField {
+                        id: serverIpField
+                        Layout.fillWidth: true
+                        placeholderText: "Server-IP"
+                        color: "black"
+                        background: Rectangle { color: "white" }
+                    }
+
+                    QT.TextField {
+                        id: serverPortField
+                        Layout.fillWidth: true
+                        placeholderText: "Port"
+                        color: "black"
+                        background: Rectangle { color: "white" }
+                        inputMethodHints: Qt.ImhDigitsOnly
+                    }
+
+                    Item { Layout.fillHeight: true }
+
+                    RowLayout {
+                        Layout.fillWidth: true
+                        spacing: margin
+
+                        QT.Button {
+                            Layout.fillWidth: true
+                            text: "Abbrechen"
+                            background: Rectangle { color: red }
+                            contentItem: QT.Label {
+                                text: parent.text
+                                color: white
+                                horizontalAlignment: Text.AlignHCenter
+                            }
+                            onClicked: serverPopup.close()
+                        }
+
+                        QT.Button {
+                            Layout.fillWidth: true
+                            text: "Verbinden"
+                            background: Rectangle { color: darkGreen }
+                            contentItem: QT.Label {
+                                text: parent.text
+                                color: white
+                                horizontalAlignment: Text.AlignHCenter
+                            }
+                            onClicked: {
+                                phonebook.on_connect_click(serverIpField.text, serverPortField.text)
+                                serverPopup.close()
+                            }
                         }
                     }
                 }
             }
-        }
-    }
 
-    // Server Connection Popup (now clean without settings buttons)
-    Popup {
-        id: settingsPopup
-        width: 300
-        height: 200  // Reduced height
-        x: (parent.width - width) / 2
-        y: (parent.height - height) / 2
-        modal: true
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-
-        ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: margin
-            spacing: margin
-
-            Label {
-                text: "Serververbindung"
-                font.bold: true
-                color: white
-                Layout.alignment: Qt.AlignHCenter
-            }
-
-            TextField {
-                id: serverIpField
-                Layout.fillWidth: true
-                placeholderText: "Server-IP"
-                color: "black"
-                background: Rectangle { color: white }
-            }
-
-            TextField {
-                id: serverPortField
-                Layout.fillWidth: true
-                placeholderText: "Port"
-                color: "black"
-                background: Rectangle { color: white }
-            }
-
-            Button {
-                Layout.fillWidth: true
-                text: "Verbinden"
-                onClicked: {
-                    phonebook.on_connect_click(serverIpField.text, serverPortField.text)
-                    settingsPopup.close()
+            // Call Status Popup für Desktop
+            QT.Popup {
+                id: callStatusPopup
+                width: popupWidth
+                height: 100
+                x: (parent.width - width) / 2
+                y: (parent.height - height) / 2
+                modal: true
+                background: Rectangle {
+                    color: darkBlue
+                    radius: 5
                 }
-                background: Rectangle { color: darkGreen }
-                contentItem: Text {
-                    text: parent.text
+
+                QT.Label {
+                    anchors.centerIn: parent
+                    text: phonebook.callStatus
                     color: white
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
+                    font.pixelSize: 18
+                }
+
+                QT.Button {
+                    anchors {
+                        top: parent.top
+                        right: parent.right
+                        margins: 5
+                    }
+                    width: 30
+                    height: 30
+                    background: Rectangle { color: red; radius: 15 }
+                    contentItem: QT.Label {
+                        text: "X"
+                        color: white
+                        anchors.centerIn: parent
+                    }
+                    onClicked: callStatusPopup.close()
                 }
             }
         }
     }
-
-    // Settings Popup (new separate popup for keyboard/language)
-    Popup {
-        id: configPopup
-        width: 250
-        height: 150
-        x: (parent.width - width) / 2
-        y: (parent.height - height) / 2
-        modal: true
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-        
-        ColumnLayout {
-            anchors.fill: parent
-            anchors.margins: margin
-            spacing: margin
-            
-            Label {
-                text: "Einstellungen"
-                font.bold: true
-                color: white
-                Layout.alignment: Qt.AlignHCenter
-            }
-            
-            Button {
-                Layout.fillWidth: true
-                text: "Tastatur"
-                onClicked: {
-                    phonebook.open_keyboard_settings()
-                    configPopup.close()
-                }
-                background: Rectangle { color: darkGreen }
-                contentItem: Text {
-                    text: parent.text
-                    color: white
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
-            }
-            
-            Button {
-                Layout.fillWidth: true
-                text: "Sprache"
-                onClicked: {
-                    phonebook.open_language_settings()
-                    configPopup.close()
-                }
-                background: Rectangle { color: darkGreen }
-                contentItem: Text {
-                    text: parent.text
-                    color: white
-                    horizontalAlignment: Text.AlignHCenter
-                    verticalAlignment: Text.AlignVCenter
-                }
-            }
-        }
-    }
-
-    // Call Status Popup
-    Popup {
-        id: callStatusPopup
-        width: 300
-        height: 100
-        x: (parent.width - width) / 2
-        y: (parent.height - height) / 2
-        modal: true
-        closePolicy: Popup.CloseOnEscape | Popup.CloseOnPressOutside
-        background: Rectangle { color: darkBlue }
-
-        Label {
-            anchors.centerIn: parent
-            text: phonebook.callStatus
-            color: white
-            font.pixelSize: 18
-        }
-    }
-
-	Popup {
-		id: nameInputPopup
-		width: 300
-		height: 200
-		modal: true
-		
-		ColumnLayout {
-			anchors.fill: parent
-			spacing: 10
-			
-			Label {
-				text: "Bitte geben Sie Ihren Namen ein:"
-				color: "white"
-			}
-			
-			TextField {
-				id: nameInputField
-				Layout.fillWidth: true
-				color: "black"
-				background: Rectangle { color: "white" }
-			}
-			
-			Button {
-				Layout.fillWidth: true
-				text: "Bestätigen"
-				onClicked: {
-					phonebook.set_client_name(nameInputField.text)
-					nameInputPopup.close()
-				}
-				background: Rectangle { color: "#006400" }
-				contentItem: Text {
-					text: parent.text
-					color: "white"
-					horizontalAlignment: Text.AlignHCenter
-				}
-			}
-		}
-	}
-
 
     Connections {
         target: phonebook
-        onCallStatusChanged: callStatusPopup.open()
-        onRequestClientName: nameInputPopup.open()
+        onCallStatusChanged: {
+            if (isUbuntuTouch) {
+                callStatusPopup.show()
+            } else {
+                callStatusPopup.open()
+            }
+        }
     }
 }
