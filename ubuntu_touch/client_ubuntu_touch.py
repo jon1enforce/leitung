@@ -1506,7 +1506,8 @@ class PHONEBOOK(QObject):
                 print("[DEBUG] Decrypted secret (len={}): {}...".format(
                     len(decrypted_secret),
                     ''.join('{:02x}'.format(b) for b in decrypted_secret[:16])  # Hex conversion without .hex()
-                ))            except Exception as e:
+                ))            
+            except Exception as e:
                 print("[ERROR] Failed to decrypt secret: {}".format(str(e)))
                 return False
     
