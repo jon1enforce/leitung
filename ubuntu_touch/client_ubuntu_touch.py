@@ -13,8 +13,7 @@ import binascii
 from datetime import datetime
 import base64
 import re
-#import pystun3
-import pystun3==2.0.0
+import pystun3
 import struct
 import ctypes
 import platform
