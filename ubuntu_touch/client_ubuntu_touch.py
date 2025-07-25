@@ -13,7 +13,7 @@ import binascii
 from datetime import datetime
 import base64
 import re
-import stun
+import pystun3
 import struct
 import ctypes
 import platform
@@ -111,8 +111,9 @@ def recv_frame(sock, timeout=30):
 
 
 def get_public_ip():
-    nat_type, public_ip, public_port = stun.get_ip_info()
-    return public_ip, public_port  # Für SIP-Contact-Header
+    """Ermittelt die öffentliche IP und Port via STUN."""
+    nat_type, public_ip, public_port = pystun3.get_ip_info()
+    return public_ip, public_port  # Rückgabe als Tupel (IP, Port)
 
 
 def shorten_public_key(key):
