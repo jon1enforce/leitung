@@ -1,2 +1,2 @@
 ubuntu touch app  
-![Screenshot](./ausgeschnitten.png)
+![Screenshot](./ubuntu_touch_client_Qml.png)
