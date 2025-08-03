@@ -18,12 +18,39 @@ import struct
 import ctypes
 import platform
 import traceback
+import importlib
 from typing import Optional
-from qt_compat import (
-    QObject, Signal, Slot, Property, QUrl,
-    QGuiApplication, QQuickView, QQmlApplicationEngine,
-    QApplication, QMessageBox
-)
+try:
+    from PyQt5.QtCore import QObject, pyqtSignal as Signal, pyqtSlot as Slot, pyqtProperty as Property, QUrl
+    from PyQt5.QtGui import QGuiApplication
+    from PyQt5.QtQml import QQmlApplicationEngine
+    from PyQt5.QtQuick import QQuickView
+    from PyQt5.QtWidgets import QApplication, QMessageBox
+    QT_BINDING = 'PyQt5'
+    print("Using PyQt5 bindings")
+except ImportError as e:
+    print(f"PyQt5 import failed: {e}")
+    try:
+        from PySide6.QtCore import QObject, Signal, Slot, Property, QUrl
+        from PySide6.QtGui import QGuiApplication
+        from PySide6.QtQml import QQmlApplicationEngine
+        from PySide6.QtQuick import QQuickView
+        from PySide6.QtWidgets import QApplication, QMessageBox
+        QT_BINDING = 'PySide6'
+        print("Using PySide6 bindings")
+    except ImportError as e:
+        print(f"PySide6 import failed: {e}")
+        try:
+            from PySide2.QtCore import QObject, Signal, Slot, Property, QUrl
+            from PySide2.QtGui import QGuiApplication
+            from PySide2.QtQml import QQmlApplicationEngine
+            from PySide2.QtQuick import QQuickView
+            from PySide2.QtWidgets import QApplication, QMessageBox
+            QT_BINDING = 'PySide2'
+            print("Using PySide2 bindings")
+        except ImportError as e:
+            print(f"PySide2 import failed: {e}")
+            raise ImportError("No Qt bindings found. Please install PyQt5, PySide6 or PySide2")
 
 try:
     hashlib.sha3_256(b'').digest()  # Test ob verfügbar
@@ -111,9 +138,8 @@ def recv_frame(sock, timeout=30):
 
 
 def get_public_ip():
-    """Ermittelt die öffentliche IP und Port via STUN."""
     nat_type, public_ip, public_port = stun.get_ip_info()
-    return public_ip, public_port  # Rückgabe als Tupel (IP, Port)
+    return public_ip, public_port  # Für SIP-Contact-Header
 
 
 def shorten_public_key(key):
@@ -326,36 +352,81 @@ def add_dynamic_padding(data, key):
 
 
 def decrypt_phonebook_data(encrypted_data, private_key_pem):
-    """Decrypts phonebook data using private key"""
+    """Decrypts phonebook data using private key with enhanced validation
+    
+    Args:
+        encrypted_data: Combined encrypted data (secret + phonebook) as bytes
+        private_key_pem: Client's private key in PEM format as string
+        
+    Returns:
+        Decrypted phonebook data as dictionary
+        
+    Raises:
+        ValueError: If data validation fails
+        RSAError: If decryption fails
+        EVPError: If AES decryption fails
+    """
     try:
+        # 1. Input validation
+        if not isinstance(encrypted_data, bytes):
+            raise ValueError("encrypted_data must be bytes")
         if len(encrypted_data) < 512:
-            raise ValueError("Data too short")
+            raise ValueError(f"Data too short ({len(encrypted_data)} bytes), need at least 512 bytes")
             
-        # 1. Split into secret and phonebook
+        # 2. Split into secret and phonebook parts
         encrypted_secret = encrypted_data[:512]
         encrypted_phonebook = encrypted_data[512:]
         
-        # 2. Decrypt secret with private key
-        priv_key = RSA.load_key_string(private_key_pem.encode())
-        decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
+        print(f"[DEBUG] Encrypted secret length: {len(encrypted_secret)}")
+        print(f"[DEBUG] Encrypted phonebook length: {len(encrypted_phonebook)}")
         
-        # 3. Validate secret structure
-        if not decrypted_secret.startswith(b"+++secret+++"):
-            raise ValueError("Invalid secret structure")
+        # 3. Load private key
+        try:
+            priv_key = RSA.load_key_string(private_key_pem.encode())
+        except Exception as e:
+            raise ValueError(f"Failed to load private key: {str(e)}")
+        
+        # 4. Decrypt secret
+        try:
+            decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
+        except Exception as e:
+            raise ValueError(f"Secret decryption failed: {str(e)}")
+        
+        # 5. Validate secret structure
+        if decrypted_secret is None:
+            raise ValueError("Decrypted secret is None")
             
-        secret = decrypted_secret[11:59]  # 48 bytes
+        if not decrypted_secret.startswith(b"+++secret+++"):
+            print(f"[DEBUG] Invalid secret header: {decrypted_secret[:20]}")
+            raise ValueError("Invalid secret structure - missing header")
+            
+        secret = decrypted_secret[11:59]  # Extract 48 bytes after header
+        if len(secret) != 48:
+            raise ValueError(f"Invalid secret length: {len(secret)} (expected 48)")
+        
         iv = secret[:16]
         aes_key = secret[16:]
         
-        # 4. Decrypt phonebook
-        cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
-        decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
+        print(f"[DEBUG] IV length: {len(iv)}")
+        print(f"[DEBUG] AES key length: {len(aes_key)}")
         
-        # 5. Parse JSON
-        return json.loads(decrypted_data.decode('utf-8'))
+        # 6. Decrypt phonebook data
+        try:
+            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)  # 0 for decrypt
+            decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
+        except Exception as e:
+            raise ValueError(f"AES decryption failed: {str(e)}")
         
+        # 7. Parse JSON
+        try:
+            return json.loads(decrypted_data.decode('utf-8'))
+        except Exception as e:
+            print(f"[DEBUG] Decrypted data (first 100 chars): {decrypted_data[:100]}")
+            raise ValueError(f"JSON parsing failed: {str(e)}")
+            
     except Exception as e:
-        print("Decryption error: {}".format(e))
+        print(f"[DECRYPTION ERROR] {str(e)}")
+        traceback.print_exc()
         raise
 
 def decrypt_audio_chunk(chunk, key, seed):
@@ -1008,8 +1079,10 @@ class PHONEBOOK(QObject):
         self.phonebook_entries = []
         self._connection_status = "Nicht verbunden"
         self._call_status = ""
-        self.client_name = ""
-        self.requestClientName.connect(self.handle_name_request)
+        self._client_name = ""  # Korrektes privates Attribut
+        self.client_name = ""   # Öffentliche Property
+        self.load_client_name()
+        self.clientNameRequested.connect(self.handle_name_request)
 
         # QML Engine Setup
         self.engine = QQmlApplicationEngine()
@@ -1020,14 +1093,43 @@ class PHONEBOOK(QObject):
             raise RuntimeError("QML konnte nicht geladen werden")
 
     # Properties für QML
-    requestClientName = Signal()
+    serverSettingsChanged = Signal(str, str) 
+    clientNameRequested = Signal()
     clientNameChanged = Signal(str)
     connectionStatusChanged = Signal(str)
     callStatusChanged = Signal(str)
     phonebookUpdated = Signal(list)
+    # Als Property für QML verfügbar machen
     @Property(str, notify=clientNameChanged)
     def clientName(self):
         return self._client_name
+
+    @Slot(str, result=bool)
+    def save_client_name(self, name):
+        """Speichert den Client-Namen"""
+        try:
+            with open("client_config.json", "w") as f:
+                json.dump({"name": name.strip()}, f)
+            self._client_name = name.strip()
+            self.client_name = self._client_name  # Konsistenz beibehalten
+            self.clientNameChanged.emit(self._client_name)
+            return True
+        except Exception as e:
+            print(f"Fehler beim Speichern: {str(e)}")
+            return False
+    def load_client_name(self):
+        """Läd den gespeicherten Client-Namen"""
+        try:
+            if os.path.exists("client_config.json"):
+                with open("client_config.json", "r") as f:
+                    config = json.load(f)
+                    self.client_name = config.get("name", "")
+                    self._client_name = self.client_name
+                    return True
+        except Exception as e:
+            print(f"Fehler beim Laden des Client-Namens: {str(e)}")
+        return False
+    
 
     @Slot()
     def handle_name_request(self):
@@ -1102,11 +1204,14 @@ class PHONEBOOK(QObject):
 
     @Slot(str, str)
     def on_connect_click(self, server_ip, server_port):
+        """Handle connection attempt with proper name validation and error handling"""
+        # Check if already connected
         if self.client_socket:
             self._connection_status = "Bereits verbunden"
             self.connectionStatusChanged.emit(self._connection_status)
             return
-    
+
+        # Validate server parameters first
         try:
             if not server_ip or not server_port:
                 raise ValueError("Server-IP und Port müssen angegeben werden")
@@ -1114,45 +1219,62 @@ class PHONEBOOK(QObject):
             port = int(server_port)
             if not (0 < port <= 65535):
                 raise ValueError("Ungültiger Port")
-    
+                
+        except ValueError as e:
+            self._connection_status = f"Ungültige Eingabe: {str(e)}"
+            self.connectionStatusChanged.emit(self._connection_status)
+            return
+
+        # Handle client name requirement
+        if not self._client_name:
+            if not hasattr(self, '_name_requested'):
+                self._name_requested = True
+                self.clientNameRequested.emit()
+            else:
+                self._connection_status = "Verbindung abgebrochen - Kein Name angegeben"
+                self.connectionStatusChanged.emit(self._connection_status)
+            return
+
+        # Attempt connection
+        try:
             self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.client_socket.settimeout(5)
             
-            try:
-                self.client_socket.connect((server_ip, port))
-                self.server_ip = server_ip
-                self.server_port = port
-                
-                self._connection_status = "Verbunden mit {}:{}".format(server_ip, port)
-                self.connectionStatusChanged.emit(self._connection_status)
-                
-                threading.Thread(
-                    target=self.start_connection_wrapper,
-                    daemon=True
-                ).start()
-    
-            except socket.timeout:
-                self._connection_status = "Verbindungstimeout - Server nicht erreichbar"
-                self.connectionStatusChanged.emit(self._connection_status)
-                self.cleanup_connection()
-            except ConnectionRefusedError:
-                self._connection_status = "Verbindung abgelehnt - Server nicht erreichbar oder Port falsch"
-                self.connectionStatusChanged.emit(self._connection_status)
-                self.cleanup_connection()
-            except OSError as e:
-                self._connection_status = "Netzwerkfehler: {}".format(str(e))
-                self.connectionStatusChanged.emit(self._connection_status)
-                self.cleanup_connection()
-    
-        except ValueError as e:
-            self._connection_status = "Ungültige Eingabe: {}".format(str(e))
-            self.connectionStatusChanged.emit(self._connection_status)
-            self.cleanup_connection()
-        except Exception as e:
-            self._connection_status = "Unerwarteter Fehler: {}".format(str(e))
-            self.connectionStatusChanged.emit(self._connection_status)
-            self.cleanup_connection()
+            # Async connection attempt
+            def connection_attempt():
+                try:
+                    self.client_socket.connect((server_ip, port))
+                    self.server_ip = server_ip
+                    self.server_port = port
+                    
+                    self._connection_status = f"Verbunden mit {server_ip}:{port}"
+                    self.connectionStatusChanged.emit(self._connection_status)
+                    
+                    # Start message handling thread
+                    threading.Thread(
+                        target=self.start_connection_wrapper,
+                        daemon=True
+                    ).start()
+                    
+                except socket.timeout:
+                    self._connection_status = "Verbindungstimeout - Server nicht erreichbar"
+                    self.cleanup_connection()
+                except ConnectionRefusedError:
+                    self._connection_status = "Verbindung abgelehnt - Server nicht erreichbar oder Port falsch"
+                    self.cleanup_connection()
+                except OSError as e:
+                    self._connection_status = f"Netzwerkfehler: {str(e)}"
+                    self.cleanup_connection()
+                finally:
+                    self.connectionStatusChanged.emit(self._connection_status)
 
+            # Run connection in separate thread to avoid UI freeze
+            threading.Thread(target=connection_attempt, daemon=True).start()
+
+        except Exception as e:
+            self._connection_status = f"Unerwarteter Fehler: {str(e)}"
+            self.connectionStatusChanged.emit(self._connection_status)
+            self.cleanup_connection()
     @Slot()
     def load_phonebook(self):
         if not self.client_socket:
@@ -1177,15 +1299,29 @@ class PHONEBOOK(QObject):
             self.connectionStatusChanged.emit(self._connection_status)
 
     def update_phonebook(self, phonebook_data):
-        valid_entries = []
-        for entry in phonebook_data:
-            if (isinstance(entry, dict) and 
-                str(entry.get('id', '')).isdigit() and 
-                entry.get('name')):
-                valid_entries.append(entry)
-        
-        self.phonebook_entries = valid_entries
-        self.phonebookUpdated.emit(valid_entries)
+        try:
+            print("[DEBUG] Raw phonebook data:", phonebook_data)
+            
+            valid_entries = []
+            for entry in phonebook_data:
+                if isinstance(entry, dict):
+                    # Sicherstellen, dass name immer ein String ist
+                    safe_entry = {
+                        'id': str(entry.get('id', '0')),
+                        'name': str(entry.get('name', 'Unnamed')).strip() or 'Unnamed',  # Fallback für leere Strings
+                        'ip': str(entry.get('ip', '')),
+                        'port': str(entry.get('port', '')),
+                        'publicKeyShort': entry.get('public_key', '')[:20] + '...' if entry.get('public_key') else ''
+                    }
+                    valid_entries.append(safe_entry)
+            
+            print("[DEBUG] Validated entries:", valid_entries)
+            self.phonebook_entries = valid_entries
+            self.phonebookUpdated.emit(valid_entries)
+            
+        except Exception as e:
+            print("[ERROR] Phonebook update failed:", str(e))
+            traceback.print_exc()
 
     @Slot(int)
     def on_entry_click(self, index):
@@ -1368,7 +1504,7 @@ class PHONEBOOK(QObject):
 
     
     def _process_encrypted_phonebook(self, encrypted_data):
-        """Process encrypted phonebook data"""
+        """Process encrypted phonebook data with flexible secret length handling"""
         print("\n=== DECRYPTING PHONEBOOK DATA ===")
         
         try:
@@ -1379,39 +1515,66 @@ class PHONEBOOK(QObject):
                 
             encrypted_secret = encrypted_data[:512]
             encrypted_phonebook = encrypted_data[512:]
-            print("[DEBUG] Encrypted secret (512 bytes): {}...".format(' '.join('{:02x}'.format(b) for b in encrypted_secret[:16])))
+            
+            print("[DEBUG] Encrypted secret (512 bytes): {}...".format(
+                ' '.join('{:02x}'.format(b) for b in encrypted_secret[:16])))
             print("[DEBUG] Encrypted phonebook ({} bytes): {}...".format(
                 len(encrypted_phonebook),
                 ' '.join('{:02x}'.format(b) for b in encrypted_phonebook[:16])
-            ))    
+            ))
+            
             # Load private key
             with open("private_key.pem", "rb") as f:
                 priv_key = RSA.load_key_string(f.read())
                 
-            # Decrypt secret
+            # Decrypt secret (expecting ~59 bytes but handling variations)
             decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
-            if not decrypted_secret.startswith(b"+++secret+++"):
-                print("[ERROR] Invalid secret format")
+            
+            # Debug output
+            print(f"[DEBUG] Decrypted secret length: {len(decrypted_secret)} bytes")
+            print(f"[DEBUG] First 16 bytes: {decrypted_secret[:16].hex()}")
+            
+            # Find the actual secret start (allowing for small variations)
+            prefix = b"+++secret+++"
+            prefix_pos = decrypted_secret.find(prefix)
+            
+            if prefix_pos == -1:
+                print("[ERROR] Missing secret prefix")
                 return False
                 
-            secret = decrypted_secret[11:59]  # Skip overhead
-            iv = secret[:16]
-            aes_key = secret[16:48]
+            # Calculate actual secret start and length
+            secret_start = prefix_pos + len(prefix)
+            actual_secret = decrypted_secret[secret_start:secret_start+48]  # Get exactly 48 bytes
+            
+            if len(actual_secret) != 48:
+                print(f"[ERROR] Invalid secret core length: {len(actual_secret)} (expected 48)")
+                return False
+                
+            # Extract IV and AES key
+            iv = actual_secret[:16]
+            aes_key = actual_secret[16:48]
+            
+            print(f"[DEBUG] IV: {iv.hex()}")
+            print(f"[DEBUG] AES Key: {aes_key[:8].hex()}... (truncated)")
             
             # Decrypt phonebook
-            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
+            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)  # 0 for decryption
             decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
             
             # Parse phonebook
-            phonebook_data = json.loads(decrypted_data.decode('utf-8'))
+            try:
+                phonebook_data = json.loads(decrypted_data.decode('utf-8'))
+            except UnicodeDecodeError:
+                # Fallback for binary data
+                phonebook_data = json.loads(decrypted_data.decode('utf-8', errors='replace'))
+                
             print("[DEBUG] Received phonebook with {} entries".format(len(phonebook_data)))
             
-            # Update UI in main thread
-            self.after(0, lambda: self.update_phonebook(phonebook_data))
-            return True
+            # Update phonebook storage (non-GUI version)
+            return self.update_phonebook(phonebook_data)
             
         except Exception as e:
-            print("[DECRYPTION ERROR] {}".format(str(e)))
+            print("[DECRYPTION ERROR]", str(e))
             traceback.print_exc()
             return False
     
@@ -1617,22 +1780,15 @@ class PHONEBOOK(QObject):
     )
 
 def main():
-    # Qt benötigt sys.argv für die Initialisierung
-    import sys
+    # App muss zuerst erstellt werden
+    app = QApplication(sys.argv) if 'QApplication' in globals() else QGuiApplication(sys.argv)
     
-    # QGuiApplication für Ubuntu Touch (oder QApplication für Desktop mit Widgets)
-    from PySide2.QtGui import QGuiApplication
-    from PySide2.QtQml import QQmlApplicationEngine
-    
-    # Qt Application erstellen
-    app = QGuiApplication(sys.argv)
-    
-    # PHONEBOOK Instanz erstellen
-    phonebook = PHONEBOOK()
-    
-    # QML Engine starten (wird bereits im PHONEBOOK-Konstruktor gemacht)
-    # Hier führen wir einfach die Hauptschleife aus
-    sys.exit(app.exec_())
+    try:
+        phonebook = PHONEBOOK()
+        sys.exit(app.exec())
+    except Exception as e:
+        print(f"Application error: {e}")
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
