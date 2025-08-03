@@ -1418,7 +1418,7 @@ class PHONEBOOK(ctk.CTk):
 
     
     def _process_encrypted_phonebook(self, encrypted_data):
-        """Process encrypted phonebook data"""
+        """Process encrypted phonebook data with flexible secret length handling"""
         print("\n=== DECRYPTING PHONEBOOK DATA ===")
         
         try:
@@ -1430,39 +1430,79 @@ class PHONEBOOK(ctk.CTk):
             encrypted_secret = encrypted_data[:512]
             encrypted_phonebook = encrypted_data[512:]
             
-            print(f"[DEBUG] Encrypted secret (512 bytes): {encrypted_secret[:16].hex(' ')}...")
-            print(f"[DEBUG] Encrypted phonebook ({len(encrypted_phonebook)} bytes): {encrypted_phonebook[:16].hex(' ')}...")
-    
+            print(f"[DEBUG] Encrypted secret (512 bytes): {' '.join(f'{b:02x}' for b in encrypted_secret[:16])}...")
+            print(f"[DEBUG] Encrypted phonebook ({len(encrypted_phonebook)} bytes): {' '.join(f'{b:02x}' for b in encrypted_phonebook[:16])}...")
+
             # Load private key
             with open("private_key.pem", "rb") as f:
                 priv_key = RSA.load_key_string(f.read())
                 
-            # Decrypt secret
+            # Decrypt secret (handling variable length)
             decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
-            if not decrypted_secret.startswith(b"+++secret+++"):
-                print("[ERROR] Invalid secret format")
+            print(f"[DEBUG] Decrypted secret length: {len(decrypted_secret)} bytes")
+            print(f"[DEBUG] Full secret (hex): {decrypted_secret.hex()}")
+            
+            # Find the secret prefix (flexible position)
+            prefix = b"+++secret+++"
+            prefix_pos = decrypted_secret.find(prefix)
+            
+            if prefix_pos == -1:
+                print("[ERROR] Secret prefix not found")
                 return False
                 
-            secret = decrypted_secret[11:59]  # Skip overhead
-            iv = secret[:16]
-            aes_key = secret[16:48]
+            # Extract the 48-byte secret (16 IV + 32 key) after the prefix
+            secret_start = prefix_pos + len(prefix)
+            secret_end = secret_start + 48
+            actual_secret = decrypted_secret[secret_start:secret_end]
             
-            # Decrypt phonebook
-            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
-            decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
+            if len(actual_secret) != 48:
+                print(f"[ERROR] Invalid secret length: {len(actual_secret)} (expected 48)")
+                return False
+                
+            # Split into IV and AES key
+            iv = actual_secret[:16]
+            aes_key = actual_secret[16:48]
             
-            # Parse phonebook
-            phonebook_data = json.loads(decrypted_data.decode('utf-8'))
-            print(f"[DEBUG] Received phonebook with {len(phonebook_data)} entries")
+            print(f"[DEBUG] IV: {iv.hex()}")
+            print(f"[DEBUG] AES Key: {aes_key[:8].hex()}... (truncated)")
             
-            # Update UI in main thread
+            # Initialize cipher with explicit padding
+            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0, padding=1)
+            
+            # Decrypt in chunks if needed (for large phonebooks)
+            chunk_size = 4096
+            decrypted_parts = []
+            
+            for i in range(0, len(encrypted_phonebook), chunk_size):
+                chunk = encrypted_phonebook[i:i+chunk_size]
+                decrypted_parts.append(cipher.update(chunk))
+            
+            decrypted_parts.append(cipher.final())
+            decrypted_data = b''.join(decrypted_parts)
+            
+            # Parse JSON (with error handling)
+            try:
+                phonebook_data = json.loads(decrypted_data.decode('utf-8'))
+            except json.JSONDecodeError as e:
+                print(f"[ERROR] JSON decode failed: {str(e)}")
+                # Try with error replacement for non-UTF8 chars
+                phonebook_data = json.loads(decrypted_data.decode('utf-8', errors='replace'))
+            
+            print(f"[DEBUG] Received {len(phonebook_data)} phonebook entries")
+            
+            # Update the phonebook in the UI thread
             self.after(0, lambda: self.update_phonebook(phonebook_data))
             return True
             
+        except RSA.RSAError as e:
+            print(f"[RSA ERROR] {str(e)}")
+        except EVP.EVPError as e:
+            print(f"[AES ERROR] {str(e)}")
         except Exception as e:
-            print(f"[DECRYPTION ERROR] {str(e)}")
+            print(f"[CRITICAL ERROR] {str(e)}")
             traceback.print_exc()
-            return False
+        
+        return False
     
     def _process_binary_phonebook(self, framed_data):
         """Process framed SIP messages with encrypted payload"""
