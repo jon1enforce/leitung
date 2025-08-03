@@ -1,5 +1,7 @@
 # requirements.txt für Python 3.5 (Ubuntu Touch kompatibel)
 M2Crypto
+PySide6
+PyQt5
 PySide2
 PyAudio
 pysha3
