@@ -1,2 +1,2 @@
-ubuntu touch app
+ubuntu touch app  
 ![Screenshot](./ausgeschnitten.png)
