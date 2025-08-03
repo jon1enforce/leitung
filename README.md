@@ -14,6 +14,6 @@ gcc -shared -fPIC -o auslagern.so auslagern.c \
 
 ___________________________________________________
 linux/unix/bsd:    
-python3 server.py
-python3 client.py
+python3 server.py  
+python3 client.py  
 ___________________________________________________
