@@ -1,12 +1,12 @@
 # requirements.txt für Python 3.5 (Ubuntu Touch kompatibel)
 M2Crypto
-PySide6
 PyQt5
-PySide2
+# PySide2
+# PySide6
 PyAudio
 pysha3
 python-stun
-future
+
 
 --only-binary=:all:
 --no-binary=M2Crypto
