@@ -1,0 +1,1140 @@
+client.py
+load_client_name()
+
+    Lädt oder fordert den Client-Namen an
+
+    Interagiert mit client_name.txt und Benutzereingabe via simpledialog
+
+    Speichert Namen persistent für zukünftige Sitzungen
+
+send_frame(sock, data)
+
+    Sendet Daten mit Längenheader für Frame-Kompatibilität
+
+    Wird von allen Netzwerkfunktionen genutzt (z.B. SIP, Audio)
+
+    Robust gegen Verbindungsabbrüche und Timeouts
+
+recv_frame(sock, timeout=15)
+
+    Empfängt gerahmte Daten mit Längenheader
+
+    Wird für alle Serverantworten und Streams verwendet
+
+    Handelt große Datenmengen (bis 10MB) und Timeouts
+
+get_public_ip()
+
+    Ermittelt die öffentliche IP via STUN
+
+    Wird für SIP-Header und Peer-to-Peer-Verbindungen genutzt
+
+    Liefert auch externen Port für NAT-Traversal
+
+shorten_public_key(key)
+
+    Kürzt PEM-formatierte Schlüssel für Logs/UI
+
+    Verarbeitet Server- und Client-Schlüssel
+
+    Entfernt Header/Footer und Whitespace
+
+test_key_pair()
+
+    Validiert RSA-Schlüsselpaar-Konsistenz
+
+    Nutzt M2Crypto für Verschlüsselungstest
+
+    Wirft Assertion bei Schlüsselmissmatch
+
+merge_public_keys(keys)
+
+    Kombiniert mehrere Schlüssel zu einem String
+
+    Wird für Merkle-Tree-Berechnungen genutzt
+
+    Identische Implementierung wie auf dem Server
+
+normalize_key(key)
+
+    Standardisiert Schlüsselformat für Vergleiche
+
+    Wird von merge_public_keys() und Merkle-Funktionen aufgerufen
+
+    Handelt PEM- und Base64-Formate
+
+quantum_safe_hash(data)
+
+    Generiert SHA3-256-Hash für kryptografische Operationen
+
+    Basis für Merkle-Tree-Berechnungen
+
+    Quantencomputer-resistenter Algorithmus
+
+build_merkle_tree(data_blocks)
+
+    Erstellt Merkle-Tree aus Datenblöcken
+
+    Wird für Schlüsselverifikation genutzt
+
+    Implementiert Baumreduktion mit Duplikation ungerader Knoten
+
+is_valid_public_key(key)
+
+    Prüft PEM-Format von RSA-Schlüsseln
+
+    Wird bei Schlüsselimporten validiert
+
+    Checkt ASN.1-Header und Mindestlänge
+
+verify_merkle_integrity(all_keys, received_root_hash)
+
+    Validiert Merkle-Tree-Konsistenz
+
+    Vergleicht mit Server-berechnetem Root-Hash
+
+    Führt Schlüssel-Normalisierung und Sortierung durch
+
+debug_print_key(key_type, key_data)
+
+    Loggt Schlüsselmetriken für Debugging
+
+    Zeigt Hex/ASCII-Darstellungen von Schlüsselteilen
+
+    Nützlich für Kryptografie-Fehleranalyse
+
+validate_key_pair(private_key_pem, public_key_pem)
+
+    Testet RSA-Schlüsselpaar-Kompatibilität
+
+    Nutzt M2Crypto für Verschlüsselungstest
+
+    Rückgabe als boolescher Erfolgsstatus
+
+get_disk_entropy(size)
+
+    Liest Zufallsdaten von /dev/urandom
+
+    Wird für kryptografische Seed-Generierung genutzt
+
+    Fallback bei unzureichender Systementropie
+
+generate_secret()
+
+    Erzeugt 48-Byte-Geheimnis (IV + AES-Key)
+
+    Kombiniert System- und Festplattenentropie
+
+    Wird für Sitzungsschlüssel genutzt
+
+generate_dynamic_padding(data, key)
+
+    Erzeugt schlüsselabhängiges Padding
+
+    Nutzt SHA3-256 für variable Padding-Länge
+
+    Erhöht Resistenz gegen Padding-Oracle-Angriffe
+
+add_dynamic_padding(data, key)
+
+    Fügt Padding zu Daten hinzu
+
+    Wird vor AES-Verschlüsselung angewendet
+
+    Verwendet generate_dynamic_padding()
+
+decrypt_phonebook_data(encrypted_data, private_key_pem)
+
+    Entschlüsselt das Server-Telefonbuch
+
+    Kombiniert RSA (Geheimnis) und AES (Daten)
+
+    Handelt PKCS#7-Padding-Fehler elegant
+
+extract_secret(decrypted_data)
+
+    Extrahiert 48-Byte-Geheimnis aus RSA-Output
+
+    Validiert "+++secret+++"-Overhead
+
+    Debuggt Hex-Dump bei Fehlern
+
+decrypt_audio_chunk(chunk, key, seed)
+
+    Entschlüsselt Audio-Daten mit AES-256-CBC
+
+    Entfernt dynamisches Padding
+
+    Wird vom Audio-Empfangsthread genutzt
+
+encrypt_audio_chunk(chunk, key, seed)
+
+    Verschlüsselt Audio-Daten mit AES-256-CBC
+
+    Fügt dynamisches Padding hinzu
+
+    Wird vom Audio-Sendethread genutzt
+
+load_server_publickey()
+
+    Lädt Server-Public-Key aus Datei
+
+    Wird für initialen Schlüsselaustausch genutzt
+
+    Wirft Fehler bei ungültigem Format
+
+send_audio_stream(key, seed)
+
+    Streamt verschlüsseltes Mikrofon-Audio
+
+    Nutzt encrypt_audio_chunk() für Chunks
+
+    Sendet IV/Key vor Stream (unverschlüsselt - TODO)
+
+receive_audio_stream(key, seed)
+
+    Empfängt und entschlüsselt Audio-Stream
+
+    Nutzt decrypt_audio_chunk() pro Chunk
+
+    Spielt Audio via PyAudio ab
+
+build_sip_request(method, recipient, client_name, server_ip, server_port)
+
+    Generiert SIP-Requests mit UUIDs
+
+    Erzeugt korrekte Via/From/To-Header
+
+    Nutzt Zufallsports für NAT-Traversal
+
+build_sip_message(method, recipient, custom_data={}, from_server=False, host=None)
+
+    Erstellt SIP-Nachrichten mit JSON/Text-Body
+
+    Automatische Content-Type-Erkennung
+
+    Unterstützt Server/Client-Absenderkennung
+
+parse_sip_message(message)
+
+    Parset SIP-Nachrichten in Dictionary
+
+    Handelt Bytes/Strings und leere Eingaben
+
+    Extrahiert Header/Body mit Fehlertoleranz
+
+_process_sip_message(self, sip_data)
+
+    Verarbeitet eingehende SIP-Nachrichten
+
+    Leitet an _process_encrypted_phonebook() weiter
+
+    Filtert PING/PONG-Nachrichten
+
+connection_loop(self)
+
+    Hauptkommunikationsschleife des Clients
+
+    Sendet REGISTER und verarbeitet Antworten
+
+    Implementiert Ping-Pong-Mechanismus
+
+extract_server_public_key(sip_data, raw_response=None)
+
+    Extrahiert Server-Key aus SIP-Nachricht
+
+    Prüft mehrere Positionen (Header/Body)
+
+    Rückgabe als vollständiger PEM-Key
+
+start_connection(server_ip, server_port, client_name, client_socket, message_handler=None)
+
+    Initialisiert Serververbindung
+
+    Führt Schlüsselaustausch durch
+
+    Startet Merkle-Verifikation
+
+save_client_secret(secret)
+
+    Speichert Client-Geheimnis sicher
+
+    Nutzt client_secret.bin als Dateibackend
+
+    Silent-Fehlerbehandlung
+
+save_client_id(client_id)
+
+    Persistiert Client-ID in Datei
+
+    Wird für wiederkehrende Anmeldungen genutzt
+
+    Keine Validierung der Eingabe
+
+load_client_id()
+
+    Lädt gespeicherte Client-ID
+
+    Fallback zu None bei fehlender Datei
+
+    Einzeiler ohne Fehlerbehandlung
+
+load_publickey()
+
+    Lädt/generiert Client-RSA-Schlüsselpaar
+
+    Speichert private/public Key in PEM-Dateien
+
+    Validiert Schlüsselformat vor Rückgabe
+
+load_privatekey()
+
+    Lädt privaten Schlüssel aus Datei
+
+    Keine Generierung falls nicht vorhanden
+
+    Rückgabe als PEM-String
+
+start_audio_streams(called_client_ip, called_client_port, key, seed)
+
+    Startet bidirektionale Audio-Streams
+
+    Nutzt Threads für Senden/Empfangen
+
+    Parameter für Ziel-IP/Port erforderlich
+
+SecureVault.init(self)
+
+    Initialisiert sichere Speicherbibliothek
+
+    Lädt architekturspezifische .so-Dateien
+
+    Wirft Fehler bei fehlgeschlagener Initialisierung
+
+SecureVault._load_libraries(self)
+
+    Lädt C-Bibliotheken für sichere Speicherung
+
+    Unterstützt ARM/x86-Architekturen
+
+    Fallback-Logik für Kompatibilität
+
+SecureVault.create(self)
+
+    Erstellt neuen SecureVault-Speicherbereich
+
+    Nutzt C-Bibliothek für Allokierung
+
+    Rückgabe als boolescher Erfolgsstatus
+
+SecureVault.generate_secret(self)
+
+    Generiert Geheimnis in C-allociertem Speicher
+
+    Nutzt Hardware-RNG falls verfügbar
+
+    Rückgabe als Speicheradresse (ctypes)
+
+SecureVault.store(self, secret_ptr)
+
+    Speichert Geheimnis im SecureVault
+
+    Arbeitet mit Speicheradressen (Sicherheit)
+
+    Verhindert Swapping durch Pinning
+
+SecureVault.retrieve(self)
+
+    Holt Geheimnis aus SecureVault
+
+    Rückgabe als Python-Bytes-Objekt
+
+    Automatische Speicherbereinigung
+
+SecureVault.wipe(self)
+
+    Löscht Vault-Inhalte sicher
+
+    Überschreibt Speicher mehrfach
+
+    Wird im Destruktor aufgerufen
+
+PHONEBOOK.init(self)
+
+    Initialisiert die Haupt-UI
+
+    Erstellt SecureVault und Socket-Verbindung
+
+    Robust gegen Initialisierungsfehler
+
+PHONEBOOK.setup_ui(self)
+
+    Konfiguriert Tkinter-UI-Elemente
+
+    Erstellt Notebook/Tabs und Menüleiste
+
+    Separate Fehlerbehandlung für UI-Code
+
+PHONEBOOK._handle_standard_sip(self, sip_data)
+
+    Verarbeitet nicht-verschlüsselte SIP-Nachrichten
+
+    Loggt Nachrichten für Debugging
+
+    Platzhalter für zukünftige Erweiterungen
+
+PHONEBOOK.send_client_secret(self)
+
+    Sendet AES-Geheimnis an Server
+
+    Verschlüsselt mit Server-Public-Key
+
+    Speichert IV/Key für spätere Nutzung
+
+PHONEBOOK.create_bottom_buttons(self)
+
+    Erstellt UI-Buttons für Aktionen
+
+    Bindet Call/Hangup/Update-Funktionen
+
+    Konsistentes Styling mit CTk
+
+PHONEBOOK.create_phonebook_tab(self)
+
+    Erstellt scrollbare Telefonbuch-UI
+
+    Nutzt Canvas für große Kontaktlisten
+
+    Dynamisches Layout mit Frames
+
+PHONEBOOK.create_settings(self)
+
+    Erstellt Verbindungseinstellungs-Fenster
+
+    Eingabefelder für Server-IP/Port
+
+    Verbinden-Button mit Callback
+
+PHONEBOOK.cleanup_connection(self)
+
+    Schließt Socket-Verbindungen sauber
+
+    Wird bei Fehlern/Beenden aufgerufen
+
+    Thread-sichere Socket-Schließung
+
+PHONEBOOK.on_connect_click(self)
+
+    Handler für Verbinden-Button
+
+    Validiert Eingaben und startet Verbindung
+
+    Startet connection_loop im Thread
+
+PHONEBOOK.on_entry_click(self, entry)
+
+    Handler für Telefonbuch-Einträge
+
+    Startet Anruf zu ausgewähltem Client
+
+    Debug-Logging ohne Funktionalität
+
+PHONEBOOK.update_phonebook(self, phonebook_data)
+
+    Aktualisiert die Telefonbuch-UI
+
+    Verarbeitet Server-Antworten
+
+    Thread-sichere Widget-Updates
+
+PHONEBOOK._clear_phonebook_entries(self)
+
+    Leert die Telefonbuch-UI
+
+    Wird vor Updates aufgerufen
+
+    Löscht alle Child-Widgets
+
+PHONEBOOK._add_phonebook_entry(self, entry)
+
+    Fügt einzelnen Eintrag zur UI hinzu
+
+    Erzeugt Button mit Callback
+
+    Konsistentes Format für alle Einträge
+
+PHONEBOOK._update_canvas_scrollregion(self)
+
+    Passt Scrollbereich des Canvas an
+
+    Wird nach UI-Änderungen aufgerufen
+
+    Scrollt zurück zum Anfang
+
+PHONEBOOK.load_phonebook(self)
+
+    Fordert Telefonbuch vom Server an
+
+    Sendet SIP-GET-Anfrage
+    3 Verarbeitet Antwort mit update_phonebook()
+
+PHONEBOOK.on_numpad_click(self, button)
+
+    Platzhalter für Nummernfeld-Input
+
+    Debug-Ausgabe ohne Funktionalität
+
+    Wird für zukünftige Tastatur genutzt
+
+PHONEBOOK.on_call_click(self)
+
+    Startet Audio-Call als Initiator
+
+    Generiert Sitzungsschlüssel
+
+    Startet Sende/Empfangs-Threads
+
+PHONEBOOK.on_hangup_click(self)
+
+    Platzhalter für Auflegen-Funktion
+
+    Noch nicht implementiert
+
+PHONEBOOK.open_keyboard_settings(self)
+
+    Platzhalter für Tastatur-Einstellungen
+
+    Zeigt nicht implementiert-Message
+
+PHONEBOOK.open_language_settings(self)
+
+    Platzhalter für Sprach-Einstellungen
+
+    Zeigt nicht implementiert-Message
+
+PHONEBOOK.handle_incoming_call(self, sip_data)
+
+    Verarbeitet eingehende Anrufe
+
+    Entschlüsselt Call-Geheimnis
+
+    Startet Audio-Streams
+
+PHONEBOOK.initiate_call(self, recipient)
+
+    Startet Outbound-Call zu Client
+
+    Verschlüsselt Geheimnis mit Empfänger-Key
+
+    Sendet SIP-INVITE mit Metadaten
+
+PHONEBOOK._process_json_body(self, body)
+
+    Verarbeitet JSON-SIP-Bodies
+
+    Leitet Phonebook-Updates weiter
+
+    Rückgabe als boolescher Verarbeitungsstatus
+
+PHONEBOOK._handle_ping_message(self)
+
+    Beantwortet Server-PINGs mit PONG
+
+    Nutzt SIP-MESSAGE-Format
+
+    Thread-sicherer Socket-Zugriff
+
+PHONEBOOK.handle_server_registration_response(self, response)
+
+    Verarbeitet Server-Registrierungsantwort
+
+    Validiert Merkle-Root und Schlüssel
+
+    Speichert Client-ID persistent
+
+PHONEBOOK.initiate_secret_exchange(self)
+
+    Startet verschlüsselten Schlüsselaustausch
+
+    Nutzt Server-Public-Key für RSA
+
+    Speichert Geheimnis im SecureVault
+
+PHONEBOOK.handle_server_message(self, raw_data)
+
+    Zentrale Nachrichtenverarbeitung
+
+    Leitet an spezialisierte Handler weiter
+
+    Unterstützt SIP/JSON/Binary-Formate
+
+PHONEBOOK._process_framed_data(self, framed_data)
+
+    Verarbeitet gerahmte Binärdaten
+
+    Entfernt Frame-Header falls vorhanden
+
+    Leitet an Entschlüsselungsroutinen weiter
+
+PHONEBOOK._process_sip_message(self, message)
+
+    Verarbeitet SIP-Nachrichten mit Payload
+
+    Extrahiert verschlüsselte Telefonbuchdaten
+
+    Nutzt base64 für Binärdaten in SIP
+
+PHONEBOOK._process_encrypted_phonebook(self, encrypted_data)
+
+    Entschlüsselt Server-Telefonbuch
+
+    Handelt SIP/JSON/Rohdaten-Formate
+
+    Robust gegen Formatierungsfehler
+
+PHONEBOOK._decrypt_phonebook_data(self, encrypted_data)
+
+    Führt RSA+AES-Entschlüsselung durch
+
+    Validiert Schlüssellängen und Formate
+
+    Debuggt Hex-Dumps bei Fehlern
+
+PHONEBOOK._process_binary_phonebook(self, framed_data)
+
+    Verarbeitet binäre SIP-Nachrichten
+
+    Extrahiert Body aus SIP-Rahmen
+
+    Unterstützt JSON/Key-Value-Formate
+
+PHONEBOOK._decrypt_phonebook(self, encrypted_data)
+
+    Entschlüsselt Telefonbuchdaten
+
+    Nutzt PKCS#7-Padding-Validierung
+
+    Konvertiert zwischen Bytes/Strings
+
+PHONEBOOK._process_phonebook_update(self, encrypted_data)
+
+    Aktualisiert UI mit neuen Telefonbuchdaten
+
+    Nutzt AES-CBC mit IV/Key aus Geheimnis
+
+    Silent-Fehlerbehandlung
+
+PHONEBOOK.store_secret_safely(self, secret)
+
+    Speichert Geheimnis im SecureVault
+
+    Fallback zu temporärer Speicherung
+
+    Konvertiert zu ctypes-compatiblem Format
+
+PHONEBOOK.start_connection_wrapper(self)
+
+    Wrapper für Verbindungsaufbau
+
+    Kapselt Fehlerbehandlung
+
+    Startet message_handler im Hauptthread
+
+main()
+
+    Startet die PHONEBOOK-UI
+
+    Läuft in eigenem Thread
+
+    Daemon-Thread für sauberen Exit
+    
+    
+    
+server.py
+send_frame(sock, data)
+
+    Sendet Daten mit Längenheader für Frame-Kompatibilität
+
+    Wird für alle Client-Kommunikation verwendet
+
+    Robust gegen Socket-Fehler
+
+recv_frame(sock, timeout=30)
+
+    Empfängt gerahmte Daten mit Timeout
+
+    Verarbeitet große Frames (bis 10MB)
+
+    Debuggt Header/Body-Metriken
+
+debug_print_key(key_type, key_data)
+
+    Loggt Schlüsselinformationen für Debugging
+
+    Zeigt Hex/ASCII-Darstellungen
+
+    Nützlich für Kryptografie-Fehler
+
+validate_key_pair(private_key, public_key)
+
+    Testet RSA-Schlüsselpaar-Konsistenz
+
+    Nutzt M2Crypto für Verschlüsselungstest
+
+    Rückgabe als boolescher Status
+
+build_merkle_tree(data_blocks)
+
+    Erstellt Merkle-Tree aus Datenblöcken
+
+    Wird für Schlüsselverifikation genutzt
+
+    Implementiert Baumreduktion
+
+extract_public_key(raw_data)
+
+    Extrahiert Public Key aus SIP-Nachrichten
+
+    Sucht in Headern/Body nach PEM-Format
+
+    Rückgabe als vollständiger PEM-Key
+
+generate_keys()
+
+    Generiert Server-RSA-Schlüsselpaar
+
+    Speichert öffentlichen/privaten Schlüssel
+
+    Wird einmalig beim ersten Start ausgeführt
+
+load_server_publickey()
+
+    Lädt Server-Public-Key aus Datei
+
+    Ruft generate_keys() falls nicht vorhanden
+
+    Rückgabe als PEM-String
+
+normalize_key(key)
+
+    Standardisiert Schlüsselformatierung
+
+    Entfernt Whitespace/PEM-Header
+
+    Identisch zur Client-Implementierung
+
+merge_public_keys(keys)
+
+    Kombiniert Schlüssel zu einem String
+
+    Nutzt "|||" als Trennzeichen
+
+    Wird für Merkle-Tree-Berechnung genutzt
+
+shorten_public_key(key)
+
+    Kürzt Schlüssel für Logs/UI
+
+    Entfernt PEM-Header/Footer
+
+    Behält ASN.1-Header bei
+
+quantum_safe_hash(data)
+
+    Berechnet SHA3-256-Hash
+
+    Wird für Merkle-Tree-Blätter genutzt
+
+    Quantencomputer-resistent
+
+build_merkle_tree_from_keys(all_keys)
+
+    Erstellt Merkle-Tree aus Schlüsseln
+
+    Führt Normalisierung/Sortierung durch
+
+    Loggt Zwischenschritte für Debugging
+
+handle_sip_message(raw_data)
+
+    Parset SIP-Nachrichten in Dictionary
+
+    Extrahiert Methoden/Header/Body
+
+    Unterstützt Bytes/String-Input
+
+load_client_name()
+
+    Lädt Client-Namen aus Datei
+
+    Fallback zu "default_client" im Thread
+
+    Vermeidet UI-Abfrage im Nebenthread
+
+Server.init(host='0.0.0.0', port=5060)
+
+    Initialisiert Server-Socket und Datenstrukturen
+
+    Lädt persistente Client-Daten
+
+    Setzt Thread-Locks für Shared Resources
+
+Server.get_merkle_root()
+
+    Gibt aktuellen Merkle-Root zurück
+
+    Nutzt 60-Sekunden-Cache
+
+    Erzwingt Neuberechnung bei Änderungen
+
+Server.update_key_list()
+
+    Aktualisiert die Schlüsselliste
+
+    Sortiert Client-Keys nach ID
+
+    Erzwingt Merkle-Root-Update
+
+Server.debug_socket(sock)
+
+    Loggt Socket-Metriken für Debugging
+
+    Zeigt Fileno/Address/Status
+
+    Nützlich für Verbindungsprobleme
+
+Server.build_sip_message(method, recipient, custom_data={})
+
+    Erstellt SIP-Nachrichten mit JSON/Text-Body
+
+    Kennzeichnet Phonebook-Updates
+
+    Automatischer Content-Type
+
+Server.parse_sip_message(message)
+
+    Parset SIP-Nachrichten mit Header/Body
+
+    Handelt Status-Codes/Methoden
+
+    Extrahiert custom_data aus Body
+
+Server._register_client(sip_data)
+
+    Registriert neuen Client
+
+    Validiert Name/Public-Key
+
+    Weist Client-ID zu
+
+Server.start()
+
+    Hauptserver-Schleife
+
+    Akzeptiert Client-Verbindungen
+
+    Startet Client-Handler-Threads
+
+Server.client_handler(client_socket)
+
+    Verwaltet einzelne Client-Sessions
+
+    Verarbeitet Registrierung/Nachrichten
+
+    Robust gegen Socket-Fehler
+
+Server.generate_client_id()
+
+    Generiert sequentielle Client-IDs
+
+    Implementiert Nachrücklogik
+
+    Thread-sichere Zuweisung
+
+Server.validate_client_name(name)
+
+    Prüft Eindeutigkeit des Client-Namens
+
+    Verwendet Name-Lock für Thread-Safety
+
+    Blockiert leere/zu kurze Namen
+
+Server.handle_call_request(sip_data)
+
+    Vermittelt Anrufe zwischen Clients
+
+    Generiert Call-Geheimnis
+
+    Verschlüsselt für beide Parteien
+
+Server.is_valid_public_key(key)
+
+    Validiert PEM-Format von RSA-Schlüsseln
+
+    Prüft ASN.1-Header und Länge
+
+    Rückgabe als Boolean
+
+Server.handle_client_registration(client_socket, sip_data)
+
+    Verarbeitet Client-Registrierung
+
+    Validiert Public-Key
+
+    Sendet Merkle-Root/Key-Liste
+
+Server.generate_and_send_client_secret(client_id)
+
+    Erstellt und sendet AES-Geheimnis
+
+    Verschlüsselt mit Client-Public-Key
+
+    Speichert Geheimnis serverseitig
+
+Server.handle_client(client_socket)
+
+    Zentrale Client-Verarbeitung
+
+    Kombiniert Registrierung/Kommunikation
+
+    Robustes Error-Handling
+
+Server.prepare_phonebook_data()
+
+    Erstellt Telefonbuch-JSON
+
+    Fügt Merkle-Root/Metadaten hinzu
+
+    Thread-sichere Client-Liste
+
+Server.broadcast_phonebook()
+
+    Sendet Phonebook an alle Clients
+
+    Nutzt ThreadPool für Parallelität
+
+    Fallback zu sequentiellem Versand
+
+Server.remove_client(client_id)
+
+    Entfernt Client aus der Liste
+
+    Aktualisiert Client-ID-Zuordnung
+
+    Startet Broadcast für Update
+
+Server.load_or_generate_server_publickey()
+
+    Lädt/generiert Server-Schlüssel
+
+    Speichert PEM-Datei persistent
+
+    Rückgabe als dekodierter String
+
+Server.get_ordered_keys()
+
+    Gibt sortierte Schlüsselliste zurück
+
+    Server-Key immer an Position 0
+
+    Client-Keys nach ID sortiert
+
+Server.process_merkle_tree(client_name, client_socket)
+
+    Berechnet und sendet Merkle-Tree
+
+    Loggt verwendete Schlüssel
+
+    Nutzt SIP für Übertragung
+
+Server.handle_communication_loop(client_name, client_socket)
+
+    Verwaltet laufende Client-Kommunikation
+
+    Verarbeitet PING/PONG-Nachrichten
+
+    Timeout-Überwachung
+
+Server.initiate_call_between_clients(caller_id, callee_id)
+
+    Vermittelt Anruf mit Geheimnisaustausch
+
+    Nutzt RSA für Schlüsselverteilung
+
+    Sendet Ziel-IP/Port an beide Clients
+
+Server.save_active_clients()
+
+    Speichert aktive Clients in JSON
+
+    Ignoriert nicht-verbundene Clients
+
+    Persistiert nur essentielle Daten
+
+Server.load_active_clients()
+
+    Lädt persistente Client-Daten
+
+    Silent-Fehlerbehandlung
+
+    Rückgabe als Dictionary
+
+Server.encrypt_phonebook_data(phonebook_json, client_public_key_pem)
+
+    Verschlüsselt Phonebook für Client
+
+    Kombiniert RSA (Geheimnis) + AES (Daten)
+
+    Robustes Error-Handling
+
+Server.get_disk_entropy(size)
+
+    Liest Zufallsdaten von /dev/urandom
+
+    Wird für kryptografische Seeds genutzt
+
+    Fallback zu os.urandom()
+
+Server.generate_secret()
+
+    Erzeugt 48-Byte-Geheimnis (IV + Key)
+
+    Kombiniert System-/Disk-Entropie
+
+    Für AES-Sitzungsschlüssel
+
+Server.build_phonebook_message(client_data, encrypted_secret, encrypted_phonebook, client_id)
+
+    Erstellt SIP-Nachricht mit verschlüsseltem Phonebook
+
+    Formatiert JSON-Body kompakt
+
+    Debuggt Header/Body-Metriken
+
+Server.handle_phonebook_message(encrypted_data)
+
+    Entschlüsselt eingehendes Phonebook
+
+    Validiert Overhead-Struktur
+
+    Nutzt SecureVault für Geheimnis
+
+Server.encrypt_phonebook(secret)
+
+    Verschlüsselt Phonebook mit AES
+
+    Nutzt IV/Key aus Geheimnis
+
+    Rückgabe als Hex-String
+
+Server.send_phonebook(client_id)
+
+    Sendet verschlüsseltes Phonebook an Client
+
+    Nutzt client-spezifische Verschlüsselung
+
+    Thread-sicherer Socket-Zugriff
+
+Server.update_all_phonebooks()
+
+    Verteilt Phonebook-Updates an alle Clients
+
+    Optimiert mit ThreadPoolExecutor
+
+    Loggt Erfolgsquote
+
+Server._send_raw_data(sock, data, client_id)
+
+    Thread-sicheres Senden von Rohdaten
+
+    Prüft Socket-Status vor Send
+
+    Timeout-Überwachung
+
+Server.shutdown()
+
+    Führt sauberen Server-Stopp durch
+
+    Benachrichtigt alle Clients
+
+    Schließt Sockets und speichert Daten
+
+Server.cleanup_client_connection(client_socket)
+
+    Schließt Client-Socket sicher
+
+    Wird bei Fehlern/Timeout aufgerufen
+
+    Verhindert Resource-Leaks
+
+SecureVault.init()
+
+    Lädt Secure-Speicher-Bibliothek
+
+    Initialisiert nativen Speicherbereich
+
+    Wirft Fehler bei Initialisierungsproblemen
+
+SecureVault._load_libraries()
+
+    Lädt architekturspezifische .so-Dateien
+
+    Unterstützt ARM/x86 dynamisch
+
+    Setzt Function-Signaturen
+
+SecureVault.generate_and_store_secret()
+
+    Generiert und speichert Geheimnis
+
+    Nutzt Hardware-RNG wenn verfügbar
+
+    Rückgabe als Python-Bytes
+
+SecureVault.retrieve_secret()
+
+    Holt Geheimnis aus SecureVault
+
+    Rückgabe als Bytes oder None
+
+    Keine Speicherkopie für Sicherheit
+
+SecureVault.wipe()
+
+    Löscht Vault-Inhalte sicher
+
+    Überschreibt Speicher mehrfach
+
+    Automatisch im Destruktor
+
+SecureVault.create()
+
+    Allokiert neuen SecureVault
+
+    Rückgabe als boolescher Status
+
+    Muss vor Nutzung aufgerufen werden
+
+SecureVault.generate_secret()
+
+    Generiert Geheimnis in C-Speicher
+
+    Rückgabe als Speicheradresse
+
+    Für direkte ctypes-Nutzung
+
+SecureVault.store(secret_ptr)
+
+    Speichert Geheimnis via Pointer
+
+    Nutzt Memory-Adressen für Sicherheit
+
+    Keine Python-Byte-Kopien
+
+SecureVault.retrieve()
+
+    Holt Geheimnis als Bytes-Objekt
+
+    Erstellt Python-Kopie der Daten
+
+    Für bequeme Python-Nutzung    
