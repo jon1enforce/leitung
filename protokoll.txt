@@ -9,7 +9,7 @@ Die keys werden also sortiert mit serverkey + client0key + cilent1key ... mit Na
 der vom server und vom client berechnete hash, muss identisch sein, dann ist die integrität der public keys erfolgreich gerpüft. Diese Prüfung erfolgt vom client.
 4)der server generiert ein gemeinsames geheimnis mit dem prefix '+++secret+++' für jeden client, initial und einmalig. Speichert diesen anhand der client  ID.
 4.1) Das Gemeinsame Geheimnis mit prefix '+++secret+++' wird mit dem öffentlichen 4096 bit RSA Schlüssel verschlüsselt so dass nur der empfänger dieses entschlüsseln kann mit dem privaten Schlüssel.
-4.2) RSA 4096 gilt als Quantensicher bis 8.192 logische Qubits (Shor-Algorithmus), praktisch  eine Milliarde QBits: Das Kosten/Nutzen fürs "knacken" ist auch in vielen Jahrzehnten viel zu groß. 
+4.2) RSA 4096 gilt als Quantensicher bis 8.192 logische Qubits (Shor-Algorithmus), praktisch  eine Milliarde QBits: Das Kosten/Nutzen fürs "knacken" ist auch in vielen Jahrzehnten viel zu groß, #payload. 
 5) der server sendet das gemeinsame geheimnis, an den jeweiligen client, der client speichert dieses geheimnis als server_secret
 6) anhand des server_secret, seed/iv plus key,  verschlüsselt der server das phonebook mit AES und sendet es dem jeweiligen client, 
 welches dem einzigartigem geheimnis zugewiesen ist. Jeder Client wird also mit ID, Name public key und einzigartigem geheimnis (AES) gelistet.
