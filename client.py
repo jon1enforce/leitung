@@ -21,8 +21,11 @@ import stun  # pip install pystun3
 import struct
 import ctypes
 import platform
+import mmap
 import traceback
-from typing import Optional
+from typing import Optional, NoReturn, Tuple
+import seccomp
+from ctypes import CDLL, c_void_p, c_int, c_ubyte, byref, cast, POINTER, create_string_buffer, c_size_t, c_char_p
 #fallback für bessere kompatibilität:
 try:
     from tkinter import simpledialog
@@ -47,6 +50,72 @@ ENC_METHOD = "aes_256_cbc"
 # Netzwerk-Einstellungen peer to peer:
 HOST = "0.0.0.0"  # IP des Empfängers
 PORT = 5060  # Port für die Übertragung
+
+
+
+def enforce_mac_isolation() -> None:
+    """Erzwingt Isolation mit Unveil (OpenBSD) oder seccomp (Linux/macOS/Windows)"""
+    try:
+        current_platform = platform.system().lower()
+
+        # OpenBSD: Unveil (präzise Erkennung mit startswith)
+        if current_platform.startswith(("openbsd", "openbsd7")):
+            try:
+                import openbsd
+                openbsd.unveil(os.getcwd(), "rw")  # Aktuelles Verzeichnis
+                openbsd.unveil("/dev/null", "rw")  # Für Logging
+                openbsd.unveil(None, None)  # Lock
+                print("[SECURITY] Unveil-Sandbox aktiviert")
+                return
+            except ImportError:
+                print("[WARN] Unveil nicht verfügbar, verwende seccomp", file=sys.stderr)
+
+        # Alle anderen Plattformen: seccomp (Linux/macOS/Windows)
+        setup_seccomp()
+
+    except Exception as e:
+        print(f"[FATAL] Isolation fehlgeschlagen: {e}", file=sys.stderr)
+        sys.exit(1)
+
+def setup_seccomp() -> None:
+    """Sichere seccomp-Implementierung mit vollständiger X11-Unterstützung"""
+    try:
+        filter = seccomp.SyscallFilter(defaction=seccomp.ERRNO(1))
+        
+        # Vollständige Whitelist für X11/GUI
+        SYSCALL_WHITELIST = [
+            # Basis-Syscalls
+            "read", "write", "open", "close", "fstat",
+            "lseek", "mmap", "munmap", "mprotect", "brk",
+            "rt_sigaction", "rt_sigprocmask", "ioctl",
+            "access", "execve", "arch_prctl", "set_tid_address",
+            "set_robust_list", "prlimit64", "getrandom",
+            "getdents64", "stat", "futex", "clock_gettime",
+            "exit_group", "openat", "newfstatat",
+            
+            # X11 spezifisch
+            "connect", "socket", "bind", "listen",
+            "accept", "getsockname", "getpeername",
+            "shmget", "shmat", "shmdt", "shmctl",
+            "poll", "select", "epoll_wait",
+            "getuid", "getgid", "getegid", "geteuid",
+            "prctl", "pipe", "pipe2",
+            
+            # Für modernere Desktop-Umgebungen
+            "eventfd", "eventfd2", "recvmsg", "sendmsg"
+        ]
+        
+        for call in SYSCALL_WHITELIST:
+            try:
+                filter.add_rule(seccomp.ALLOW, call)
+            except seccomp.ArgError:
+                continue
+        
+        filter.load()
+        print(f"[SECURITY] seccomp-Sandbox aktiviert ({platform.system()})")
+
+    except Exception as e:
+        print(f"[WARN] seccomp fehlgeschlagen: {e}", file=sys.stderr)
 
 def load_client_name():
     """Lädt den Client-Namen aus einer lokalen Datei oder fordert den Benutzer zur Eingabe auf."""
@@ -76,40 +145,38 @@ def send_frame(sock, data):
     except socket.timeout:
         raise TimeoutError("Send operation timed out")
 
-def recv_frame(sock, timeout=15):
-    """Compatible frame receiver matching server implementation"""
+def recv_frame(sock, timeout=30):
+    """Improved frame receiver with binary support"""
     sock.settimeout(timeout)
     try:
-        # Read exactly 4 bytes for length header
-        header = b''
-        while len(header) < 4:
-            chunk = sock.recv(4 - len(header))
-            if not chunk:
-                raise ConnectionError("Connection closed during header read")
-            header += chunk
+        # Read header
+        header = sock.recv(4)
+        if len(header) != 4:
+            return None
+            
         length = struct.unpack('!I', header)[0]
         if length > 10 * 1024 * 1024:  # 10MB max
             raise ValueError("Frame too large")
-
-        # Read frame body
+        
+        # Read body
         received = bytearray()
-        print(f"[DEBUG RECV] First 64 bytes: {binascii.hexlify(received[:64])}")
         while len(received) < length:
-            chunk = sock.recv(min(4096, length - len(received)))
+            chunk = sock.recv(min(length - len(received), 4096))
             if not chunk:
-                raise ConnectionError("Connection closed during body read")
+                raise ConnectionError("Connection closed prematurely")
             received.extend(chunk)
-
-        # Try UTF-8 decode, return bytes if not decodable
+        
+        print(f"\n[FRAME DEBUG] Received {length} bytes")
+        print(f"First 32 bytes (hex): {' '.join(f'{b:02x}' for b in received[:32])}")
+        
+        # Try UTF-8 decode for SIP messages
         try:
             return received.decode('utf-8')
         except UnicodeDecodeError:
-            return bytes(received)
+            return bytes(received)  # Return binary data if not UTF-8
             
     except socket.timeout:
-        raise TimeoutError("Receive operation timed out")
-    except ConnectionResetError:
-        raise ConnectionError("Connection reset by peer")
+        raise TimeoutError("Timeout waiting for frame")
 
 
 
@@ -389,43 +456,21 @@ def decrypt_phonebook_data(encrypted_data, private_key_pem):
 
 
 def extract_secret(decrypted_data):
-    """Extracts the 48-byte secret from decrypted data with extensive validation"""
-    print("\n=== EXTRACT SECRET DEBUG ===")
-    print(f"Input length: {len(decrypted_data)} bytes")
-    
-    if not decrypted_data:
-        raise ValueError("No decrypted data provided")
-        
+    """Extracts the 48-byte secret from decrypted data"""
     prefix = b"+++secret+++"
-    print(f"Looking for prefix: {prefix}")
+    prefix_pos = decrypted_data.find(prefix)
     
-    try:
-        prefix_pos = decrypted_data.find(prefix)
-        if prefix_pos == -1:
-            print("[DEBUG] Prefix not found in decrypted data")
-            print(f"First 32 bytes (hex): {binascii.hexlify(decrypted_data[:32])}")
-            print(f"First 32 bytes (ascii): {decrypted_data[:32].decode('ascii', errors='replace')}")
-            raise ValueError("Secret prefix not found in decrypted data")
-            
-        secret_start = prefix_pos + len(prefix)
-        secret_end = secret_start + 48
-        
-        if secret_end > len(decrypted_data):
-            error_msg = f"Decrypted data too short ({len(decrypted_data)} bytes) to contain full secret"
-            print(f"[ERROR] {error_msg}")
-            raise ValueError(error_msg)
-            
-        secret = decrypted_data[secret_start:secret_end]
-        print(f"Extracted secret length: {len(secret)}")
-        print(f"Secret (hex): {binascii.hexlify(secret)}")
-        
-        return secret
-        
-    except Exception as e:
-        print(f"[ERROR] Failed to extract secret: {str(e)}")
-        print(f"Decrypted data (hex): {binascii.hexlify(decrypted_data)}")
-        raise
-
+    if prefix_pos == -1:
+        raise ValueError("Secret prefix not found")
+    
+    secret_start = prefix_pos + len(prefix)
+    secret_end = secret_start + 48
+    secret = decrypted_data[secret_start:secret_end]
+    
+    if len(secret) != 48:
+        raise ValueError(f"Invalid secret length: {len(secret)} bytes (expected 48)")
+    
+    return secret
 def decrypt_audio_chunk(chunk, key, seed):
     # AES-Entschlüsselung mit M2Crypto
     cipher = EVP.Cipher('aes_256_cbc', key=key, iv=seed, op=0)  # op=0 für Entschlüsselung
@@ -449,6 +494,10 @@ def encrypt_audio_chunk(chunk, key, seed):
     return encrypted_chunk
 
 
+def load_privatekey():
+    with open("private_key.pem", "rb") as privHandle:
+        private_key = privHandle.read()
+    return private_key.decode('utf-8')
 def load_server_publickey():
     """Lädt den öffentlichen Server-Schlüssel aus der Datei"""
     if not os.path.exists("server_public_key.pem"):
@@ -586,24 +635,32 @@ def build_sip_message(method, recipient, custom_data={}, from_server=False, host
         body = json.dumps(custom_data, separators=(',', ':'))
         content_type = "application/json"
     else:
-        body = "\r\n".join(f"{k}: {v}" for k, v in custom_data.items())
+        body = "\r\n".join("{}: {}".format(k, v) for k, v in custom_data.items())
         content_type = "text/plain"
     
     # Absenderadresse bestimmen
     if from_server:
-        from_header = f"<sip:server@{host}>" if host else "<sip:server>"
+        from_header = "<sip:server@{}>".format(host) if host else "<sip:server>"
     else:
         client_name = load_client_name()
         client_ip = socket.gethostbyname(socket.gethostname())
-        from_header = f"<sip:{client_name}@{client_ip}>"
+        from_header = "<sip:{}@{}>".format(client_name, client_ip)
+
     
     return (
-        f"{method} sip:{recipient} SIP/2.0\r\n"
-        f"From: {from_header}\r\n"
-        f"To: <sip:{recipient}>\r\n"
-        f"Content-Type: {content_type}\r\n"
-        f"Content-Length: {len(body)}\r\n\r\n"
-        f"{body}"
+        "{method} sip:{recipient} SIP/2.0\r\n"
+        "From: {from_header}\r\n"
+        "To: <sip:{recipient}>\r\n"
+        "Content-Type: {content_type}\r\n"
+        "Content-Length: {content_length}\r\n\r\n"
+        "{body}"
+    ).format(
+        method=method,
+        recipient=recipient,
+        from_header=from_header,
+        content_type=content_type,
+        content_length=len(body),
+        body=body
     )
 def parse_sip_message(message):
     """Robust SIP message parser that handles both raw and parsed messages"""
@@ -665,31 +722,7 @@ def parse_sip_message(message):
         return result
         
     return None
-def _process_sip_message(self, sip_data):
-    """Process SIP messages with either raw or parsed input"""
-    # If we got a raw message, parse it first
-    if not isinstance(sip_data, dict):
-        try:
-            sip_data = parse_sip_message(sip_data)
-        except Exception as e:
-            print(f"[ERROR] Failed to parse SIP message: {str(e)}")
-            return False
 
-    # Now process the parsed message
-    try:
-        custom_data = sip_data.get('custom_data', {})
-        
-        if 'ENCRYPTED_SECRET' in custom_data and 'ENCRYPTED_PHONEBOOK' in custom_data:
-            print("[DEBUG] Found encrypted phonebook in SIP message")
-            secret = base64.b64decode(custom_data['ENCRYPTED_SECRET'])
-            phonebook = base64.b64decode(custom_data['ENCRYPTED_PHONEBOOK'])
-            return self._process_encrypted_phonebook(secret + phonebook)
-            
-        return False
-        
-    except Exception as e:
-        print(f"[ERROR] SIP message processing failed: {str(e)}")
-        return False
 def connection_loop(client_socket, server_ip, message_handler=None):
     """
     Erweiterte Verbindungsschleife mit:
@@ -772,107 +805,120 @@ def extract_server_public_key(sip_data, raw_response=None):
     
     return None            
 def start_connection(server_ip, server_port, client_name, client_socket, message_handler=None):
+    """
+    Final corrected version with complete error handling
+    """
     try:
+        # 1. Configure socket
+        client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+        client_socket.settimeout(15.0)
+
+        # 2. Load and validate client key
         client_pubkey = load_publickey()
-        print("+++client_pubkey+++")
-        print(client_pubkey)
-        # Sicherstellen, dass der Key vollständig ist
-        if not client_pubkey or "-----END PUBLIC KEY-----" not in client_pubkey:
+        if not is_valid_public_key(client_pubkey):
             raise ValueError("Invalid client public key format")
 
-        # Key in den Body der Nachricht einfügen
-        request = (
-            f"REGISTER sip:{server_ip} SIP/2.0\r\n"
-            f"From: <sip:{client_name}@{socket.gethostbyname(socket.gethostname())}>\r\n"
-            f"To: <sip:{server_ip}>\r\n"
+        # 3. Build and send registration
+        local_ip = socket.gethostbyname(socket.gethostname())
+        register_msg = (
+            f"REGISTER sip:{server_ip}:{server_port} SIP/2.0\r\n"
+            f"From: <sip:{client_name}@{local_ip}>\r\n"
+            f"To: <sip:{server_ip}:{server_port}>\r\n"
             f"Content-Type: text/plain\r\n"
             f"Content-Length: {len(client_pubkey)}\r\n\r\n"
-            f"{client_pubkey}"  # Rohdaten ohne zusätzliche Formatierung
+            f"{client_pubkey}"
         )
         
-        print(f"\n[Client] Sending full public key...")
-        send_frame(client_socket, request)
-        
+        print("\n[Client] Sending registration...")
+        send_frame(client_socket, register_msg.encode('utf-8'))
+
+        # 4. Receive and parse response
         response = recv_frame(client_socket)
         if not response:
             raise ConnectionError("Empty response from server")
 
-        print(f"\n[Client] Raw Server Response:\n{response}\n")
-        
-        sip_data = parse_sip_message(response)  # Diese Variable wird verwendet
-        if not sip_data:
-            raise ValueError("Invalid SIP response format")
+        if isinstance(response, bytes):
+            response = response.decode('utf-8')
 
-        # Check if this is a 200 OK response
-        if sip_data.get('status_code') != '200':
-            raise ValueError(f"Server returned error: {sip_data.get('status_code', 'Unknown')}")
+        print(f"\n[Client] Server response:\n{response[:500]}...")
 
-        # Extract server public key - KORREKTE Variablenverwendung
-        server_public_key = extract_server_public_key(sip_data, response)  # sip_data statt sip_msg
-        
-        if not server_public_key or not server_public_key.startswith('-----BEGIN'):
-            print(f"Invalid server key format: {server_public_key[:100]}...")
-            raise ValueError("Invalid server public key format")
+        # 5. Extract and validate server key
+        server_public_key = None
+        if '-----BEGIN PUBLIC KEY-----' in response:
+            key_start = response.index('-----BEGIN PUBLIC KEY-----')
+            key_end = response.index('-----END PUBLIC KEY-----') + len('-----END PUBLIC KEY-----')
+            server_public_key = response[key_start:key_end]
 
-        print(f"\n[Client] Extracted Server Key:\n{server_public_key}")
+        if not is_valid_public_key(server_public_key):
+            raise ValueError("Invalid server public key")
 
-        # Wait for Merkle root message with timeout
-        try:
-            merkle_response = recv_frame(client_socket)
-            if not merkle_response:
-                raise ConnectionError("Empty Merkle response from server")
-        
-            print(f"\n[Client] Raw Merkle Response:\n{merkle_response}\n")
-        
-            merkle_data = parse_sip_message(merkle_response)
-# Nach dem Empfang der Merkle-Antwort:
-            all_keys = []
-            merkle_root = None
+        with open("server_public_key.pem", "w") as f:
+            f.write(server_public_key)
+
+        # 6. Receive and verify Merkle data
+        merkle_response = recv_frame(client_socket)
+        if not merkle_response:
+            raise ConnectionError("No Merkle data received")
+
+        if isinstance(merkle_response, bytes):
+            merkle_response = merkle_response.decode('utf-8')
+
+        merkle_data = parse_sip_message(merkle_response)
+        if not merkle_data:
+            raise ValueError("Invalid Merkle response format")
+
+        # Extract keys and root hash
+        all_keys = []
+        if 'custom_data' in merkle_data and 'ALL_KEYS' in merkle_data['custom_data']:
+            keys_data = merkle_data['custom_data']['ALL_KEYS']
+            if isinstance(keys_data, str):
+                try:
+                    all_keys = json.loads(keys_data)
+                except json.JSONDecodeError:
+                    all_keys = [k.strip() for k in keys_data.split('|||') if k.strip()]
+            elif isinstance(keys_data, list):
+                all_keys = keys_data
+
+        merkle_root = merkle_data.get('custom_data', {}).get('MERKLE_ROOT', '')
+        if not merkle_root:
+            raise ValueError("No Merkle root in response")
+
+        print("\n=== CLIENT VERIFICATION ===")
+        if not verify_merkle_integrity(all_keys, merkle_root):
+            raise ValueError("Merkle verification failed")
+
+        # 7. Start main loop with proper handler
+        print("\n[Client] Starting communication loop...")
+        if message_handler:
+            # Wrap the handler if it's a QObject
+            if hasattr(message_handler, 'handle_server_message'):
+                handler = message_handler.handle_server_message
+            else:
+                handler = message_handler
+        else:
+            handler = None
             
-            if merkle_data and 'custom_data' in merkle_data:
-                if 'ALL_KEYS' in merkle_data['custom_data']:
-                    try:
-                        all_keys = json.loads(merkle_data['custom_data']['ALL_KEYS'])
-                        print(f"[Client] Received {len(all_keys)} keys from server")
-                    except json.JSONDecodeError as e:
-                        print(f"[Client] Error parsing keys: {e}")
-            
-                if 'MERKLE_ROOT' in merkle_data['custom_data']:
-                    merkle_root = merkle_data['custom_data']['MERKLE_ROOT']
-            
-            # Keine zusätzlichen Keys mehr hinzufügen - vertraue der Server-Liste
-            if not merkle_root:
-                if '\r\n\r\n' in merkle_response:
-                    body = merkle_response.split('\r\n\r\n')[1]
-                    for line in body.split('\n'):
-                        if line.startswith('MERKLE_ROOT:'):
-                            merkle_root = line.split('MERKLE_ROOT:')[1].strip()
-                            break
-            
-            if not merkle_root:
-                raise ValueError("No Merkle root in response")
-            
-            # Direkte Verifikation ohne Modifikation der Key-Liste
-            if not verify_merkle_integrity(all_keys, merkle_root):
-                messagebox.showerror("Security Error", 
-                    "Integrity check failed!\n"
-                    "Possible key manipulation detected.\n"
-                    "Connection terminated.")
-                client_socket.close()
-                return
-        
-            # Start main communication loop
-            connection_loop(client_socket, server_ip, message_handler)
-        
-        except socket.timeout:
-            print("Timeout waiting for Merkle root message")
-            raise ConnectionError("Timeout waiting for Merkle verification")
-            
+        connection_loop(client_socket, server_ip, handler)
+        return True
+
     except Exception as e:
-        print(f"[Client] Critical error: {str(e)}")
-        if client_socket:
-            client_socket.close()
-        raise
+        error_msg = f"Connection failed: {str(e)}"
+        print(f"\n[Client ERROR] {error_msg}")
+        traceback.print_exc()
+        
+        if message_handler and hasattr(message_handler, 'show_error'):
+            try:
+                message_handler.show_error(error_msg)
+            except:
+                print("Could not display error message")
+        
+        return False
+    finally:
+        if 'client_socket' in locals():
+            try:
+                client_socket.close()
+            except:
+                pass
 
 def save_client_id(client_id):
     """Speichert die Client-ID in einer lokalen Datei."""
@@ -920,11 +966,19 @@ def load_publickey():
         
         return public_key
 
-
-def load_privatekey():
-    with open("private_key.pem", "rb") as privHandle:
-        private_key = privHandle.read()
-    return private_key.decode('utf-8')
+def secure_del(var):
+    """Sicheres Löschen durch Überschreiben + del"""
+    if isinstance(var, bytes):  # Wenn es bytes ist, in bytearray umwandeln
+        var = bytearray(var)   # Jetzt ist es überschreibbar!
+    
+    if isinstance(var, bytearray):
+        for i in range(len(var)):
+            var[i] = 0  # Überschreibt jedes Byte mit 0x00
+        del var  # Entfernt die Referenz
+    
+    elif hasattr(var, '__dict__'):
+        var.__dict__.clear()  # Falls es ein Objekt ist
+        del var
 
 
 #bidirektionale kommunikation
@@ -983,88 +1037,89 @@ def receive_audio_stream(key, seed):
             stream.close()
             audio.terminate()
 
+
+
 class SecureVault:
+    IV_SIZE = 16      # initialisation vector (first 16 bytes)
+    KEY_SIZE = 32     # aes key (last 32 bytes)
+    SECRET_SIZE = IV_SIZE + KEY_SIZE  # 48 Bytes total
+
     def __init__(self):
-        self.lib = None
-        self.vault = None
-        self.gen_lib = None
-        self._load_libraries()
-        
-    def _load_libraries(self):
-        """Lädt alle benötigten Bibliotheken für die aktuelle Architektur mit erweiterter ARM64-Erkennung"""
-        arch = platform.machine().lower()
-        print(f"[DEBUG] Detected architecture: {arch}")  # Debug-Ausgabe
-    
-        # Erweitertes Mapping für ARM-Architekturen
-        ARCH_ALIASES = {
-            'aarch64': 'arm64',
-            'armv8l': 'arm64',
-            'armv8b': 'arm64',
-            'arm64': 'arm64',
-            'armv7l': 'armv7',
-            'armv7': 'armv7'
-        }
-        
-        # Normalisiere die Architekturbezeichnung
-        normalized_arch = ARCH_ALIASES.get(arch, arch)
-        print(f"[DEBUG] Normalized architecture: {normalized_arch}")
-    
-        # Bibliotheks-Mapping mit Prioritäten
-        LIBRARY_MAP = {
-            'arm64': {
-                'vault': 'libauslagern_arm64.so',
-                'generator': 'libsecuregen_arm64.so',
-                'fallback': 'libauslagern_armv7.so'  # Fallback für ARMv7-Kompatibilität
-            },
-            'armv7': {
-                'vault': 'libauslagern_armv7.so',
-                'generator': 'libsecuregen_armv7.so'
-            },
-            'x86_64': {
-                'vault': 'libauslagern_x86_64.so',
-                'generator': 'libsecuregen_x86_64.so'
-            }
-        }
-    
-    def create(self) -> bool:
-        """Erstellt einen neuen Vault"""
-        if not self.lib:
-            return False
-        self.vault = self.lib.vault_create()
-        return bool(self.vault)
-    
-    def generate_secret(self) -> Optional[int]:
-        """Generiert ein 48-Byte Geheimnis und gibt nur die Speicheradresse zurück"""
-        if not self.gen_lib:
-            return None
-        buf = (ctypes.c_ubyte * 48)()
-        self.gen_lib.generate_secret(buf)
-        return ctypes.addressof(buf)
-    
-    def store(self, secret_ptr: int) -> bool:
-        """Speichert ein Geheimnis (nur über Speicheradresse)"""
-        if not self.vault or not secret_ptr:
-            return False
-        self.lib.vault_load(ctypes.c_void_p(self.vault), ctypes.c_void_p(secret_ptr))
-        return True
-    
-    def retrieve(self) -> Optional[int]:
-        """Holt das Geheimnis zurück (gibt nur Speicheradresse zurück)"""
+        self.lib = CDLL(os.path.join(os.path.dirname(__file__), "libauslagern_x86_64.so"))
+        self._init_function_definitions()
+        self.vault = self.lib.secure_vault_create()
         if not self.vault:
-            return None
-        buf = (ctypes.c_ubyte * 48)()
-        self.lib.vault_retrieve(ctypes.c_void_p(self.vault), ctypes.cast(ctypes.byref(buf), ctypes.POINTER(ctypes.c_ubyte)))
-        return ctypes.addressof(buf)
-    
-    def wipe(self):
-        """Löscht den Vault sicher"""
-        if self.vault:
-            self.lib.vault_wipe(ctypes.c_void_p(self.vault))
-            self.vault = None
-    
+            raise RuntimeError("Failed to create vault")
+
+    def _init_function_definitions(self):
+        """Initialize C function signatures"""
+        self.lib.secure_vault_create.restype = c_void_p
+        
+        self.lib.secure_vault_store_secret.argtypes = [
+            c_void_p,       # vault
+            c_char_p,       # name
+            POINTER(c_ubyte), # secret
+            c_size_t        # length
+        ]
+        
+        self.lib.secure_vault_get_secret_parts.argtypes = [
+            c_void_p,       # vault
+            c_char_p,       # name
+            POINTER(c_ubyte), # iv
+            POINTER(c_ubyte)  # key
+        ]
+        
+        self.lib.secure_vault_is_locked.argtypes = [c_void_p]
+        self.lib.secure_vault_is_locked.restype = c_int
+        
+        self.lib.secure_vault_wipe.argtypes = [c_void_p]
+
+    def store_secret_safely(self, secret: bytes, key_name: str = "server_key") -> bool:
+        """Store secret with name tracking"""
+        if len(secret) != self.SECRET_SIZE:
+            raise ValueError(f"Invalid secret size: {len(secret)} (expected {self.SECRET_SIZE})")
+            
+        buffer = (c_ubyte * self.SECRET_SIZE).from_buffer_copy(secret)
+        name_buffer = create_string_buffer(key_name.encode('utf-8'))
+        
+        result = self.lib.secure_vault_store_secret(
+            c_void_p(self.vault),
+            name_buffer,
+            cast(buffer, POINTER(c_ubyte)),
+            self.SECRET_SIZE
+        )
+        
+        return result == 0
+
+    def get_secret_parts(self, key_name: str = "server_key") -> Tuple[bytes, bytes]:
+        """Get IV (16B) and Key (32B) for named secret"""
+        iv = (c_ubyte * self.IV_SIZE)()
+        key = (c_ubyte * self.KEY_SIZE)()
+        name_buffer = create_string_buffer(key_name.encode('utf-8'))
+        
+        if self.lib.secure_vault_get_secret_parts(
+            c_void_p(self.vault),
+            name_buffer,
+            cast(iv, POINTER(c_ubyte)),
+            cast(key, POINTER(c_ubyte))
+        ) != 0:
+            raise RuntimeError(f"Failed to retrieve secret parts for key: {key_name}")
+            
+        return bytes(iv), bytes(key)
+
+    def is_locked(self) -> bool:
+        """Check if the vault is locked"""
+        return bool(self.lib.secure_vault_is_locked(c_void_p(self.vault)))
+
+    def wipe(self) -> None:
+        """Securely wipe the vault"""
+        self.lib.secure_vault_wipe(c_void_p(self.vault))
+        self.vault = None
+
     def __del__(self):
-        """Destruktor für sichere Bereinigung"""
-        self.wipe()
+        if hasattr(self, 'vault') and self.vault:
+            self.wipe()
+
 class PHONEBOOK(ctk.CTk):
     def __init__(self):
         super().__init__()
@@ -1078,11 +1133,14 @@ class PHONEBOOK(ctk.CTk):
         self.configure(fg_color='black')
         ctk.set_appearance_mode("dark")
         self.secret_vault = SecureVault()  # Neue Instanz für Geheimnis-Speicherung
-        self.secret_vault.create()
         self.current_secret = None  # Aktuelles 48-Byte-Geheimnis für laufende Kommunikation
         # Nur setup_ui aufrufen, nicht beide!
         self.setup_ui()
-
+        self.selected_entry = None
+        client_name = load_client_name()
+        self._client_name = self.load_client_name()
+        self.current_secret = None
+        self.active_call = False
     def setup_ui(self):
         # Stile für die UI-Elemente
         self.style = ttk.Style(self)
@@ -1098,7 +1156,7 @@ class PHONEBOOK(ctk.CTk):
         # Menüleiste
         self.menu_bar = tk.Menu(self)
         self.config(menu=self.menu_bar)
-
+        
         file_menu = tk.Menu(self.menu_bar, tearoff=0)
         file_menu.add_command(label="Schließen", command=self.quit)
         self.menu_bar.add_cascade(label="Datei", menu=file_menu)
@@ -1116,7 +1174,26 @@ class PHONEBOOK(ctk.CTk):
         self.phonebook_tab = ctk.CTkFrame(self.notebook, fg_color='black')
         self.notebook.add(self.phonebook_tab, text="Telefonbuch")
         self.create_phonebook_tab()
-    
+    def save_client_name(self, name):
+        """Speichert den Client-Namen in client_name.txt"""
+        try:
+            with open("client_name.txt", "w") as file:
+                file.write(name)
+            self._client_name = name
+            return True
+        except Exception as e:
+            print(f"Fehler beim Speichern des Namens: {e}")
+            return False
+
+    def load_client_name(self):
+        """Lädt den Client-Namen aus client_name.txt oder gibt leeren String zurück"""
+        try:
+            if os.path.exists("client_name.txt"):
+                with open("client_name.txt", "r") as file:
+                    return file.read().strip()
+        except Exception as e:
+            print(f"Fehler beim Laden des Namens: {e}")
+        return ""    
     def _handle_standard_sip(self, sip_data):
         """Verarbeitet reguläre SIP-Nachrichten"""
         # Hier können andere SIP-Nachrichten behandelt werden
@@ -1181,8 +1258,9 @@ class PHONEBOOK(ctk.CTk):
         self.canvas.pack(side="left", fill="both", expand=True)
         self.scrollbar.pack(side="right", fill="y")
         
-        # Beispiel-Daten (später durch echte Daten ersetzen)
-        self.phonebook_entries = []
+        # Initialisiere phonebook_entries als Instanzattribut falls nicht vorhanden
+        if not hasattr(self, 'phonebook_entries'):
+            self.phonebook_entries = []
         
         # Phonebook Einträge erstellen
         self.entry_buttons = []
@@ -1192,7 +1270,7 @@ class PHONEBOOK(ctk.CTk):
                 text=f"{entry['id']}: {entry['name']}",
                 fg_color="#006400",  # Dunkelgrün
                 text_color="white",
-                font=("Helvetica", 14),
+                font=("Helvetica", 16),
                 height=50,
                 corner_radius=10,
                 command=lambda e=entry: self.on_entry_click(e)
@@ -1207,7 +1285,7 @@ class PHONEBOOK(ctk.CTk):
             ctk.CTkButton(self.phonebook_tab, text="Hang Up", command=self.on_hangup_click),
             ctk.CTkButton(self.phonebook_tab, text="Call", command=self.on_call_click)
         ]
-    
+        
         # Platzierung der Buttons
         for i, button in enumerate(buttons):
             button.place(relx=i/4, rely=0.95, relwidth=0.25, relheight=0.05, anchor='sw')
@@ -1314,66 +1392,138 @@ class PHONEBOOK(ctk.CTk):
         except Exception as e:
             messagebox.showerror("Fehler", f"Unerwarteter Fehler: {str(e)}")
             self.cleanup_connection()
-
-    def on_entry_click(self, entry):
-        print(f"Selected entry: {entry['id']}: {entry['name']}")
-        # Hier können Sie die Logik für den Anruf implementieren
-        # Beispiel:
-        # self.initiate_call(entry['id'], entry['name'])
-    
-    def update_phonebook(self, phonebook_data):
-        """Aktualisiert die Phonebook-Anzeige mit entschlüsselten Daten"""
-        print("\n=== UPDATING PHONEBOOK UI ===")
-        
+    def set_selected_entry(self, entry, frame):
+        """Setzt den ausgewählten Eintrag und aktualisiert die UI"""
+        self.selected_entry = entry
+        self.update_phonebook_ui(self.phonebook_entries)  # Neuzeichnen mit Highlight        
+    def update_phonebook_ui(self, entries):
+        """Aktualisiert die CustomTkinter-Oberfläche mit den Telefonbucheinträgen"""
         try:
-            # Validierung der Eingangsdaten
-            if not isinstance(phonebook_data, list):
-                print("[ERROR] Invalid phonebook data format")
-                return
-
-            # Lösche vorhandene Einträge
+            # 1. Lösche vorhandene Einträge
             for widget in self.scrollable_frame.winfo_children():
                 widget.destroy()
             
-            self.phonebook_entries = []  # Reset der internen Liste
-
-            # Erstelle neue Einträge
-            for entry in phonebook_data:
-                if not isinstance(entry, dict):
-                    continue
-                    
-                client_id = entry.get('id', '')
-                client_name = entry.get('name', 'Unbekannt')
-                client_ip = entry.get('ip', '')
-                client_port = entry.get('port', '')
-                public_key = entry.get('public_key', '')
-
-                if not all([client_id, client_name]):
-                    continue
-
-                # Erstelle Button für jeden Eintrag
-                btn = ctk.CTkButton(
-                    self.scrollable_frame,
-                    text=f"{client_id}: {client_name}",
-                    fg_color="#006400",
-                    text_color="white",
-                    font=("Helvetica", 14),
-                    height=50,
-                    corner_radius=10,
-                    command=lambda e=entry: self.on_entry_click(e)
-                )
-                btn.pack(fill="x", pady=5, padx=5)
-                self.phonebook_entries.append(entry)
-
-            print(f"[UI] Phonebook updated with {len(self.phonebook_entries)} entries")
+            # Schriftdefinition
+            entry_font = ("Helvetica", 16)
             
-            # Canvas aktualisieren
+            # 2. Erstelle neue Einträge
+            for entry in entries:
+                frame = ctk.CTkFrame(
+                    self.scrollable_frame,
+                    fg_color="#002200"
+                )
+                frame.pack(fill="x", pady=3, padx=5)
+                
+                # Label erstellen
+                text_label = ctk.CTkLabel(
+                    frame,
+                    text=f"{entry['id']}: {entry['name']}",
+                    anchor="w",
+                    font=entry_font,
+                    text_color="white",
+                    fg_color="#006400"
+                )
+                text_label.pack(side="left", fill="x", expand=True, padx=5)
+                
+                # Korrekte Lambda-Bindung
+                text_label.bind("<Button-1>", 
+                    lambda event, e=entry.copy(), f=frame: self.set_selected_entry(e, f))
+                frame.bind("<Button-1>", 
+                    lambda event, e=entry.copy(), f=frame: self.set_selected_entry(e, f))
+                
+                # Highlight für ausgewählten Eintrag
+                if self.selected_entry and self.selected_entry.get('id') == entry.get('id'):
+                    frame.configure(fg_color="gray")
+                
+            # 3. Aktualisiere Scrollbereich
             self.canvas.configure(scrollregion=self.canvas.bbox("all"))
-            self.canvas.yview_moveto(0)
+            
+        except Exception as e:
+            print(f"[UI ERROR] Failed to update phonebook UI: {str(e)}")
+            traceback.print_exc()
+    def update_phonebook(self, phonebook_data):
+        """Aktualisiert das Telefonbuch mit vollständiger Fehlerbehandlung
+            
+        Args:
+            phonebook_data: Entschlüsselte Telefonbuchdaten (Liste von Dicts oder JSON-String)
+        """
+        print("\n=== UPDATING PHONEBOOK ===")
+        
+        try:
+            # 1. Input validieren und konvertieren
+            if isinstance(phonebook_data, str):
+                try:
+                    phonebook_data = json.loads(phonebook_data)
+                except json.JSONDecodeError as e:
+                    print("[ERROR] Invalid JSON string:", str(e))
+                    return
+                    
+            if not isinstance(phonebook_data, (list, dict)):
+                print("[ERROR] Invalid phonebook format - expected list or dict")
+                return
+
+            # 2. Normalisiere die Datenstruktur
+            if isinstance(phonebook_data, dict):
+                # Falls als Dict mit 'clients'-Key geliefert
+                entries = phonebook_data.get('clients', [])
+            else:
+                entries = phonebook_data
+                
+            # 3. Validierte Einträge erstellen
+            valid_entries = []
+            for entry in entries:
+                try:
+                    if not isinstance(entry, dict):
+                        continue
+                        
+                    # Erforderliche Felder extrahieren
+                    client_id = str(entry.get('id', '0')).strip()
+                    client_name = str(entry.get('name', load_client_name() or 'Unnamed')).strip()
+                    client_ip = str(entry.get('ip', ''))
+                    client_port = str(entry.get('port', ''))
+                    public_key = str(entry.get('public_key', ''))
+                    
+                    # Tkinter-kompatibles Dict erstellen
+                    tk_entry = {
+                        'id': client_id,
+                        'name': client_name,
+                        'ip': client_ip,
+                        'port': client_port,
+                        'public_key': public_key,
+                        'callable': bool(client_ip and client_port)
+                    }
+                    
+                    valid_entries.append(tk_entry)
+                    
+                    print(f"[DEBUG] Added entry: {client_id} - {client_name}")
+                    
+                except Exception as e:
+                    print(f"[WARNING] Invalid entry skipped: {str(e)}")
+                    traceback.print_exc()
+                    continue
+
+            # 4. Debug-Ausgabe
+            print(f"[DEBUG] Processed {len(valid_entries)} valid entries")
+            if valid_entries:
+                print("[DEBUG] First entry sample:", valid_entries[0])
+
+            # 5. UI aktualisieren
+            self.update_phonebook_ui(valid_entries)
+            
+            # 6. Internen Zustand aktualisieren
+            if self.phonebook_entries != valid_entries:
+                self.phonebook_entries = valid_entries
+            
+            print("[SUCCESS] Phonebook updated")
 
         except Exception as e:
-            print(f"[UI ERROR] Failed to update phonebook: {str(e)}")
+            error_msg = f"Critical phonebook update error: {str(e)}"
+            print(error_msg)
             traceback.print_exc()
+            
+            # Fehler anzeigen (Tkinter-spezifisch)
+            if hasattr(self, 'show_error'):
+                self.show_error(error_msg)
     
     def _clear_phonebook_entries(self):
         """Löscht alle Einträge im scrollable_frame"""
@@ -1426,16 +1576,32 @@ class PHONEBOOK(ctk.CTk):
     def on_numpad_click(self, button):
         self.log_text.insert(tk.END, f"Nummernblock gedrückt: {button}\n")
 
+
     def on_call_click(self):
-        # Erzeuge das 48-Byte-Geheimnis
-        secret = generate_secret()
-        # Extrahiere Seed und Schlüssel
-        seed = secret[:16]  # Erste 16 Bytes
-        key = secret[16:]   # Letzte 32 Bytes
-        #sende seed und key
-        send_audio_stream(key,seed)
-        # Starte den Audioempfang
-        receive_audio_stream(key,seed)
+        """Handler für den Call-Button"""
+        if self.active_call:
+            self.end_current_call()
+            return
+        
+        if not self.selected_entry:
+            messagebox.showerror("Error", "Please select a contact first")
+            return
+        
+        try:
+            recipient = {
+                'name': self.selected_entry['name'],
+                'public_key': self.selected_entry['public_key'],
+                'ip': self.selected_entry['ip'],
+                'port': int(self.selected_entry['port'])
+            }
+            self.initiate_call(recipient)
+            self.update_call_ui(active=True)
+            
+        except KeyError as e:
+            messagebox.showerror("Missing Data", f"Contact missing required field: {str(e)}")
+        except Exception as e:
+            messagebox.showerror("Call Failed", f"Connection error: {str(e)}")
+            self.cleanup_call_resources()
 
     def on_hangup_click(self):
         pass
@@ -1445,6 +1611,8 @@ class PHONEBOOK(ctk.CTk):
 
     def open_language_settings(self):
         messagebox.showinfo("Sprache", "Spracheinstellungen (nicht implementiert)")
+
+     
     def handle_incoming_call(self, sip_data):
         """Verarbeitet eingehende Anrufe"""
         try:
@@ -1463,7 +1631,7 @@ class PHONEBOOK(ctk.CTk):
                 
             secret = decrypted[11:]  # 11 Bytes Overhead entfernen
             self.current_secret = secret
-            self.secret_vault.store(secret)
+            self.secret_vault.store_secret_safely(secret, "session_key")
             
             # 4. Extrahiere Anrufer-Daten
             caller_ip = sip_data['custom_data']['CALLER_IP']
@@ -1495,6 +1663,65 @@ class PHONEBOOK(ctk.CTk):
                     {"STATUS": "REJECTED"}
                 )
                 self.client_socket.sendall(response.encode('utf-8'))
+    def handle_incoming_call(self, sip_data):
+        """Eingehenden Anruf bearbeiten"""
+        if self.active_call:
+            self.send_sip_response(sip_data, "603", "Busy")
+            return
+        
+        try:
+            # 1. Entschlüsselung
+            encrypted = base64.b64decode(sip_data['custom_data']['ENCRYPTED_SECRET'])
+            with open("private_key.pem", "rb") as f:
+                decrypted = RSA.load_key_string(f.read()).private_decrypt(encrypted, RSA.pkcs1_padding)
+            
+            if not decrypted.startswith(b"+++secret+++"):
+                raise ValueError("Invalid secret format")
+                
+            secret = decrypted[11:]
+            self.current_secret = secret
+            self.secret_vault.store(secret)
+            
+            # 2. Audio starten
+            caller = sip_data['custom_data']
+            start_audio_streams(caller['CALLER_IP'], int(caller['CALLER_PORT']), secret[16:], secret[:16])
+            
+            # 3. Bestätigung senden
+            self.send_sip_response(sip_data, "200", "OK")
+            self.update_call_ui(active=True, caller_name=caller['CALLER_NAME'])
+            
+        except Exception as e:
+            self.send_sip_response(sip_data, "500", str(e))
+            self.cleanup_call_resources()
+
+    def end_current_call(self):
+        """Anruf beenden"""
+        try:
+            stop_audio_streams()
+            if self.current_secret:
+                self.secret_vault.purge(self.current_secret)
+        finally:
+            self.cleanup_call_resources()
+            self.update_call_ui(active=False)
+
+    def update_call_ui(self, active, caller_name=None):
+        """UI-Status aktualisieren"""
+        self.active_call = active
+        if active:
+            self.call_button.configure(
+                text=f"End Call ({caller_name if caller_name else 'Outgoing'})",
+                fg_color="red"
+            )
+        else:
+            self.call_button.configure(
+                text="Call",
+                fg_color="green"
+            )
+
+    def cleanup_call_resources(self):
+        """Ressourcen bereinigen"""
+        self.current_secret = None
+        self.active_call = False                
     def initiate_call(self, recipient):
         """Startet einen verschlüsselten Anruf zu einem anderen Client"""
         try:
@@ -1513,7 +1740,7 @@ class PHONEBOOK(ctk.CTk):
             )
             
             # 3. Sichere das Geheimnis lokal
-            self.secret_vault.store(secret)
+            self.secret_vault.store_secret_safely(secret, "session_key")
             
             # 4. Sende INVITE Nachricht
             request = self.build_sip_message(
@@ -1563,6 +1790,7 @@ class PHONEBOOK(ctk.CTk):
         except Exception as e:
             print(f"[ERROR] Failed to send PONG: {str(e)}")
             return False
+   
     def handle_server_message(self, raw_data):
         """Improved message handler that properly routes different message types"""
         print("\n=== HANDLING SERVER MESSAGE ===")
@@ -1621,7 +1849,7 @@ class PHONEBOOK(ctk.CTk):
             
         except Exception as e:
             print(f"[ERROR] Frame processing failed: {str(e)}")
-            return False    
+            return False
     def _process_sip_message(self, message):
         """Verarbeitet SIP-Nachrichten mit verschlüsselten Daten"""
         sip_data = parse_sip_message(message)
@@ -1642,7 +1870,7 @@ class PHONEBOOK(ctk.CTk):
             
         except Exception as e:
             print(f"[ERROR] SIP message processing failed: {str(e)}")
-            return False            
+            return False                    
     def _process_encrypted_phonebook(self, encrypted_data):
         """Process encrypted phonebook data without recursion"""
         print("\n=== PROCESSING ENCRYPTED PHONEBOOK ===")
@@ -1716,6 +1944,8 @@ class PHONEBOOK(ctk.CTk):
             import sys
             sys.stderr.write(f"Error processing encrypted phonebook: {str(e)}\n")
             return False
+
+
     def _decrypt_phonebook_data(self, encrypted_data):
         """Main method for decrypting phonebook data with enhanced error handling"""
         print("\n=== DECRYPT PHONEBOOK DEBUG ===")
@@ -1757,9 +1987,11 @@ class PHONEBOOK(ctk.CTk):
                             
                         priv_key = RSA.load_key_string(private_key.encode())
                         decrypted_secret = priv_key.private_decrypt(secret, RSA.pkcs1_padding)
+                        secure_del(priv_key) # wipe all traces of private keys
+                        # SICHERE Debug-Ausgabe (nur 3 Byte Prefix)
                         print(f"[DEBUG] RSA decrypted: {len(decrypted_secret)} bytes")
-                        print(f"[DEBUG] First 32 bytes (hex): {binascii.hexlify(decrypted_secret[:32])}")
-
+                        print(f"[DEBUG] Prefix (hex): {binascii.hexlify(decrypted_secret[:15]).decode()}...")  
+                        # Nur 3 Bytes vom secret!
                         # Extract AES components with improved error handling
                         prefix = b"+++secret+++"
                         if prefix not in decrypted_secret:
@@ -1767,12 +1999,12 @@ class PHONEBOOK(ctk.CTk):
                             
                         secret_start = decrypted_secret.find(prefix) + len(prefix)
                         secret = decrypted_secret[secret_start:secret_start+48]
-                        
+                        secure_del(decrypted_secret) #wipe all secret traces
                         if len(secret) != 48:
                             raise ValueError(f"Invalid secret length: {len(secret)} bytes (expected 48)")
-                            
-                        iv = secret[:16]
-                        key = secret[16:48]
+                        self.secret_vault.store_secret_safely(secret, "server_key")
+                        secure_del(secret) # wipe all secret traces   
+                        iv, key = self.secret_vault.get_secret_parts("server_key")
                         print("[DEBUG] AES components:")
                         print(f"IV (16 bytes): {binascii.hexlify(iv)}")
                         print(f"Key (32 bytes): {binascii.hexlify(key[:8])}...")
@@ -1785,7 +2017,9 @@ class PHONEBOOK(ctk.CTk):
                             print(f"[WARNING] AES decrypt failed with padding, trying without: {str(e)}")
                             cipher = EVP.Cipher("aes_256_cbc", key, iv, 0, padding=0)
                             decrypted = cipher.update(phonebook) + cipher.final()
-
+                        secure_del(iv)
+                        secure_del(key)
+                        secure_del(cipher)
                         print(f"[DEBUG] Decrypted data length: {len(decrypted)} bytes")
                         print(f"[DEBUG] First 100 bytes (ascii): {decrypted[:100].decode('ascii', errors='replace')}")
 
@@ -1798,7 +2032,7 @@ class PHONEBOOK(ctk.CTk):
 
                         # UI Update with thread safety
                         if hasattr(self, 'update_phonebook'):
-                            self.after(0, lambda: self.update_phonebook(phonebook_data.get('clients', [])))
+                            self.update_phonebook(phonebook_data)
                             print("[DEBUG] UI update scheduled")
                         else:
                             print("[WARNING] update_phonebook method missing")
@@ -1816,61 +2050,9 @@ class PHONEBOOK(ctk.CTk):
         except Exception as e:
             print(f"[CRITICAL ERROR] {str(e)}")
             traceback.print_exc()
-            return None
-    def _process_binary_phonebook(self, framed_data):
-        """Process framed SIP messages with encrypted payload"""
-        print("\n=== PROCESSING FRAMED SIP MESSAGE ===")
-        print(f"[FRAME] Length: {len(framed_data)} bytes")
-        
-        try:
-            # Skip frame header if present (first 4 bytes)
-            if len(framed_data) > 4 and framed_data[:4] == struct.pack('!I', len(framed_data)-4):
-                framed_data = framed_data[4:]
+            return None                     
+
             
-            # Try to find SIP message body
-            body_start = framed_data.find(b'\r\n\r\n')
-            if body_start != -1:
-                headers = framed_data[:body_start]
-                body = framed_data[body_start+4:]  # Skip \r\n\r\n
-                
-                print("[DEBUG] Found SIP message with body")
-                
-                # Try to parse as JSON
-                try:
-                    message_data = json.loads(body.decode('utf-8'))
-                    if "ENCRYPTED_SECRET" in message_data and "ENCRYPTED_PHONEBOOK" in message_data:
-                        print("[DEBUG] Found encrypted phonebook in JSON body")
-                        encrypted_secret = base64.b64decode(message_data["ENCRYPTED_SECRET"])
-                        encrypted_phonebook = base64.b64decode(message_data["ENCRYPTED_PHONEBOOK"])
-                        return self._process_encrypted_phonebook(encrypted_secret + encrypted_phonebook)
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    pass
-                    
-                # Try key-value format
-                if b"ENCRYPTED_SECRET:" in body and b"ENCRYPTED_PHONEBOOK:" in body:
-                    print("[DEBUG] Found encrypted phonebook in key-value body")
-                    secret_part = body.split(b"ENCRYPTED_SECRET:")[1].split(b"\n")[0].strip()
-                    phonebook_part = body.split(b"ENCRYPTED_PHONEBOOK:")[1].split(b"\n")[0].strip()
-                    
-                    try:
-                        encrypted_secret = base64.b64decode(secret_part)
-                        encrypted_phonebook = base64.b64decode(phonebook_part)
-                        return self._process_encrypted_phonebook(encrypted_secret + encrypted_phonebook)
-                    except binascii.Error as e:
-                        print(f"[ERROR] Base64 decode failed: {e}")
-            
-            # Fallback to direct processing if no SIP headers found
-            if len(framed_data) >= 512:
-                print("[DEBUG] Trying direct encrypted phonebook processing")
-                return self._process_encrypted_phonebook(framed_data)
-                
-            print("[ERROR] No valid message format detected")
-            return False
-            
-        except Exception as e:
-            print(f"[CRITICAL ERROR] {str(e)}")
-            traceback.print_exc()
-            return False
     def _decrypt_phonebook(self, encrypted_data):
         """Robuste Entschlüsselung mit korrekter Bytes/String-Handling"""
         try:
@@ -1897,7 +2079,7 @@ class PHONEBOOK(ctk.CTk):
             # 4. RSA Entschlüsselung
             priv_key = RSA.load_key_string(self.private_key.encode())
             decrypted = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
-            
+            decure_del(priv_key)
             # 5. Padding Check (16 Bytes)
             padding = b"SECURE_v4_2024____"
             if not decrypted.startswith(padding):
@@ -1905,16 +2087,19 @@ class PHONEBOOK(ctk.CTk):
                 
             # 6. Extrahiere Schlüsselkomponenten
             secret = decrypted[len(padding):len(padding)+48]  # 48 Bytes
+            secure_del(decrypted)
             if len(secret) != 48:
                 raise ValueError("Invalid secret length")
-                
-            iv = secret[:16]
-            aes_key = secret[16:48]
+            self.secret_vault.store_secret_safely(secret, "server_key")
+            secure_del(secret) # wipe all secret traces   
+            iv, key = self.secret_vault.get_secret_parts("server_key")
             
             # 7. AES Entschlüsselung
-            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
+            cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
             decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
-            
+            secure_del(iv)
+            secure_del(key)
+            secure_del(cipher)
             # 8. JSON Parsing
             return json.loads(decrypted_data.decode('utf-8'))
             
@@ -1922,67 +2107,223 @@ class PHONEBOOK(ctk.CTk):
             print(f"[DECRYPT ERROR] {str(e)}")
             traceback.print_exc()
             raise
-    def _process_phonebook_update(self, encrypted_data):
-        """Verarbeitet AES-verschlüsselte Phonebook-Updates"""
+    def _process_phonebook_update(self, message):
+        """Verarbeitet Phonebook-Updates mit vollständiger Entschlüsselung und ausführlichem Debugging"""
+        print("\n=== CLIENT PHONEBOOK UPDATE PROCESSING ===")
+        
         try:
             # 1. Validierung der Eingangsdaten
-            if not isinstance(encrypted_data, dict) or 'ENCRYPTED_PHONEBOOK' not in encrypted_data:
-                print("[ERROR] Invalid phonebook update format")
+            print("[DEBUG] Validating input message...")
+            if not isinstance(message, dict):
+                print("[ERROR] Invalid message format - not a dictionary")
                 return False
-
-            # 2. Lade gespeichertes Geheimnis
-            if not hasattr(self, 'current_secret') or not self.current_secret:
-                print("[ERROR] No shared secret available")
+    
+            # 2. Extrahiere verschlüsselte Daten
+            print("[DEBUG] Extracting encrypted data from message...")
+            try:
+                encrypted_secret = base64.b64decode(message['ENCRYPTED_SECRET'])
+                encrypted_phonebook = base64.b64decode(message['ENCRYPTED_PHONEBOOK'])
+                print("[DEBUG] Encrypted secret length: {}".format(len(encrypted_secret)))
+                print("[DEBUG] Encrypted phonebook length: {}".format(len(encrypted_phonebook)))
+            except KeyError as e:
+                print("[ERROR] Missing required field: {}".format(str(e)))
+                return False
+            except binascii.Error as e:
+                print("[ERROR] Base64 decoding failed: {}".format(str(e)))
+                return False
+    
+            # 3. Entschlüssele das Geheimnis
+            print("[DEBUG] Decrypting secret with private key...")
+            try:
+                with open("private_key.pem", "rb") as f:
+                    priv_key = RSA.load_key_string(f.read())
+                    print("[DEBUG] Private key loaded successfully")
+                    
+                decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
+                secure_del(priv_key)
+                print("[DEBUG] Decrypted secret (len={}): {}...".format(
+                    len(decrypted_secret),
+                    ''.join('{:02x}'.format(b) for b in decrypted_secret[:2])  # Hex conversion without .hex()
+                ))            
+            except Exception as e:
+                print("[ERROR] Failed to decrypt secret: {}".format(str(e)))
+                return False
+    
+            # 4. Validiere das Geheimnis
+            print("[DEBUG] Validating decrypted secret...")
+            if not decrypted_secret.startswith(b"+++secret+++"):
+                print("[ERROR] Invalid secret format - missing overhead")
                 return False
                 
-            secret = self.current_secret
-            iv = secret[:16]
-            aes_key = secret[16:]
-
-            # 3. Entschlüssele das Phonebook
-            encrypted = base64.b64decode(encrypted_data['ENCRYPTED_PHONEBOOK'])
-            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
-            decrypted = cipher.update(encrypted) + cipher.final()
-            phonebook_data = json.loads(decrypted.decode('utf-8'))
-
-            # 4. Aktualisiere die Anzeige
-            self.update_phonebook(phonebook_data.get('clients', []))
-            return True
-
-        except Exception as e:
-            print(f"[ERROR] Phonebook update failed: {str(e)}")
-            return False
+            secret = decrypted_secret[11:59]  # 48 Bytes
+            secure_del(decrypted_secret)
+            self.secret_vault.store_secret_safely(secret, "server_key")
+            del secret # wipe all secret traces   
+            iv, key = self.secret_vault.get_secret_parts("server_key")
+            print("[DEBUG] IV: {}".format(''.join('{:02x}'.format(b) for b in iv)))
+            print("[DEBUG] AES Key: {}...".format(''.join('{:02x}'.format(b) for b in aes_key[:8])))
     
-    def store_secret_safely(self, secret):
-        """Sichert das Geheimnis mit SecureVault"""
-        try:
-            if not hasattr(self, 'secret_vault') or not self.secret_vault.vault:
-                self.secret_vault = SecureVault()
-                self.secret_vault.create()
-            
-            # Konvertiere zu ctypes Buffer
-            buf = (ctypes.c_ubyte * 48)(*secret)
-            self.secret_vault.store(ctypes.addressof(buf))
+            # 5. Entschlüssele das Phonebook
+            print("[DEBUG] Decrypting phonebook with AES...")
+            try:
+                cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
+                decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
+                
+                print("[DEBUG] Decrypted data (len={}): {}...".format(
+                    len(decrypted_data),
+                    decrypted_data[:100].decode('utf-8', errors='replace')
+                ))
+            except EVP.EVPError as e:
+                error_msg = "AES decryption failed: {}".format(str(e))
+                print("[ERROR] {}".format(error_msg))
+                logging.error(error_msg, exc_info=True)
+                return False
+            except Exception as e:
+                error_msg = "Unexpected error during decryption: {}".format(str(e))
+                print("[CRITICAL] {}".format(error_msg))
+                logging.critical(error_msg, exc_info=True)
+                return False
+            secure_del(iv)
+            secure_del(key)
+            secure_del(cipher)
+            # 6. Parse JSON-Daten
+            print("[DEBUG] Parsing decrypted JSON data...")
+            try:
+                phonebook_data = json.loads(decrypted_data.decode('utf-8'))
+                print("[DEBUG] Raw phonebook data: {}".format(phonebook_data))
+            except json.JSONDecodeError as e:
+                print("[ERROR] JSON decode failed: {}".format(str(e)))
+                # Safe debug output for potentially sensitive data
+                print("[DEBUG] Problematic data ({} bytes): {}".format(
+                    len(decrypted_data),
+                    repr(decrypted_data[:200].decode('utf-8', errors='replace'))
+                ))
+                return False
+    
+            # 7. Filtere gültige Einträge
+            print("[DEBUG] Validating phonebook entries...")
+            valid_entries = []
+            for entry in phonebook_data:
+                try:
+                    if (isinstance(entry, dict) and 
+                        str(entry.get('id', '')).isdigit() and 
+                        entry.get('name')):
+                        print("[DEBUG] Valid entry found: {}: {}".format(
+                            entry['id'],
+                            entry['name']
+                        ))
+                        valid_entries.append(entry)
+                except Exception as e:
+                    print("[WARNING] Invalid entry skipped: {}".format(str(e)))
+    
+            # 8. Aktualisiere UI
+            if valid_entries:
+                print("[DEBUG] Updating UI with {} valid entries".format(len(valid_entries)))
+                self.phonebook_update_signal.emit(phonebook_data.get('clients', []))
+                return True
+            else:
+                print("[ERROR] No valid entries found in phonebook")
+                return False
+                
         except Exception as e:
-            print(f"Warnung: Geheimnis konnte nicht sicher gespeichert werden: {e}")
-            # Fallback: Temporär in Memory behalten
-            self.temp_secret = secret
+            print("[CRITICAL] Processing error: {}".format(str(e)))
+            traceback.print_exc()
+            return False
+        finally:
+            print("=== CLIENT PHONEBOOK UPDATE PROCESSING END ===")
+    
 
-    def start_connection_wrapper(self):
-        """Wrapper für start_connection mit Message-Handler"""
-        start_connection(
-            self.server_ip,
-            int(self.server_port),  # Use the stored value
-            load_client_name(),
-            self.client_socket,
-            self.handle_server_message
-    )
+
+    def start_connection_wrapper(self, status_label=None, server_ip=None, server_port=None, client_name=None):
+        """Korrigierte Tkinter-Version mit sauberer Attribut-Handhabung"""
+        def update_status(message):
+            if status_label:
+                status_label.config(text=message)
+            print(f"[STATUS] {message}")
+
+        try:
+            update_status("Verbindung wird vorbereitet...")
+            
+            # Parameter-Validierung mit übergebenen Werten oder self-Attributen
+            ip = server_ip if server_ip is not None else getattr(self, 'server_ip', None)
+            port_str = server_port if server_port is not None else getattr(self, 'server_port', None)
+            name = client_name if client_name is not None else getattr(self, '_client_name', None)
+
+            if not ip or not port_str:
+                update_status("Server-IP und Port benötigt")
+                return
+
+            try:
+                port = int(port_str)
+                if not (0 < port <= 65535):
+                    update_status("Ungültiger Port (1-65535)")
+                    return
+            except ValueError:
+                update_status("Port muss eine Zahl sein")
+                return
+
+            # Socket-Erstellung
+            client_socket = getattr(self, 'client_socket', None)
+            if not client_socket:
+                try:
+                    client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    client_socket.settimeout(10)
+                    if hasattr(self, 'client_socket'):
+                        self.client_socket = client_socket
+                except Exception as e:
+                    update_status(f"Socket-Fehler: {str(e)}")
+                    return
+
+            # Verbindungsaufbau
+            update_status("Verbinde mit Server...")
+            try:
+                success = start_connection(
+                    ip,
+                    port,
+                    self._client_name,
+                    client_socket,
+                    self  # Message-Handler
+                )
+                
+                if success:
+                    update_status(f"Verbunden mit {ip}:{port}")
+                else:
+                    update_status("Verbindung fehlgeschlagen")
+                    
+            except socket.timeout:
+                update_status("Timeout - Server nicht erreichbar")
+            except ConnectionRefusedError:
+                update_status("Verbindung abgelehnt")
+            except socket.gaierror:
+                update_status("Ungültige Server-Adresse")
+            except Exception as e:
+                update_status(f"Fehler: {str(e)}")
+                traceback.print_exc()
+
+        except Exception as e:
+            update_status(f"Kritischer Fehler: {str(e)}")
+            traceback.print_exc()
+        finally:
+            client_socket = getattr(self, 'client_socket', None)
+            if client_socket:
+                try:
+                    client_socket.close()
+                    if hasattr(self, 'client_socket'):
+                        self.client_socket = None
+                except:
+                    pass
+
 
 def main():
-    global app
-    app = PHONEBOOK()
-    app_instance = threading.Thread(target=app.mainloop())
-    app_instance.daemon = True
-    app_instance.start()
+    print("[DEBUG] Starting application...")  # Debug-Ausgabe
+    try:
+        #enforce_mac_isolation()  # Nur aktivieren, wenn sichergestellt ist, dass sie nicht blockiert
+        global app
+        app = PHONEBOOK()
+        print("[DEBUG] Tkinter app initialized, starting mainloop...")
+        app.mainloop()  # Direkter Aufruf ohne Thread
+    except Exception as e:
+        print(f"[CRITICAL ERROR] Failed to start application: {e}")
+        traceback.print_exc()
 if __name__ == "__main__":
     main()
