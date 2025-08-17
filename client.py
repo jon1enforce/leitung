@@ -1,3 +1,4 @@
+from access_monitor import SecurityMonitor
 import socket
 import threading
 from M2Crypto import RSA, BIO, EVP, Rand
@@ -53,69 +54,7 @@ PORT = 5060  # Port für die Übertragung
 
 
 
-def enforce_mac_isolation() -> None:
-    """Erzwingt Isolation mit Unveil (OpenBSD) oder seccomp (Linux/macOS/Windows)"""
-    try:
-        current_platform = platform.system().lower()
 
-        # OpenBSD: Unveil (präzise Erkennung mit startswith)
-        if current_platform.startswith(("openbsd", "openbsd7")):
-            try:
-                import openbsd
-                openbsd.unveil(os.getcwd(), "rw")  # Aktuelles Verzeichnis
-                openbsd.unveil("/dev/null", "rw")  # Für Logging
-                openbsd.unveil(None, None)  # Lock
-                print("[SECURITY] Unveil-Sandbox aktiviert")
-                return
-            except ImportError:
-                print("[WARN] Unveil nicht verfügbar, verwende seccomp", file=sys.stderr)
-
-        # Alle anderen Plattformen: seccomp (Linux/macOS/Windows)
-        setup_seccomp()
-
-    except Exception as e:
-        print(f"[FATAL] Isolation fehlgeschlagen: {e}", file=sys.stderr)
-        sys.exit(1)
-
-def setup_seccomp() -> None:
-    """Sichere seccomp-Implementierung mit vollständiger X11-Unterstützung"""
-    try:
-        filter = seccomp.SyscallFilter(defaction=seccomp.ERRNO(1))
-        
-        # Vollständige Whitelist für X11/GUI
-        SYSCALL_WHITELIST = [
-            # Basis-Syscalls
-            "read", "write", "open", "close", "fstat",
-            "lseek", "mmap", "munmap", "mprotect", "brk",
-            "rt_sigaction", "rt_sigprocmask", "ioctl",
-            "access", "execve", "arch_prctl", "set_tid_address",
-            "set_robust_list", "prlimit64", "getrandom",
-            "getdents64", "stat", "futex", "clock_gettime",
-            "exit_group", "openat", "newfstatat",
-            
-            # X11 spezifisch
-            "connect", "socket", "bind", "listen",
-            "accept", "getsockname", "getpeername",
-            "shmget", "shmat", "shmdt", "shmctl",
-            "poll", "select", "epoll_wait",
-            "getuid", "getgid", "getegid", "geteuid",
-            "prctl", "pipe", "pipe2",
-            
-            # Für modernere Desktop-Umgebungen
-            "eventfd", "eventfd2", "recvmsg", "sendmsg"
-        ]
-        
-        for call in SYSCALL_WHITELIST:
-            try:
-                filter.add_rule(seccomp.ALLOW, call)
-            except seccomp.ArgError:
-                continue
-        
-        filter.load()
-        print(f"[SECURITY] seccomp-Sandbox aktiviert ({platform.system()})")
-
-    except Exception as e:
-        print(f"[WARN] seccomp fehlgeschlagen: {e}", file=sys.stderr)
 
 def load_client_name():
     """Lädt den Client-Namen aus einer lokalen Datei oder fordert den Benutzer zur Eingabe auf."""
@@ -1045,7 +984,12 @@ class SecureVault:
     SECRET_SIZE = IV_SIZE + KEY_SIZE  # 48 Bytes total
 
     def __init__(self):
-        self.lib = CDLL(os.path.join(os.path.dirname(__file__), "libauslagern_x86_64.so"))
+                # Security Monitor Integration
+        self.monitor = SecurityMonitor()
+        
+        # Bibliothek sicher laden
+        lib_path = os.path.join(os.path.dirname(__file__), "libauslagern_x86_64.so")
+        self.lib = self.monitor.library_loader.load_library(lib_path)
         self._init_function_definitions()
         self.vault = self.lib.secure_vault_create()
         if not self.vault:
@@ -2313,17 +2257,49 @@ class PHONEBOOK(ctk.CTk):
                 except:
                     pass
 
-
 def main():
-    print("[DEBUG] Starting application...")  # Debug-Ausgabe
+    print("[DEBUG] Starting application...")
     try:
-        #enforce_mac_isolation()  # Nur aktivieren, wenn sichergestellt ist, dass sie nicht blockiert
-        global app
-        app = PHONEBOOK()
-        print("[DEBUG] Tkinter app initialized, starting mainloop...")
-        app.mainloop()  # Direkter Aufruf ohne Thread
+        # Versuche mit Security Monitor
+        try:
+            from access_monitor import SecurityMonitor
+            security_monitor = SecurityMonitor(hardening_rules={
+                'prevent_fd_leaks': False,
+                'restrict_env': False,
+                'disable_debugger': True,
+                'strict_path_checking': True
+            })
+            print("[INFO] Security Monitor aktiviert")
+        except ImportError:
+            security_monitor = None
+            print("[INFO] access_monitor.py nicht gefunden - Laufe im eingeschränkten Modus")
+        except Exception as e:
+            security_monitor = None
+            print(f"[WARN] Security Monitor konnte nicht initialisiert werden: {str(e)}")
+
+        # App-Initialisierung mit Fallback
+        try:
+            global app
+            app = PHONEBOOK()
+            print("[DEBUG] GUI initialisiert, starting mainloop")
+            app.mainloop()
+        except Exception as e:
+            print(f"[ERROR] Hauptanwendung fehlgeschlagen: {str(e)}")
+            raise
+
+    except SystemExit:
+        print("[INFO] Anwendung wird beendet")
+    except KeyboardInterrupt:
+        print("[INFO] Durch Benutzer abgebrochen")
     except Exception as e:
-        print(f"[CRITICAL ERROR] Failed to start application: {e}")
+        print(f"[CRITICAL] Unerwarteter Fehler: {str(e)}")
         traceback.print_exc()
+        # Notfallmodus ohne Sicherheitsmonitor
+        try:
+            print("[WARN] Starte im Notfallmodus ohne Sicherheitsfunktionen")
+            app = PHONEBOOK()
+            app.mainloop()
+        except:
+            print("[FATAL] Kritischer Fehler - Anwendung kann nicht starten")
 if __name__ == "__main__":
     main()
