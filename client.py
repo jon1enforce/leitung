@@ -2257,6 +2257,8 @@ class PHONEBOOK(ctk.CTk):
                 except:
                     pass
 
+def is_linux():
+    return sys.platform.startswith("linux")
 def main():
     print("[DEBUG] Starting application...")
     security_monitor = None
