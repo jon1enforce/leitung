@@ -2259,8 +2259,10 @@ class PHONEBOOK(ctk.CTk):
 
 def main():
     print("[DEBUG] Starting application...")
-    try:
-        # Versuche mit Security Monitor
+    security_monitor = None
+    
+    # Nur unter Linux versuchen
+    if is_linux():
         try:
             from access_monitor import SecurityMonitor
             security_monitor = SecurityMonitor(hardening_rules={
@@ -2269,37 +2271,20 @@ def main():
                 'disable_debugger': True,
                 'strict_path_checking': True
             })
-            print("[INFO] Security Monitor aktiviert")
+            print("[INFO] Security Monitor aktiviert (Linux-only)")
         except ImportError:
-            security_monitor = None
-            print("[INFO] access_monitor.py nicht gefunden - Laufe im eingeschränkten Modus")
+            print("[INFO] access_monitor.py nicht gefunden - Laufe ohne Sicherheitsmonitor")
         except Exception as e:
-            security_monitor = None
-            print(f"[WARN] Security Monitor konnte nicht initialisiert werden: {str(e)}")
+            print(f"[WARN] Security Monitor fehlgeschlagen: {str(e)}")
+    else:
+        print(f"[INFO] Kein Security Monitor auf {sys.platform} (nur Linux unterstützt)")
 
-        # App-Initialisierung mit Fallback
-        try:
-            global app
-            app = PHONEBOOK()
-            print("[DEBUG] GUI initialisiert, starting mainloop")
-            app.mainloop()
-        except Exception as e:
-            print(f"[ERROR] Hauptanwendung fehlgeschlagen: {str(e)}")
-            raise
-
-    except SystemExit:
-        print("[INFO] Anwendung wird beendet")
-    except KeyboardInterrupt:
-        print("[INFO] Durch Benutzer abgebrochen")
+    # Rest der Initialisierung (wie gehabt)
+    try:
+        app = PHONEBOOK()
+        app.mainloop()
     except Exception as e:
-        print(f"[CRITICAL] Unerwarteter Fehler: {str(e)}")
+        print(f"[ERROR] Hauptanwendung fehlgeschlagen: {str(e)}")
         traceback.print_exc()
-        # Notfallmodus ohne Sicherheitsmonitor
-        try:
-            print("[WARN] Starte im Notfallmodus ohne Sicherheitsfunktionen")
-            app = PHONEBOOK()
-            app.mainloop()
-        except:
-            print("[FATAL] Kritischer Fehler - Anwendung kann nicht starten")
 if __name__ == "__main__":
     main()
