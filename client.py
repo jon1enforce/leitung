@@ -1740,40 +1740,91 @@ class PHONEBOOK(ctk.CTk):
         print("\n=== HANDLING SERVER MESSAGE ===")
         print(f"[DEBUG] Raw data: {raw_data[:100]}...")  # Print first 100 bytes for debugging
         
-        try:
-            # Try to decode as UTF-8
-            try:
-                decoded = raw_data.decode('utf-8') if isinstance(raw_data, bytes) else str(raw_data)
-            except UnicodeDecodeError:
-                decoded = None
-                print("[DEBUG] Message is not UTF-8, treating as binary")
+        # Queue-Initialisierung mit DoS-Schutz
+        if not hasattr(self, '_message_queue'):
+            self._message_queue = []
+            self._processing_queue = False
+            self._queue_size_limit = 120  # Max 120 Nachrichten
+            self._last_minute_check = time.time()
+            self._messages_this_minute = 0
+        
+        # DoS-Schutz: Nachrichten pro Minute limitieren
+        current_time = time.time()
+        if current_time - self._last_minute_check >= 60:
+            # Minute abgelaufen, Counter zurücksetzen
+            self._last_minute_check = current_time
+            self._messages_this_minute = 0
+        
+        if self._messages_this_minute >= self._queue_size_limit:
+            print(f"[DOS PROTECTION] Message limit reached ({self._queue_size_limit}/min) - dropping message")
+            return False  # Nachricht verwerfen
+        
+        self._messages_this_minute += 1
+        
+        # Nachricht zur Queue hinzufügen
+        self._message_queue.append(raw_data)
+        
+        # Verarbeitung starten falls nicht bereits aktiv
+        if not self._processing_queue:
+            return self._process_queue()
+        return True
 
-            # Handle PING messages
-            if decoded and "PING: true" in decoded:
-                print("[DEBUG] Processing PING message")
-                return self._handle_ping_message()
+    def _process_queue(self):
+        """Verarbeitet Nachrichten aus der Queue in der originalen Reihenfolge"""
+        self._processing_queue = True
+        result = True
+        
+        try:
+            while self._message_queue:
+                raw_data = self._message_queue.pop(0)
                 
-            # Handle SIP messages
-            if decoded and decoded.startswith(('MESSAGE', 'SIP/2.0')):
-                print("[DEBUG] Processing SIP message")
-                sip_data = parse_sip_message(decoded)
-                if sip_data:
-                    # Route to the correct processing method
-                    if 'ENCRYPTED_SECRET' in sip_data.get('custom_data', {}):
-                        return self._process_encrypted_phonebook(sip_data)
-                    return self._process_sip_message(sip_data)
-            
-            # Handle binary/raw encrypted data
-            if isinstance(raw_data, bytes) and len(raw_data) >= 512:
-                print("[DEBUG] Processing raw encrypted data")
-                return self._process_encrypted_phonebook(raw_data)
-                
-            print("[ERROR] No valid message format detected")
-            return False
-                
+                # ORIGINALE LOGIK - unverändert
+                try:
+                    # Try to decode as UTF-8
+                    try:
+                        decoded = raw_data.decode('utf-8') if isinstance(raw_data, bytes) else str(raw_data)
+                    except UnicodeDecodeError:
+                        decoded = None
+                        print("[DEBUG] Message is not UTF-8, treating as binary")
+
+                    # Handle PING messages
+                    if decoded and "PING: true" in decoded:
+                        print("[DEBUG] Processing PING message")
+                        result = self._handle_ping_message()
+                        continue
+                        
+                    # Handle SIP messages
+                    if decoded and decoded.startswith(('MESSAGE', 'SIP/2.0')):
+                        print("[DEBUG] Processing SIP message")
+                        sip_data = parse_sip_message(decoded)
+                        if sip_data:
+                            # Route to the correct processing method
+                            if 'ENCRYPTED_SECRET' in sip_data.get('custom_data', {}):
+                                result = self._process_encrypted_phonebook(sip_data)
+                                continue
+                            result = self._process_sip_message(sip_data)
+                            continue
+                    
+                    # Handle binary/raw encrypted data
+                    if isinstance(raw_data, bytes) and len(raw_data) >= 512:
+                        print("[DEBUG] Processing raw encrypted data")
+                        result = self._process_encrypted_phonebook(raw_data)
+                        continue
+                        
+                    print("[ERROR] No valid message format detected")
+                    result = False
+                        
+                except Exception as e:
+                    print(f"[ERROR] Message handling failed: {str(e)}")
+                    result = False
+                    
         except Exception as e:
-            print(f"[ERROR] Message handling failed: {str(e)}")
-            return False
+            print(f"[QUEUE ERROR] {str(e)}")
+            result = False
+        finally:
+            self._processing_queue = False
+            
+        return result
 
     def _process_framed_data(self, framed_data):
         """Verarbeitet gerahmte Rohdaten ohne SIP-Header"""
@@ -1913,6 +1964,7 @@ class PHONEBOOK(ctk.CTk):
             if isinstance(encrypted_data, dict):
                 print("[DEBUG] Processing encrypted dictionary")
                 required_keys = ['encrypted_secret', 'encrypted_phonebook']
+                print(encrypted_data)
                 if all(k in encrypted_data for k in required_keys):
                     try:
                         # Base64 decode with validation
