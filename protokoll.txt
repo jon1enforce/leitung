@@ -2,6 +2,7 @@ Beim klick auf "verbinden" mit port 5060, ip 127.0.0.1 soll die client-server-ko
 
 
 1) client und server tauschen die public keys unverschlüsselt aus, zuerst der client.
+1.1) der client durchläuft eine Validierung, es wird geprüft ob der client im besitz des korrekten privaten schlüssels ist, ohne ihn preiszugeben!
 2) der server generiert den merkle root hash aus eigenem public key und allen client public keys, 
 die reihenfolge wird durch die clientID bzw. durch die Einlogreihenfolge 0,1,2,3, ..., bestimmmt.
 Die keys werden also sortiert mit serverkey + client0key + cilent1key ... mit Nachrücklogik auf client- und server-seite.
