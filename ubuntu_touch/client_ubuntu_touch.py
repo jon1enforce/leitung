@@ -749,10 +749,12 @@ def parse_sip_message(message):
         
     return None
 def connection_loop(client_socket, server_ip, message_handler=None):
-    """Improved connection loop with proper SIP ping/pong"""
+    """Improved connection loop with proper SIP ping/pong and FRAMING support"""
+    # FRAMING IS REQUIRED - no fallback!
+    
     while True:
         try:
-            # Send ping
+            # Build ping message
             ping_msg = (
                 f"MESSAGE sip:{server_ip} SIP/2.0\r\n"
                 f"From: <sip:{load_client_name()}@{socket.gethostbyname(socket.gethostname())}>\r\n"
@@ -761,12 +763,21 @@ def connection_loop(client_socket, server_ip, message_handler=None):
                 f"Content-Length: 10\r\n\r\n"
                 f"PING: true"
             )
-            client_socket.sendall(ping_msg.encode('utf-8'))
-
-            # Wait for pong
-            client_socket.settimeout(60)
-            response = client_socket.recv(4096)
             
+            # Send ping MIT FRAMING (KEIN FALLBACK!)
+            send_frame(client_socket,ping_msg)
+            
+            print("DEBUG:ping gesendet+++")
+
+            # Wait for pong MIT FRAMING (KEIN FALLBACK!)
+            response = recv_frame(client_socket)
+            if response and isinstance(response, bytes):
+                response = response.decode('utf-8')
+            
+            if not response:
+                print("Server disconnected")
+                break
+                
             if message_handler:
                 message_handler(response)
             else:
@@ -774,6 +785,8 @@ def connection_loop(client_socket, server_ip, message_handler=None):
                 sip_data = parse_sip_message(response)
                 if sip_data and sip_data.get('custom_data', {}).get('PONG') == 'true':
                     print("Pong received")
+                else:
+                    print(f"Unexpected response: {response[:100]}...")
 
             time.sleep(30)  # Ping interval
             
@@ -1627,40 +1640,90 @@ class PHONEBOOK(QObject):
         print("\n=== HANDLING SERVER MESSAGE ===")
         print(f"[DEBUG] Raw data: {raw_data[:100]}...")  # Print first 100 bytes for debugging
         
+        # Queue-Initialisierung mit DoS-Schutz
+        if not hasattr(self, '_message_queue'):
+            self._message_queue = []
+            self._processing_queue = False
+            self._queue_size_limit = 120  # Max 120 Nachrichten
+            self._last_minute_check = time.time()
+            self._messages_this_minute = 0
+        
+        # DoS-Schutz: Nachrichten pro Minute limitieren
+        current_time = time.time()
+        if current_time - self._last_minute_check >= 60:
+            # Minute abgelaufen, Counter zurücksetzen
+            self._last_minute_check = current_time
+            self._messages_this_minute = 0
+        
+        if self._messages_this_minute >= self._queue_size_limit:
+            print(f"[DOS PROTECTION] Message limit reached ({self._queue_size_limit}/min) - dropping message")
+            return False  # Nachricht verwerfen
+        
+        self._messages_this_minute += 1
+        
+        # Nachricht zur Queue hinzufügen
+        self._message_queue.append(raw_data)
+        
+        # Verarbeitung starten falls nicht bereits aktiv
+        if not self._processing_queue:
+            return self._process_queue()
+        return True
+    def _process_queue(self):
+        """Verarbeitet Nachrichten aus der Queue in der originalen Reihenfolge"""
+        self._processing_queue = True
+        result = True
+        
         try:
-            # Try to decode as UTF-8
-            try:
-                decoded = raw_data.decode('utf-8') if isinstance(raw_data, bytes) else str(raw_data)
-            except UnicodeDecodeError:
-                decoded = None
-                print("[DEBUG] Message is not UTF-8, treating as binary")
+            while self._message_queue:
+                raw_data = self._message_queue.pop(0)
+                
+                # ORIGINALE LOGIK - unverändert
+                try:
+                    # Try to decode as UTF-8
+                    try:
+                        decoded = raw_data.decode('utf-8') if isinstance(raw_data, bytes) else str(raw_data)
+                    except UnicodeDecodeError:
+                        decoded = None
+                        print("[DEBUG] Message is not UTF-8, treating as binary")
 
-            # Handle PING messages
-            if decoded and "PING: true" in decoded:
-                print("[DEBUG] Processing PING message")
-                return self._handle_ping_message()
-                
-            # Handle SIP messages
-            if decoded and decoded.startswith(('MESSAGE', 'SIP/2.0')):
-                print("[DEBUG] Processing SIP message")
-                sip_data = parse_sip_message(decoded)
-                if sip_data:
-                    # Route to the correct processing method
-                    if 'ENCRYPTED_SECRET' in sip_data.get('custom_data', {}):
-                        return self._process_encrypted_phonebook(sip_data)
-                    return self._process_sip_message(sip_data)
-            
-            # Handle binary/raw encrypted data
-            if isinstance(raw_data, bytes) and len(raw_data) >= 512:
-                print("[DEBUG] Processing raw encrypted data")
-                return self._process_encrypted_phonebook(raw_data)
-                
-            print("[ERROR] No valid message format detected")
-            return False
-                
+                    # Handle PING messages
+                    if decoded and "PING: true" in decoded:
+                        print("[DEBUG] Processing PING message")
+                        result = self._handle_ping_message()
+                        continue
+                        
+                    # Handle SIP messages
+                    if decoded and decoded.startswith(('MESSAGE', 'SIP/2.0')):
+                        print("[DEBUG] Processing SIP message")
+                        sip_data = parse_sip_message(decoded)
+                        if sip_data:
+                            # Route to the correct processing method
+                            if 'ENCRYPTED_SECRET' in sip_data.get('custom_data', {}):
+                                result = self._process_encrypted_phonebook(sip_data)
+                                continue
+                            result = self._process_sip_message(sip_data)
+                            continue
+                    
+                    # Handle binary/raw encrypted data
+                    if isinstance(raw_data, bytes) and len(raw_data) >= 512:
+                        print("[DEBUG] Processing raw encrypted data")
+                        result = self._process_encrypted_phonebook(raw_data)
+                        continue
+                        
+                    print("[ERROR] No valid message format detected")
+                    result = False
+                        
+                except Exception as e:
+                    print(f"[ERROR] Message handling failed: {str(e)}")
+                    result = False
+                    
         except Exception as e:
-            print(f"[ERROR] Message handling failed: {str(e)}")
-            return False
+            print(f"[QUEUE ERROR] {str(e)}")
+            result = False
+        finally:
+            self._processing_queue = False
+            
+        return result        
     def _process_framed_data(self, framed_data):
         """Verarbeitet gerahmte Rohdaten ohne SIP-Header"""
         print("[DEBUG] Processing framed encrypted data")
@@ -1681,7 +1744,7 @@ class PHONEBOOK(QObject):
             print(f"[ERROR] Frame processing failed: {str(e)}")
             return False
     def _handle_ping_message(self):
-        """Handle PING messages by responding with PONG"""
+        """Handle PING messages by responding with PONG using framing"""
         try:
             if hasattr(self, 'client_socket') and self.client_socket:
                 pong_msg = build_sip_message(
@@ -1689,13 +1752,14 @@ class PHONEBOOK(QObject):
                     "server",
                     {"PONG": "true"}
                 )
-                self.client_socket.sendall(pong_msg.encode('utf-8'))
-                print("[DEBUG] Sent PONG response")
+                # MIT FRAMING senden
+                send_frame(self.client_socket, pong_msg.encode('utf-8'))
+                print("[DEBUG] Sent PONG response with framing")
                 return True
             return False
         except Exception as e:
             print(f"[ERROR] Failed to send PONG: {str(e)}")
-            return False            
+            return False    
     def _decrypt_phonebook_data(self, encrypted_data):
         """Main method for decrypting phonebook data with enhanced error handling"""
         print("\n=== DECRYPT PHONEBOOK DEBUG ===")
