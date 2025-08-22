@@ -663,53 +663,53 @@ def parse_sip_message(message):
     return None
 
 def connection_loop(client_socket, server_ip, message_handler=None):
-    """
-    Erweiterte Verbindungsschleife mit:
-    - Ping/Pong-Mechanismus (bestehende Funktionalität)
-    - Nachrichtenweiterleitung an optionalen Handler
-    """
-    ping_interval = 60
-    pong_timeout = 70
+    """Improved connection loop with proper SIP ping/pong and FRAMING support"""
+    # FRAMING IS REQUIRED - no fallback!
     
     while True:
         try:
-            # 1. Ping senden (bestehende Logik)
-            ping_msg = build_sip_message("MESSAGE", server_ip, {"PING": "true"})
-            print(ping_msg)
-            client_socket.sendall(ping_msg.encode('utf-8'))
+            # Build ping message
+            ping_msg = (
+                f"MESSAGE sip:{server_ip} SIP/2.0\r\n"
+                f"From: <sip:{load_client_name()}@{socket.gethostbyname(socket.gethostname())}>\r\n"
+                f"To: <sip:{server_ip}>\r\n"
+                f"Content-Type: text/plain\r\n"
+                f"Content-Length: 10\r\n\r\n"
+                f"PING: true"
+            )
+            
+            # Send ping MIT FRAMING (KEIN FALLBACK!)
+            send_frame(client_socket,ping_msg)
+            
             print("DEBUG:ping gesendet+++")
+
+            # Wait for pong MIT FRAMING (KEIN FALLBACK!)
+            response = recv_frame(client_socket)
+            if response and isinstance(response, bytes):
+                response = response.decode('utf-8')
             
-            # 2. Auf Antwort warten mit erweiterter Verarbeitung
-            client_socket.settimeout(pong_timeout)
-            try:
-                response = client_socket.recv(4096)
-                if not response:
-                    print("Leere Antwort vom Server")
-                    continue
-                    
-                # Falls ein Message-Handler existiert, Nachricht weiterleiten
-                if message_handler:
-                    message_handler(response)
-                else:
-                    # Originale Ping/Pong-Verarbeitung
-                    pong_data = parse_sip_message(response)
-                    if pong_data:
-                        pong_value = (pong_data.get('custom_data', {}).get("PONG", "") or 
-                                     pong_data.get('headers', {}).get("PONG", ""))
-                        if str(pong_value).lower() in ("true", "1", "yes"):
-                            print(f"Pong erhalten um {time.strftime('%H:%M:%S')}")
-                            
-            except socket.timeout:
-                print(f"Timeout: Kein Pong innerhalb von {pong_timeout}s")
+            if not response:
+                print("Server disconnected")
+                break
                 
-            time.sleep(ping_interval)
+            if message_handler:
+                message_handler(response)
+            else:
+                # Default pong handling
+                sip_data = parse_sip_message(response)
+                if sip_data and sip_data.get('custom_data', {}).get('PONG') == 'true':
+                    print("Pong received")
+                else:
+                    print(f"Unexpected response: {response[:100]}...")
+
+            time.sleep(30)  # Ping interval
             
-        except ConnectionError as e:
-            print(f"Verbindungsfehler: {str(e)}")
-            return False
+        except socket.timeout:
+            print("Connection timeout")
+            break
         except Exception as e:
-            print(f"Unerwarteter Fehler: {str(e)}")
-            continue
+            print(f"Connection error: {str(e)}")
+            break
 def extract_server_public_key(sip_data, raw_response=None):
     """
     Extrahiert den Server-Public-Key aus SIP-Daten mit mehreren Fallbacks

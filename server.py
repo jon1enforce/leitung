@@ -629,42 +629,66 @@ class Server:
             )
 
     def handle_client(self, client_socket):
-        """Vollständige Client-Behandlung mit regelmäßigen Phonebook-Updates"""
+        """Vollständige Client-Behandlung - Kompatibel mit start_connection"""
         client_address = client_socket.getpeername()
         print(f"\n[Server] Neue Verbindung von {client_address}")
         client_id = None
-        update_timer = None
+        client_name = None
 
         try:
-            # 1. Initiale Verbindung und Registrierung
+            # 1. Registration empfangen (mit Timeout)
             client_socket.settimeout(30.0)
-            register_data = recv_frame(client_socket)
+            print(f"[SERVER] Warte auf Registration von {client_address}")
             
+            register_data = recv_frame(client_socket)
             if not register_data:
-                print("[SERVER] Empty registration data")
+                print("[SERVER] Keine Registrierungsdaten empfangen")
                 return
 
+            print(f"[SERVER] Empfangene Daten: {len(register_data)} bytes")
+            
             # 2. SIP-Nachricht parsen
+            if isinstance(register_data, bytes):
+                try:
+                    register_data = register_data.decode('utf-8')
+                    print("[SERVER] Daten als UTF-8 decodiert")
+                except UnicodeDecodeError:
+                    print("[SERVER] Konnte Daten nicht als UTF-8 decodieren")
+                    return
+
+            # 3. SIP-Nachricht parsen
             sip_msg = self.parse_sip_message(register_data)
             if not sip_msg:
-                print("[SERVER] Invalid SIP message")
+                print("[SERVER] Ungültige SIP-Nachricht")
                 return
 
-            # 3. Client-Identifikation
-            from_header = sip_msg['headers'].get('FROM', '')
+            # 4. Client-Identifikation
+            from_header = sip_msg['headers'].get('From', sip_msg['headers'].get('FROM', ''))
             client_name_match = re.search(r'<sip:(.*?)@', from_header)
             if not client_name_match:
-                print("[SERVER] No client name in FROM header")
+                print(f"[SERVER] Kein Client-Name in FROM-Header: {from_header}")
                 return
+                
             client_name = client_name_match.group(1)
+            print(f"[SERVER] Client-Name: {client_name}")
 
-            # 4. Public Key extrahieren
-            client_pubkey = extract_public_key(register_data)
+            # 5. Public Key extrahieren
+            client_pubkey = None
+            
+            if 'content' in sip_msg and sip_msg['content']:
+                client_pubkey = sip_msg['content'].strip()
+            
             if not client_pubkey:
-                print("[SERVER] No valid public key found")
+                key_match = re.search(r'-----BEGIN PUBLIC KEY-----.*?-----END PUBLIC KEY-----', 
+                                     register_data, re.DOTALL)
+                if key_match:
+                    client_pubkey = key_match.group(0).strip()
+
+            if not client_pubkey or '-----BEGIN PUBLIC KEY-----' not in client_pubkey:
+                print("[SERVER] Kein gültiger Public Key gefunden")
                 return
 
-            # 5. Client registrieren
+            # 6. Client registrieren und ALLE Keys sammeln
             with self.key_lock:
                 client_id = self.generate_client_id()
                 self.clients[client_id] = {
@@ -676,104 +700,381 @@ class Server:
                     'login_time': time.time(),
                     'last_update': time.time()
                 }
-                self.update_key_list()
+                
+                # ALLE Public Keys sammeln: Server + alle Clients
+                all_public_keys = [self.server_public_key]  # Server Key zuerst
+                for cid, client_info in self.clients.items():
+                    all_public_keys.append(client_info['public_key'])
+                
+                self.all_public_keys = all_public_keys
+                print(f"[SERVER] Gesamte Keys: {len(all_public_keys)} (Server + {len(self.clients)} Clients)")
 
-            # 6. Bestätigung senden
-            response = self.build_sip_message("200 OK", client_name, {
+            # 7. Merkle Root berechnen
+            merkle_root = build_merkle_tree_from_keys(all_public_keys)
+            print(f"[SERVER] Merkle Root: {merkle_root[:20]}...")
+
+            # 8. ERSTE ANTWORT: Server Public Key und Client ID
+            first_response_data = {
                 "SERVER_PUBLIC_KEY": self.server_public_key,
-                "CLIENT_ID": client_id,
-                "MERKLE_ROOT": build_merkle_tree_from_keys(self.all_public_keys)
-            })
-            send_frame(client_socket, response)
-
-            # 7. Sofortiges Phonebook-Update nach Login
-            print(f"[UPDATE] Sending initial phonebook to {client_name}")
-            if not self.send_phonebook(client_id):
-                print("[ERROR] Initial phonebook update failed!")
+                "CLIENT_ID": client_id
+            }
             
-            # 8. Periodische Updates - ÄNDERUNG HIER:
-            def periodic_updates():
-                while True:
-                    try:
-                        time.sleep(15)  # TEST: Reduziert auf 15 Sekunden für Debugging
-                        if client_id not in self.clients:
-                            break
-                            
-                        print(f"\n[SCHEDULED UPDATE] Sending phonebook to {client_name}")
-                        if not self.send_phonebook(client_id):
-                            print(f"[ERROR] Failed to send update to {client_name}")
-                            break
-                            
-                        with self.key_lock:
-                            self.clients[client_id]['last_update'] = time.time()
-                            
-                    except Exception as e:
-                        print(f"[UPDATE TIMER ERROR] {str(e)}")
-                        break
+            first_response_msg = self.build_sip_message("200 OK", client_name, first_response_data)
+            print(f"[SERVER] Sende erste Antwort: {len(first_response_msg)} bytes")
+            
+            send_frame(client_socket, first_response_msg.encode('utf-8'))
+            print("[SERVER] Erste Antwort erfolgreich gesendet")
 
-            update_timer = threading.Thread(target=periodic_updates, daemon=True)
-            update_timer.start()
+            # Kurze Pause für Client-Verarbeitung
+            time.sleep(0.1)
 
-            # 9. Hauptkommunikationsschleife - WICHTIGE ÄNDERUNG:
-            last_pong = time.time()
-            last_phonebook_update = time.time()
+            # 9. ZWEITE ANTWORT: Merkle Tree Daten
+            second_response_data = {
+                "MERKLE_ROOT": merkle_root,
+                "ALL_KEYS": all_public_keys  # Liste aller Keys in Reihenfolge
+            }
+            
+            second_response_msg = self.build_sip_message("200 OK", client_name, second_response_data)
+            print(f"[SERVER] Sende zweite Antwort: {len(second_response_msg)} bytes")
+            
+            send_frame(client_socket, second_response_msg.encode('utf-8'))
+            print("[SERVER] Zweite Antwort erfolgreich gesendet")
+            # 10. Hauptkommunikationsschleife mit RAW Socket-Reading
+            print(f"[SERVER] Starte Hauptloop für {client_name}")
+            client_socket.settimeout(1.0)
+            last_activity = time.time()
+            
+            # Puffer für teilweise empfangene Daten
+            buffer = b''
+            # Queue-Initialisierung mit DoS-Schutz
+            if not hasattr(self, '_message_queue'):
+                self._message_queue = []
+                self._processing_queue = False
+                self._queue_size_limit = 120  # Max 120 Nachrichten
+                self._last_minute_check = time.time()
+                self._messages_this_minute = 0
             while True:
                 try:
-                    client_socket.settimeout(1.0)
-                    data = recv_frame(client_socket)
-                    
-                    if not data:
-                        print(f"[CLIENT] {client_name} disconnected")
-                        break
+                    # RAW Socket lesen (ohne Framing)
+                    try:
+                        data = client_socket.recv(4096)
+                        if not data:
+                            print(f"[SERVER] {client_name} hat Verbindung getrennt")
+                            break
                         
-                    # Ping Handling
-                    msg = self.parse_sip_message(data)
-                    if msg and msg.get('headers', {}).get('PING') == 'true':
-                        last_pong = time.time()
-                        send_frame(client_socket, 
-                            self.build_sip_message("200 OK", client_name, {"PONG": "true"}))
-                    
-                    # Manuelles Update-Trigger für Debugging
-                    elif msg and msg.get('custom_data', {}).get('REQUEST_UPDATE') == 'true':
-                        print(f"[MANUAL UPDATE] Client {client_name} requested update")
-                        self.send_phonebook(client_id)
-                    
-                    # Regelmäßige Updates zusätzlich zum Timer
-                    elif time.time() - last_phonebook_update > 30:  # Alle 30 Sekunden
-                        print(f"[PERIODIC CHECK] Sending phonebook to {client_name}")
-                        if self.send_phonebook(client_id):
-                            last_phonebook_update = time.time()
+                        last_activity = time.time()
+                        buffer += data
+                        
+                        # Versuche, komplette Nachrichten aus dem Buffer zu parsen
+                        while buffer:
+                            # Prüfe auf Framing-Header (4 Bytes Länge)
+                            if len(buffer) >= 4:
+                                # Extrahiere Länge aus Header
+                                length = struct.unpack('!I', buffer[:4])[0]
+                                
+                                # Sicherheitscheck
+                                if length > 10 * 1024 * 1024:  # 10MB max
+                                    print(f"[SECURITY] Frame zu groß: {length} bytes, verwerfe")
+                                    buffer = b''  # Buffer leeren
+                                    break
+                                    
+                                if len(buffer) >= 4 + length:
+                                    # Vollständige Nachricht empfangen
+                                    frame_data = buffer[4:4+length]
+                                    buffer = buffer[4+length:]
+                                    
+                                    # DOS-Schutz: Prüfe auf zu viele Nachrichten
+                                    current_time = time.time()
+                                    if current_time - self._last_minute_check > 60:
+                                        self._last_minute_check = current_time
+                                        self._messages_this_minute = 0
+                                    
+                                    if self._messages_this_minute >= self._queue_size_limit:
+                                        print(f"[SECURITY] Too many messages from {client_name}, ignoring")
+                                        continue
+                                    
+                                    self._messages_this_minute += 1
+                                    
+                                    # Nachricht zur Queue hinzufügen
+                                    self._message_queue.append({
+                                        'type': 'frame_data',
+                                        'data': frame_data,
+                                        'client_socket': client_socket,
+                                        'client_name': client_name
+                                    })
+                                    
+                                    # Queue verarbeiten, falls nicht bereits in Bearbeitung
+                                    if not self._processing_queue:
+                                        self._process_queue()
+                                    
+                                else:
+                                    # Noch nicht genug Daten für vollständigen Frame
+                                    break
+                            else:
+                                # Noch nicht genug Daten für Header
+                                break
+                                
+                    except socket.timeout:
+                        # Timeout ist normal, prüfe auf Inaktivität
+                        if time.time() - last_activity > 60:
+                            print(f"[SERVER] {client_name} inaktiv, trenne Verbindung")
+                            break
+                        continue
 
-                except socket.timeout:
-                    if time.time() - last_pong > 30:
-                        print(f"[PING TIMEOUT] Client {client_name} nicht erreichbar")
-                        break
-                        
                 except Exception as e:
-                    print(f"[CLIENT ERROR] {client_name}: {str(e)}")
+                    print(f"[SERVER] Fehler bei {client_name}: {str(e)}")
                     break
+
+        except socket.timeout:
+            print(f"[SERVER] Timeout bei Registrierung von {client_address}")
+            
+        except Exception as e:
+            print(f"[SERVER] Kritischer Fehler: {str(e)}")
+            import traceback
+            traceback.print_exc()
             
         finally:
-            # Aufräumen
-            if update_timer:
-                update_timer.join(timeout=1.0)
-                
+            # Cleanup
+            print(f"[SERVER] Cleanup für {client_name if client_name else 'unknown'}")
+            
             if client_id and client_id in self.clients:
                 with self.key_lock:
-                    del self.clients[client_id]
-                    self.update_key_list()
-                    
+                    if client_id in self.clients:
+                        del self.clients[client_id]
+                        self.update_key_list()
+            
             try:
                 client_socket.close()
             except:
                 pass
+    def _process_queue(self):
+        """Verarbeitet Nachrichten aus der Queue in der originalen Reihenfolge"""
+        self._processing_queue = True
+        
+        try:
+            while self._message_queue:
+                queue_item = self._message_queue.pop(0)
                 
-            # Broadcast an alle Clients über Änderung
-            threading.Thread(
-                target=self.update_all_phonebooks,
-                daemon=True
-            ).start()
-            print(f"[CLIENT CLEANUP] {client_name} entfernt")
+                if queue_item['type'] == 'frame_data':
+                    frame_data = queue_item['data']
+                    client_socket = queue_item['client_socket']
+                    client_name = queue_item['client_name']
+                    
+                    try:
+                        # Versuche UTF-8 Decoding für SIP Nachrichten
+                        try:
+                            message = frame_data.decode('utf-8')
+                            print(f"[SERVER] Empfangen von {client_name}: {len(message)} bytes")
+                            
+                            # Zeige nur die ersten 200 Zeichen für Debugging
+                            debug_msg = message[:200] + "..." if len(message) > 200 else message
+                            print(f"[SERVER] Nachricht von {client_name}:\n{debug_msg}")
+                            
+                            # Parse SIP Message
+                            msg = self.parse_sip_message(message)
+                            if msg:
+                                # Ping Handling
+                                if msg.get('headers', {}).get('PING') == 'true':
+                                    print(f"[PING] Empfangen von {client_name}")
+                                    # PONG zur Queue hinzufügen
+                                    pong_response = self.build_sip_message("MESSAGE", client_name, {"PONG": "true"})
+                                    self._message_queue.append({
+                                        'type': 'send_response',
+                                        'response': pong_response,
+                                        'client_socket': client_socket,
+                                        'client_name': client_name
+                                    })
+                                    continue
+                                    
+                                # ENCRYPTED_SECRET Handling (für verschlüsselte Telefonbücher)
+                                if 'ENCRYPTED_SECRET' in msg.get('custom_data', {}):
+                                    print(f"[ENCRYPTED] Empfangen von {client_name}")
+                                    self._message_queue.append({
+                                        'type': 'process_encrypted',
+                                        'sip_data': msg,
+                                        'client_socket': client_socket,
+                                        'client_name': client_name
+                                    })
+                                    continue
+                                    
+                                # Normale SIP Nachrichten verarbeiten
+                                if message.startswith(('MESSAGE', 'SIP/2.0')):
+                                    self._message_queue.append({
+                                        'type': 'process_sip',
+                                        'message': message,
+                                        'sip_data': msg,
+                                        'client_socket': client_socket,
+                                        'client_name': client_name
+                                    })
+                                    continue
+                        
+                        except UnicodeDecodeError:
+                            print(f"[SERVER] Binärdaten von {client_name}: {len(frame_data)} bytes")
+                            # Framed binary data (möglicherweise verschlüsselt)
+                            if len(frame_data) >= 512:
+                                self._message_queue.append({
+                                    'type': 'process_encrypted_binary',
+                                    'binary_data': frame_data,
+                                    'client_socket': client_socket,
+                                    'client_name': client_name
+                                })
+                            continue
+                            
+                    except Exception as e:
+                        print(f"[QUEUE ERROR] Frame processing failed: {str(e)}")
+                        import traceback
+                        traceback.print_exc()
+                
+                elif queue_item['type'] == 'send_response':
+                    # Antwort senden
+                    response = queue_item['response']
+                    client_socket = queue_item['client_socket']
+                    client_name = queue_item.get('client_name', 'unknown')
+                    try:
+                        send_frame(client_socket, response.encode('utf-8'))
+                        if "PONG" in response:
+                            print(f"[PONG] Gesendet an {client_name}")
+                        elif "ENCRYPTED" in response:
+                            print(f"[ENCRYPTED] Antwort gesendet an {client_name}")
+                    except Exception as e:
+                        print(f"[QUEUE ERROR] Send failed for {client_name}: {str(e)}")
+                
+                elif queue_item['type'] == 'process_sip':
+                    # Normale SIP Nachricht verarbeiten
+                    message = queue_item['message']
+                    sip_data = queue_item['sip_data']
+                    client_socket = queue_item['client_socket']
+                    client_name = queue_item['client_name']
+                    
+                    try:
+                        # Client Secret Handling
+                        if 'CLIENT_SECRET' in sip_data.get('custom_data', {}):
+                            encrypted_secret = base64.b64decode(sip_data['custom_data']['CLIENT_SECRET'])
+                            # Finde client_id basierend auf client_name
+                            client_id = None
+                            with self.key_lock:
+                                for cid, data in self.clients.items():
+                                    if data.get('name') == client_name:
+                                        client_id = cid
+                                        break
+                            
+                            if client_id:
+                                if self.store_client_secret(client_id, encrypted_secret):
+                                    print(f"[SECRET] Erfolgreich gespeichert für {client_name}")
+                                else:
+                                    print(f"[SECRET] Fehler beim Speichern für {client_name}")
+                        
+                        # Call Setup Handling
+                        elif 'CALL_SETUP' in sip_data.get('custom_data', {}):
+                            call_data = sip_data['custom_data']
+                            if call_data.get('CALL_SETUP') == 'request':
+                                caller_id = call_data.get('CALLER_ID')
+                                callee_id = call_data.get('CALLEE_ID')
+                                if caller_id and callee_id:
+                                    if self.initiate_call_between_clients(caller_id, callee_id):
+                                        print(f"[CALL] Vermittelt zwischen {caller_id} und {callee_id}")
+                                    else:
+                                        print(f"[CALL] Fehler bei Vermittlung")
+                        
+                        # Phonebook Request Handling
+                        elif 'PHONEBOOK_REQUEST' in sip_data.get('custom_data', {}):
+                            # Finde client_id
+                            client_id = None
+                            with self.key_lock:
+                                for cid, data in self.clients.items():
+                                    if data.get('name') == client_name:
+                                        client_id = cid
+                                        break
+                            
+                            if client_id:
+                                # Sende Phonebook an Client
+                                if self.send_phonebook(client_id):
+                                    print(f"[PHONEBOOK] Gesendet an {client_name}")
+                                else:
+                                    print(f"[PHONEBOOK] Fehler beim Senden an {client_name}")
+                        
+                    except Exception as e:
+                        print(f"[QUEUE ERROR] SIP processing failed for {client_name}: {str(e)}")
+                        import traceback
+                        traceback.print_exc()
+                
+                elif queue_item['type'] == 'process_encrypted':
+                    # Verschlüsselte SIP Nachricht verarbeiten
+                    sip_data = queue_item['sip_data']
+                    client_socket = queue_item['client_socket']
+                    client_name = queue_item['client_name']
+                    
+                    try:
+                        # Verarbeite verschlüsselte Phonebook-Daten
+                        if 'ENCRYPTED_SECRET' in sip_data.get('custom_data', {}) and 'ENCRYPTED_PHONEBOOK' in sip_data.get('custom_data', {}):
+                            # Finde client_id für den Schlüssel
+                            client_id = None
+                            with self.key_lock:
+                                for cid, data in self.clients.items():
+                                    if data.get('name') == client_name:
+                                        client_id = cid
+                                        break
+                            
+                            if client_id and client_id in self.client_secrets:
+                                # Hier könntest du die entschlüsselten Daten verarbeiten
+                                print(f"[ENCRYPTED] Empfangen von {client_name}, Client hat Secret")
+                                
+                                # Bestätigung senden
+                                ack_msg = self.build_sip_message("200 OK", client_name, {
+                                    "STATUS": "ENCRYPTED_DATA_RECEIVED",
+                                    "TIMESTAMP": int(time.time())
+                                })
+                                self._message_queue.append({
+                                    'type': 'send_response',
+                                    'response': ack_msg,
+                                    'client_socket': client_socket,
+                                    'client_name': client_name
+                                })
+                        
+                    except Exception as e:
+                        print(f"[QUEUE ERROR] Encrypted processing failed for {client_name}: {str(e)}")
+                        import traceback
+                        traceback.print_exc()
+                
+                elif queue_item['type'] == 'process_encrypted_binary':
+                    # Framed binary data verarbeiten (könnte verschlüsselt sein)
+                    binary_data = queue_item['binary_data']
+                    client_socket = queue_item['client_socket']
+                    client_name = queue_item['client_name']
+                    
+                    try:
+                        print(f"[BINARY] Empfangen {len(binary_data)} bytes von {client_name}")
+                        
+                        # Prüfe auf mögliche verschlüsselte Daten
+                        if len(binary_data) >= 512:
+                            # Könnte ein verschlüsseltes Secret sein
+                            print(f"[BINARY] Möglicherweise verschlüsselte Daten von {client_name}")
+                            
+                            # Bestätigung senden
+                            ack_msg = self.build_sip_message("200 OK", client_name, {
+                                "STATUS": "BINARY_DATA_RECEIVED",
+                                "SIZE": len(binary_data),
+                                "TIMESTAMP": int(time.time())
+                            })
+                            self._message_queue.append({
+                                'type': 'send_response',
+                                'response': ack_msg,
+                                'client_socket': client_socket,
+                                'client_name': client_name
+                            })
+                        
+                    except Exception as e:
+                        print(f"[QUEUE ERROR] Binary processing failed for {client_name}: {str(e)}")
+                        import traceback
+                        traceback.print_exc()
+                        
+        except Exception as e:
+            print(f"[QUEUE ERROR] {str(e)}")
+            import traceback
+            traceback.print_exc()
+        finally:
+            self._processing_queue = False
+
     def prepare_phonebook_data(self):
         """Standardized phonebook data preparation"""
         with self.key_lock:
@@ -1320,8 +1621,8 @@ class Server:
                     return False
 
                 # 1. Generiere neues 48-Byte Geheimnis mit Prefix
-                secret = b"+++secret+++" + os.urandom(48)
-                if len(secret) != 61:  # 13 + 48 = 61 Bytes
+                secret = b"+++secret+++" + self.generate_secret()
+                if len(secret) != 60:  # 12 + 48 = 61 Bytes
                     raise ValueError("Invalid secret length")
 
                 # 2. Verschlüssele Geheimnis mit Client Public Key
