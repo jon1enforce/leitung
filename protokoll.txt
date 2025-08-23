@@ -34,6 +34,12 @@ Beim Auflegen, klick auf "hang up"
 
 1)"hang up" beendet das gespräch und löscht das gemeinsame geheimnis, so dass jede session einen neuen schlüssel vom server verwendet. On time use.
 
+Beim Phonebook-update klick auf "update"
+
+1) identity challenge: Es wird geprüft ob der client im besitz des privaten schlüssels ist, ohne ihn preis - zu geben. Eine RSA challenge.
+1.1) Merkle root hash wird neu berechnet. Ohne automatische Verifikation, nur als Zusatzinformation, hier. Gegebenfalls für security debugging.
+2) phonebook update: Es werden alle aktiven clients an diesen client gesandt.
+3. client user interface wird aktualisiert mit den aktuellen clients.
 
 Achtung: Die Reihenfolge ist wichtig, eine verdrehte Reihenfolge in der Logik ist ein potentielles Sicherheitsrisiko und gefährdet die Integrität.
 Gegebenfalls muss ein superviser diese Reihenfolge kontrollieren um die integrität sicherzustellen.
