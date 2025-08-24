@@ -19,7 +19,29 @@ from threading import Lock
 import select
 import binascii
 BUFFER_SIZE = 4096
+import os
+import hmac
+import hashlib
 
+def secure_random(size):
+    """
+    Einfache Version die NUR die Zufallsdaten zurückgibt
+    """
+    state = os.urandom(32)
+    result = b''
+    counter = 0
+    
+    while len(result) < size:
+        h = hmac.new(
+            state, 
+            counter.to_bytes(8, 'big') + os.urandom(16),
+            hashlib.sha512
+        )
+        state = h.digest()
+        result += state
+        counter += 1
+    
+    return result[:size]  # Nur die Daten zurückgeben, kein Tuple!
 
 
 
@@ -72,29 +94,7 @@ def debug_print_key(key_type, key_data):
         print(f"Last 32 bytes (hex): {' '.join(f'{b:02x}' for b in key_data[-32:])}")
     print("="*50)
 
-def validate_key_pair(private_key, public_key):
-    """Validate RSA key pair matches"""
-    try:
-        # Create test message
-        test_msg = b"TEST_MESSAGE_" + os.urandom(16)
-        
-        # Encrypt with public key
-        pub_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(public_key))
-        encrypted = pub_key.public_encrypt(test_msg, RSA.pkcs1_padding)
-        
-        # Decrypt with private key
-        priv_key = RSA.load_key_string(private_key)
-        decrypted = priv_key.private_decrypt(encrypted, RSA.pkcs1_padding)
-        
-        if decrypted == test_msg:
-            print("[KEY VALIDATION] Key pair is valid and matches")
-            return True
-        else:
-            print("[KEY VALIDATION] Key pair does not match!")
-            return False
-    except Exception as e:
-        print(f"[KEY VALIDATION ERROR] {str(e)}")
-        return False
+
 
 
 def build_merkle_tree(data_blocks):
@@ -931,7 +931,7 @@ class Server:
             print(f"[DEBUG] Using server private key: {private_key_path}")
             
             # 1. Challenge generieren
-            challenge = base64.b64encode(os.urandom(16)).decode('ascii')
+            challenge = base64.b64encode(secure_random(16)).decode('ascii')
             challenge_id = str(uuid.uuid4())
             print(f"[SERVER] Generated SIP challenge: {challenge} (ID: {challenge_id})")
             
@@ -1733,14 +1733,14 @@ class Server:
     def generate_secret(self):
         """Erzeuge ein 48-Byte-Geheimnis (16 IV + 32 AES Key)"""
         # Erzeuge den IV (16 Bytes)
-        iv_part1 = os.urandom(8)
+        iv_part1 = secure_random(8)
         iv_part2 = self.get_disk_entropy(8)
         if not iv_part2:
             raise RuntimeError("Konnte die Festplatten-Entropie nicht lesen.")
         iv = iv_part1 + iv_part2
         
         # Erzeuge den AES-Schlüssel (32 Bytes)
-        key_part1 = os.urandom(16)
+        key_part1 = secure_random(16)
         key_part2 = self.get_disk_entropy(16)
         if not key_part2:
             raise RuntimeError("Konnte die Festplatten-Entropie nicht lesen.")
@@ -2278,7 +2278,7 @@ class SecureVault:
                 self.lib.generate_secret(secret_buf)
             else:
                 # Fallback: Nutze System-Entropie
-                secret_buf[:] = os.urandom(48)
+                secret_buf[:] = secure_random(48)
             
             # Speichere im Vault
             self.lib.vault_load(ctypes.c_void_p(self.vault), secret_buf)
@@ -2288,6 +2288,8 @@ class SecureVault:
         except Exception as e:
             print(f"Secret generation failed: {str(e)}")
             return None
+        finally:
+            secure_del(secret_buf)   
 
     def retrieve_secret(self):
         """Holt das Geheimnis aus dem Vault"""
@@ -2297,6 +2299,8 @@ class SecureVault:
             return bytes(buf)
         except:
             return None
+        finally:
+            secure_del(buf)
 
     def wipe(self):
         """Löscht den Vault sicher"""
@@ -2312,13 +2316,15 @@ class SecureVault:
         return bool(self.vault)
     
     def generate_secret(self) -> Optional[int]:
-        """Generiert ein 48-Byte Geheimnis und gibt nur die Speicheradresse zurück"""
-        if not self.gen_lib:
-            return None
-        buf = (ctypes.c_ubyte * 48)()
-        self.gen_lib.generate_secret(buf)
-        return ctypes.addressof(buf)
-    
+        try:
+            """Generiert ein 48-Byte Geheimnis und gibt nur die Speicheradresse zurück"""
+            if not self.gen_lib:
+                return None
+            buf = (ctypes.c_ubyte * 48)()
+            self.gen_lib.generate_secret(buf)
+            return ctypes.addressof(buf)
+        finally:
+            secure_del(buf)
     def store(self, secret_ptr: int) -> bool:
         """Speichert ein Geheimnis (nur über Speicheradresse)"""
         if not self.vault or not secret_ptr:
@@ -2350,9 +2356,19 @@ class SecureVault:
 
 if __name__ == "__main__":
     try:
-        print("main0")
+        with open('/proc/sys/kernel/random/entropy_avail', 'r') as f:
+            entropy = int(f.read().strip())
+            if entropy < 2000:
+                print("LOW==ENTROPY==DETECTED!")
+                print(entropy)
+            elif entropy >= 2000:
+                print("==ENTROPY==LEVEL==")
+                print(entropy)
+                print("==ENTROPY==LEVEL==")
+            else:
+                print("==UNKNOWN==ENTROPY==")
+        print("start server")
         server = Server()
-        print("main1")
         server.start()
     except Exception as e:
         print(f"Kritischer Fehler: {e}")
