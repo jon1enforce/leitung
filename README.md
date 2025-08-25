@@ -18,8 +18,8 @@ python3 server.py
 python3 client.py  
 ___________________________________________________  
 # TODO
-1. Mehrere clients threadsafe verwalten.  
-2. "Call", die bidirektionale Audioübertragung korrekt implementieren  
+1. Mehrere clients threadsafe verwalten. Auf 2 ports 5060/5061  
+2. "Call", die bidirektionale Audioübertragung testen und gegebenfalls korrigieren.
 ___________________________________________________  
 
 # FINISHED  
