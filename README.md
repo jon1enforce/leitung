@@ -16,4 +16,14 @@ ___________________________________________________
 linux/unix/bsd:    
 python3 server.py  
 python3 client.py  
-___________________________________________________
+___________________________________________________  
+# TODO
+1. Mehrere clients threadsafe verwalten.  
+2. "Call", die bidirektionale Audioübertragung korrekt implementieren  
+___________________________________________________  
+
+# FINISHED  
+1. (die aller-meisten)Sicherheits Funktionen sind fertig.  
+2. User Interface  
+3. "Setup" -> verbindet erfolgreich  
+4. "Update" -> Telefonbuch update und Identitäts-session erfolgreich  
