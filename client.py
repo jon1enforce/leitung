@@ -1448,19 +1448,7 @@ class PHONEBOOK(ctk.CTk):
         except Exception as e:
             print(f"[UI ERROR] Failed to update phonebook UI: {str(e)}")
             traceback.print_exc()
-    def update_phonebook(self, phonebook_data):
-        print(f"\n🔥 update_phonebook called with: {type(phonebook_data)}")
-        print(f"🔥 Thread: {threading.current_thread().name}")
-        
-        # Sofortiges emit versuchen
-        try:
-            if isinstance(phonebook_data, dict):
-                self.phonebookUpdated.emit(phonebook_data)
-                print("🔥 Direct emit attempted")
-        except Exception as e:
-            print(f"🔥 Direct emit failed: {e}")
-        print("\n=== UPDATING PHONEBOOK ===")
-        
+    def update_phonebook(self, phonebook_data):        
         try:
             # 1. Input validieren und konvertieren
             if isinstance(phonebook_data, str):
