@@ -227,11 +227,11 @@ def build_merkle_tree(data_blocks):
 
 
 def verify_merkle_integrity(all_keys, received_root_hash):
-    """Überprüft die Integrität aller Schlüssel mittels Merkle Tree"""
+    """Überprüft die Integrität aller Schlüssel mittels Merkle Tree mit erweitertem Logging"""
     print("\n=== CLIENT VERIFICATION ===")
     
     try:
-        # Validate inputs
+        # 1. Input Validation
         if not all_keys or not received_root_hash:
             print("[ERROR] Missing keys or Merkle root")
             return False
@@ -244,7 +244,7 @@ def verify_merkle_integrity(all_keys, received_root_hash):
             print("[ERROR] Merkle root must be a string")
             return False
 
-        # 1. Deduplizierung und Normalisierung der Schlüssel
+        # 2. Key Normalization and Deduplication
         normalized_keys = []
         seen_keys = set()
         
@@ -260,23 +260,32 @@ def verify_merkle_integrity(all_keys, received_root_hash):
             if normalized and normalized not in seen_keys:
                 seen_keys.add(normalized)
                 normalized_keys.append(normalized)
-                print(f"[Client] Added key: {normalized[:30]}...")
+                print(f"[Client] Added normalized key: {normalized[:30]}...")
         
         if not normalized_keys:
-            print("Error: No valid keys after normalization")
+            print("[ERROR] No valid keys after normalization")
             return False
 
-        # 2. Zusammenführung mit Trennzeichen (matches server)
+        # 3. Merge keys with consistent separator (matches server)
         merged = "|||".join(sorted(normalized_keys))  # Consistent sorting
         print(f"[Client] Merged keys (len={len(merged)}): {merged[:100]}...")
 
-        # 3. Merkle Root berechnen (matches server's method)
+        # 4. Calculate Merkle Root (matches server's method)
         calculated_hash = build_merkle_tree([merged])
         print(f"[Client] Calculated hash: {calculated_hash}")
-        print(f"Received hash:   {received_root_hash}")
+        print(f"[Client] Received hash:   {received_root_hash}")
         
-        # 4. Comparison with tolerance for whitespace
-        return calculated_hash.strip() == received_root_hash.strip()
+        # 5. Comparison with case and whitespace insensitivity
+        is_valid = calculated_hash.strip().lower() == received_root_hash.strip().lower()
+        
+        if not is_valid:
+            print("[SECURITY ALERT] Merkle root mismatch!")
+            print("Possible causes:")
+            print("- Key manipulation detected")
+            print("- Incorrect key normalization")
+            print("- Different key order between client and server")
+            
+        return is_valid
 
     except Exception as e:
         print(f"[ERROR] Verification failed: {str(e)}")
@@ -439,7 +448,19 @@ def generate_secret():
     return secret
 
 # Funktion zur Generierung von dynamischem Padding mit SHA-3, quantesicher:
-
+def secure_del(var):
+    """Sicheres Löschen durch Überschreiben + del"""
+    if isinstance(var, bytes):  # Wenn es bytes ist, in bytearray umwandeln
+        var = bytearray(var)   # Jetzt ist es überschreibbar!
+    
+    if isinstance(var, bytearray):
+        for i in range(len(var)):
+            var[i] = 0  # Überschreibt jedes Byte mit 0x00
+        del var  # Entfernt die Referenz
+    
+    elif hasattr(var, '__dict__'):
+        var.__dict__.clear()  # Falls es ein Objekt ist
+        del var
 def generate_dynamic_padding(data, key):
     """
     Generiert dynamisches Padding mit SHA3-256:
@@ -483,44 +504,9 @@ def extract_secret(decrypted_data):
         raise ValueError(f"Invalid secret length: {len(secret)} bytes (expected 48)")
     
     return secret
-def decrypt_phonebook_data(encrypted_data, private_key_pem):
-    try:
-        # Split into RSA and AES encrypted parts
-        encrypted_secret = encrypted_data[:512]
-        encrypted_phonebook = encrypted_data[512:]
-        
-        # RSA Decrypt
-        priv_key = RSA.load_key_string(private_key_pem.encode())
-        decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
-        
-        # Extract 48-byte secret
-        secret = extract_secret(decrypted_secret)
-        iv = secret[:16]
-        aes_key = secret[16:48]
-        
-        # AES Decrypt with explicit padding
-        cipher = EVP.Cipher(
-            alg="aes_256_cbc",
-            key=aes_key,
-            iv=iv,
-            op=0,  # decrypt
-            padding=1  # PKCS#7 padding
-        )
-        
-        # Handle potential padding errors
-        try:
-            decrypted = cipher.update(encrypted_phonebook) + cipher.final()
-            return json.loads(decrypted.decode('utf-8', errors='replace'))
-        except EVP.EVPError as e:
-            print(f"AES Decrypt Error: {str(e)}")
-            # Try without padding as fallback
-            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0, padding=0)
-            decrypted = cipher.update(encrypted_phonebook) + cipher.final()
-            return json.loads(decrypted.decode('utf-8', errors='replace'))
-            
-    except Exception as e:
-        print(f"Decryption failed: {str(e)}")
-        raise
+    
+    return secret
+
 
 def decrypt_audio_chunk(encrypted_chunk, key, iv):
     """Robust audio decryption with padding handling"""
@@ -1137,6 +1123,29 @@ class SecureVault:
     def __del__(self):
         """Destruktor für sichere Bereinigung"""
         self.wipe()
+# Füge diese Hilfsklassen hinzu
+class CustomEvent:
+    """Einfaches Event für thread-sichere Operationen"""
+    def __init__(self, callback):
+        self.callback = callback
+
+    # Füge diese Methoden zur PHONEBOOK Klasse hinzu
+    @Slot(result=list)
+    def getPhonebookEntries(self):
+        """QML-zugängliche Methode zum Abrufen der Einträge"""
+        return self.phonebook_entries
+
+    @Slot(result=str)
+    def getPhonebookStatus(self):
+        """Gibt den aktuellen Status zurück"""
+        return self._connection_status
+
+    @Slot()
+    def refreshPhonebook(self):
+        """Manuelles Refresh der Telefonbuch-UI"""
+        print("[MANUAL REFRESH] Triggering phonebook refresh")
+        if self.phonebook_entries:
+            self.phonebookUpdated.emit(self.phonebook_entries)        
 class PHONEBOOK(QObject):
     def __init__(self):
         super().__init__()
@@ -1165,6 +1174,10 @@ class PHONEBOOK(QObject):
             raise RuntimeError("QML konnte nicht geladen werden")
 
     # Properties für QML
+    
+    phonebookUpdateRequested = Signal()
+    identityChallengeStarted = Signal()
+    identityChallengeCompleted = Signal(bool, str)
     phonebook_update_signal = Signal(list)
     serverSettingsChanged = Signal(str, str) 
     clientNameRequested = Signal()
@@ -1230,9 +1243,9 @@ class PHONEBOOK(QObject):
     def callStatus(self):
         return self._call_status
 
-    @Property(list, notify=phonebookUpdated)
+    @Property('QVariant', notify=phonebookUpdated)
     def phonebookEntries(self):
-        return self.phonebook_entries
+        return self.phonebook_entries if hasattr(self, 'phonebook_entries') else []
 
     def _handle_standard_sip(self, sip_data):
         """Verarbeitet reguläre SIP-Nachrichten"""
@@ -1349,6 +1362,49 @@ class PHONEBOOK(QObject):
             self.connectionStatusChanged.emit(self._connection_status)
             self.cleanup_connection()
     @Slot()
+    def on_update_click(self):
+        """Qt-compatible update click handler with Identity Challenge"""
+        print("[CLIENT] Update-Button geklickt - Starte Identity Challenge Prozess")
+        
+        try:
+            if not hasattr(self, 'client_socket') or not self.client_socket:
+                self._connection_status = "Nicht mit Server verbunden"
+                self.connectionStatusChanged.emit(self._connection_status)
+                print("[UPDATE ERROR] Nicht mit Server verbunden")
+                return
+
+            # Baue UPDATE SIP Nachricht (framed)
+            update_msg = (
+                f"MESSAGE sip:{self.server_ip} SIP/2.0\r\n"
+                f"From: <sip:{self._client_name}@client>\r\n"
+                f"To: <sip:{self.server_ip}>\r\n"
+                f"Content-Type: text/plain\r\n"
+                f"Content-Length: 12\r\n"
+                f"UPDATE: true\r\n\r\n"  # Header-Format
+                f"UPDATE: true"  # Body-Format als Fallback
+            )
+
+            # Sende UPDATE Nachricht mit Framing
+            try:
+                send_frame(self.client_socket, update_msg.encode('utf-8'))
+                print("[CLIENT] UPDATE Nachricht an Server gesendet")
+                self._connection_status = "Update-Anfrage gesendet"
+                self.connectionStatusChanged.emit(self._connection_status)
+                
+            except Exception as e:
+                error_msg = f"Update-Nachricht konnte nicht gesendet werden: {str(e)}"
+                print(f"[CLIENT ERROR] {error_msg}")
+                self._connection_status = error_msg
+                self.connectionStatusChanged.emit(self._connection_status)
+
+        except Exception as e:
+            error_msg = f"Update konnte nicht gestartet werden: {str(e)}"
+            print(f"[CLIENT ERROR] {error_msg}")
+            self._connection_status = error_msg
+            self.connectionStatusChanged.emit(self._connection_status)
+            import traceback
+            traceback.print_exc()
+    @Slot()
     def load_phonebook(self):
         if not self.client_socket:
             self._connection_status = "Keine Verbindung zum Server!"
@@ -1371,89 +1427,7 @@ class PHONEBOOK(QObject):
             self._connection_status = "Fehler beim Laden des Telefonbuchs: {}".format(e)
             self.connectionStatusChanged.emit(self._connection_status)
 
-    def update_phonebook(self, phonebook_data):
-        """Aktualisiert das Telefonbuch für QML mit vollständiger Fehlerbehandlung
-        
-        Args:
-            phonebook_data: Entschlüsselte Telefonbuchdaten (Liste von Dicts oder JSON-String)
-        """
-        print("\n=== UPDATING PHONEBOOK (QML) ===")
-        
-        try:
-            # 1. Input validieren und konvertieren
-            if isinstance(phonebook_data, str):
-                try:
-                    phonebook_data = json.loads(phonebook_data)
-                except json.JSONDecodeError as e:
-                    print("[ERROR] Invalid JSON string:", str(e))
-                    return
-                    
-            if not isinstance(phonebook_data, (list, dict)):
-                print("[ERROR] Invalid phonebook format - expected list or dict")
-                return
 
-            # 2. Normalisiere die Datenstruktur
-            if isinstance(phonebook_data, dict):
-                # Falls als Dict mit 'clients'-Key geliefert
-                entries = phonebook_data.get('clients', [])
-            else:
-                entries = phonebook_data
-                
-            # 3. Validierte Einträge erstellen
-            valid_entries = []
-            for entry in entries:
-                try:
-                    if not isinstance(entry, dict):
-                        continue
-                        
-                    # Erforderliche Felder extrahieren
-                    client_id = str(entry.get('id', '0')).strip()
-                    client_name = str(entry.get('name', 'Unnamed')).strip() or 'Unnamed'
-                    client_ip = str(entry.get('ip', ''))
-                    client_port = str(entry.get('port', ''))
-                    public_key = str(entry.get('public_key', ''))
-                    
-                    # QML-kompatibles Dict erstellen
-                    qml_entry = {
-                        'id': client_id,
-                        'name': client_name,
-                        'ip': client_ip,
-                        'port': client_port,
-                        'publicKey': public_key,
-                        'publicKeyShort': public_key[:20] + '...' if public_key else '',
-                        'callable': bool(client_ip and client_port)
-                    }
-                    
-                    valid_entries.append(qml_entry)
-                    
-                    print(f"[DEBUG] Added entry: {client_id} - {client_name}")
-                    
-                except Exception as e:
-                    print(f"[WARNING] Invalid entry skipped: {str(e)}")
-                    traceback.print_exc()
-                    continue
-
-            # 4. Debug-Ausgabe
-            print(f"[DEBUG] Processed {len(valid_entries)} valid entries")
-            if valid_entries:
-                print("[DEBUG] First entry sample:", valid_entries[0])
-
-            # 5. Update internal state without triggering signals
-            if self.phonebook_entries != valid_entries:
-                self.phonebook_entries = valid_entries
-                self.phonebookUpdated.emit(valid_entries)
-            
-            # 6. Optional: Logging für erfolgreiche Aktualisierung
-            print("[SUCCESS] Phonebook updated for QML")
-
-        except Exception as e:
-            error_msg = f"Critical phonebook update error: {str(e)}"
-            print(error_msg)
-            traceback.print_exc()
-            
-            # Fehler an QML melden
-            if hasattr(self, 'show_error'):
-                self.show_error(error_msg)
 
     @Slot(int)
     def on_entry_click(self, index):
@@ -1669,61 +1643,124 @@ class PHONEBOOK(QObject):
             return self._process_queue()
         return True
     def _process_queue(self):
-        """Verarbeitet Nachrichten aus der Queue in der originalen Reihenfolge"""
+        """Verarbeitet Nachrichten aus der Queue - kompatibel mit existing SIP methods"""
         self._processing_queue = True
-        result = True
         
         try:
             while self._message_queue:
-                raw_data = self._message_queue.pop(0)
+                queue_item = self._message_queue.pop(0)
                 
-                # ORIGINALE LOGIK - unverändert
-                try:
-                    # Try to decode as UTF-8
+                # ✅ PRÜFE OB queue_item EIN DICTIONARY IST
+                if isinstance(queue_item, dict) and queue_item.get('type') == 'frame_data':
+                    frame_data = queue_item['data']
+                    
                     try:
-                        decoded = raw_data.decode('utf-8') if isinstance(raw_data, bytes) else str(raw_data)
-                    except UnicodeDecodeError:
-                        decoded = None
-                        print("[DEBUG] Message is not UTF-8, treating as binary")
-
-                    # Handle PING messages
-                    if decoded and "PING: true" in decoded:
-                        print("[DEBUG] Processing PING message")
-                        result = self._handle_ping_message()
-                        continue
-                        
-                    # Handle SIP messages
-                    if decoded and decoded.startswith(('MESSAGE', 'SIP/2.0')):
-                        print("[DEBUG] Processing SIP message")
-                        sip_data = parse_sip_message(decoded)
-                        if sip_data:
-                            # Route to the correct processing method
-                            if 'ENCRYPTED_SECRET' in sip_data.get('custom_data', {}):
-                                result = self._process_encrypted_phonebook(sip_data)
+                        # NUR UTF-8 SIP Nachrichten
+                        try:
+                            message = frame_data.decode('utf-8')
+                            print(f"[CLIENT] Empfangen: {len(message)} bytes")
+                            
+                            # Parse mit EXISTIERENDER Methode
+                            sip_data = parse_sip_message(message)
+                            if not sip_data:
+                                print("[CLIENT ERROR] Ungültiges SIP Format")
                                 continue
-                            result = self._process_sip_message(sip_data)
+                                
+                            # Debug-Ausgabe
+                            debug_msg = message[:200] + "..." if len(message) > 200 else message
+                            print(f"[CLIENT DEBUG] SIP Nachricht:\n{debug_msg}")
+                            
+                            # ✅ KORREKTE Header-Prüfung (UPPERCASE)
+                            headers = sip_data.get('headers', {})
+                            custom_data = sip_data.get('custom_data', {})
+                            
+                            # PONG Handling
+                            if headers.get('PONG') == 'true':
+                                print("[PONG] Vom Server empfangen")
+                                continue
+                                
+                            # Identity Challenge Handling - KORRIGIERT
+                            if (custom_data.get('MESSAGE_TYPE') == 'IDENTITY_CHALLENGE' or 
+                                'IDENTITY_CHALLENGE' in message):
+                                print("[IDENTITY] Challenge vom Server empfangen")
+                                self._handle_identity_challenge(message)
+                                continue
+                                
+                            # Identity Verification Handling
+                            if (custom_data.get('STATUS') == 'IDENTITY_VERIFIED' or 
+                                'IDENTITY_VERIFIED' in message):
+                                print("[IDENTITY] Verifizierung bestätigt vom Server")
+                                self._handle_identity_verified(message)
+                                continue
+                                
+                            # Encrypted Phonebook Handling
+                            if 'ENCRYPTED_SECRET' in custom_data and 'ENCRYPTED_PHONEBOOK' in custom_data:
+                                print("\n=== PHONEBOOK UPDATE EMPFANGEN ===")
+                                self._process_encrypted_phonebook(sip_data)
+                                continue
+                            # Normale SIP Nachrichten
+                            print("[CLIENT] Verarbeite normale SIP Nachricht")
+                            self._process_sip_message(sip_data)
+                                
+                        except UnicodeDecodeError:
+                            print(f"[CLIENT ERROR] Kein UTF-8 SIP")
                             continue
+                            
+                    except Exception as e:
+                        print(f"[CLIENT ERROR] Frame processing failed: {str(e)}")
+                        import traceback
+                        traceback.print_exc()
+                
+                # ✅ FALLBACK FÜR STRINGS (Identity Challenge erkennen!)
+                elif isinstance(queue_item, str):
+                    print(f"[CLIENT] Verarbeite String aus Queue: {queue_item[:100]}...")
                     
-                    # Handle binary/raw encrypted data
-                    if isinstance(raw_data, bytes) and len(raw_data) >= 512:
-                        print("[DEBUG] Processing raw encrypted data")
-                        result = self._process_encrypted_phonebook(raw_data)
+                    # Identity Challenge erkennen
+                    if 'IDENTITY_CHALLENGE' in queue_item:
+                        print("[IDENTITY] Challenge vom Server (String-Format) empfangen")
+                        self._handle_identity_challenge(queue_item)
                         continue
                         
-                    print("[ERROR] No valid message format detected")
-                    result = False
+                    # Identity Verification erkennen
+                    elif 'IDENTITY_VERIFIED' in queue_item:
+                        print("[IDENTITY] Verifizierung bestätigt (String-Format)")
+                        self._handle_identity_verified(queue_item)
+                        continue
                         
-                except Exception as e:
-                    print(f"[ERROR] Message handling failed: {str(e)}")
-                    result = False
+                    # Versuche es als normale SIP Nachricht zu verarbeiten
+                    try:
+                        sip_data = parse_sip_message(queue_item)
+                        if sip_data:
+                            print("[CLIENT] Verarbeite SIP Nachricht aus String-Queue")
+                            self._process_sip_message(sip_data)
+                        else:
+                            print("[CLIENT ERROR] Could not parse string from queue")
+                    except Exception as e:
+                        print(f"[CLIENT ERROR] Failed to process string from queue: {str(e)}")
+                
+                # ✅ Andere Dictionary-Typen
+                elif isinstance(queue_item, dict):
+                    if queue_item.get('type') == 'send_message':
+                        message = queue_item['message']
+                        try:
+                            send_frame(self.client_socket, message.encode('utf-8'))
+                            print("[CLIENT] Nachricht gesendet")
+                        except Exception as e:
+                            print(f"[CLIENT ERROR] Send failed: {str(e)}")
                     
+                    elif queue_item.get('type') == 'update_request':
+                        print("[UPDATE] Request wurde verarbeitet")
+                
+                # ✅ Unbekanntes Format
+                else:
+                    print(f"[CLIENT WARN] Unbekanntes Queue-Format: {type(queue_item)}")
+                        
         except Exception as e:
             print(f"[QUEUE ERROR] {str(e)}")
-            result = False
+            import traceback
+            traceback.print_exc()
         finally:
             self._processing_queue = False
-            
-        return result        
     def _process_framed_data(self, framed_data):
         """Verarbeitet gerahmte Rohdaten ohne SIP-Header"""
         print("[DEBUG] Processing framed encrypted data")
@@ -1760,158 +1797,191 @@ class PHONEBOOK(QObject):
         except Exception as e:
             print(f"[ERROR] Failed to send PONG: {str(e)}")
             return False    
-    def _decrypt_phonebook_data(self, encrypted_data):
-        """Main method for decrypting phonebook data with enhanced error handling"""
-        print("\n=== DECRYPT PHONEBOOK DEBUG ===")
+
+
+
+
+
+                        
+    def _decrypt_phonebook(self, encrypted_data):
+        """Einheitliche Entschlüsselungsmethode für alle Formate - THREAD SAFE mit extremem Debugging"""
+        print("\n" + "="*80)
+        print("=== UNIFIED DECRYPT PHONEBOOK DEBUG ===")
+        print("="*80)
         
         try:
-            # Debug input
-            print(f"[DEBUG] Initial input type: {type(encrypted_data)}")
+            # 1. EXTREME INPUT DEBUGGING
+            print(f"[DEBUG] Input type: {type(encrypted_data)}")
+            print(f"[DEBUG] Input length: {len(encrypted_data) if hasattr(encrypted_data, '__len__') else 'N/A'}")
             
-            # Parse SIP message if needed
-            if isinstance(encrypted_data, bytes):
-                try:
-                    sip_msg = parse_sip_message(encrypted_data.decode('utf-8'))
-                    if sip_msg and 'custom_data' in sip_msg:
-                        print("[DEBUG] Extracted custom_data from SIP")
-                        encrypted_data = sip_msg['custom_data']
-                        print(f"[DEBUG] Custom data keys: {list(encrypted_data.keys())}")
-                except Exception as e:
-                    print(f"[DEBUG] SIP parse error: {str(e)}")
-
-            # Process dictionary with encrypted parts
-            if isinstance(encrypted_data, dict):
-                print("[DEBUG] Processing encrypted dictionary")
+            # 2. HANDLE DIFFERENT INPUT FORMATS
+            encrypted_secret = None
+            encrypted_phonebook = None
+            
+            # Format 1: Rohdaten-Bytes (secret + phonebook concatenated)
+            if isinstance(encrypted_data, bytes) and len(encrypted_data) > 512:
+                print("[DEBUG] Processing raw binary encrypted data")
+                encrypted_secret = encrypted_data[:512]
+                encrypted_phonebook = encrypted_data[512:]
+                
+            # Format 2: Dictionary mit separaten Feldern
+            elif isinstance(encrypted_data, dict):
+                print("[DEBUG] Processing dictionary format")
                 required_keys = ['encrypted_secret', 'encrypted_phonebook']
                 if all(k in encrypted_data for k in required_keys):
                     try:
-                        # Base64 decode with validation
-                        secret = base64.b64decode(encrypted_data['encrypted_secret'])
-                        phonebook = base64.b64decode(encrypted_data['encrypted_phonebook'])
-                        print(f"[DEBUG] Decoded secret: {len(secret)} bytes (expected: 512)")
-                        print(f"[DEBUG] Decoded phonebook: {len(phonebook)} bytes (expected: >=1040)")
-
-                        if len(secret) != 512:
-                            raise ValueError("Invalid secret length after base64 decode")
-
-                        # RSA decrypt
-                        private_key = load_privatekey()
-                        if not private_key or not private_key.startswith('-----BEGIN RSA PRIVATE KEY-----'):
-                            raise ValueError("Invalid private key format")
-                            
-                        priv_key = RSA.load_key_string(private_key.encode())
-                        decrypted_secret = priv_key.private_decrypt(secret, RSA.pkcs1_padding)
-                        print(f"[DEBUG] RSA decrypted: {len(decrypted_secret)} bytes")
-                        print(f"[DEBUG] First 32 bytes (hex): {binascii.hexlify(decrypted_secret[:32])}")
-
-                        # Extract AES components with improved error handling
-                        prefix = b"+++secret+++"
-                        if prefix not in decrypted_secret:
-                            raise ValueError("Secret prefix not found in decrypted data")
-                            
-                        secret_start = decrypted_secret.find(prefix) + len(prefix)
-                        secret = decrypted_secret[secret_start:secret_start+48]
-                        
-                        if len(secret) != 48:
-                            raise ValueError(f"Invalid secret length: {len(secret)} bytes (expected 48)")
-                            
-                        iv = secret[:16]
-                        key = secret[16:48]
-                        print("[DEBUG] AES components:")
-                        print(f"IV (16 bytes): {binascii.hexlify(iv)}")
-                        print(f"Key (32 bytes): {binascii.hexlify(key[:8])}...")
-
-                        # AES decrypt with padding fallback
-                        try:
-                            cipher = EVP.Cipher("aes_256_cbc", key, iv, 0, padding=1)
-                            decrypted = cipher.update(phonebook) + cipher.final()
-                        except EVP.EVPError as e:
-                            print(f"[WARNING] AES decrypt failed with padding, trying without: {str(e)}")
-                            cipher = EVP.Cipher("aes_256_cbc", key, iv, 0, padding=0)
-                            decrypted = cipher.update(phonebook) + cipher.final()
-
-                        print(f"[DEBUG] Decrypted data length: {len(decrypted)} bytes")
-                        print(f"[DEBUG] First 100 bytes (ascii): {decrypted[:100].decode('ascii', errors='replace')}")
-
-                        # Parse JSON with validation
-                        phonebook_data = json.loads(decrypted.decode('utf-8'))
-                        if not isinstance(phonebook_data, dict):
-                            raise ValueError("Decrypted data is not a valid JSON object")
-                            
-                        print(f"[DEBUG] Phonebook entries: {len(phonebook_data.get('clients', []))}")
-
-                        # UI Update with thread safety
-                        if hasattr(self, 'update_phonebook'):
-                            self.update_phonebook(phonebook_data)
-                            print("[DEBUG] UI update scheduled")
-                        else:
-                            print("[WARNING] update_phonebook method missing")
-                        
-                        return phonebook_data
-                        
+                        encrypted_secret = base64.b64decode(encrypted_data['encrypted_secret'])
+                        encrypted_phonebook = base64.b64decode(encrypted_data['encrypted_phonebook'])
                     except Exception as e:
-                        print(f"[DECRYPT ERROR] {str(e)}")
-                        traceback.print_exc()
+                        print(f"[ERROR] Base64 decode failed: {e}")
                         return None
-
-            print("[ERROR] No valid encrypted data format detected")
-            return None
-
-        except Exception as e:
-            print(f"[CRITICAL ERROR] {str(e)}")
-            traceback.print_exc()
-            return None                        
-    def _decrypt_phonebook(self, encrypted_data):
-        """Robuste Entschlüsselung mit korrekter Bytes/String-Handling"""
-        try:
-            # 1. Konvertiere Eingangsdaten falls nötig
-            if isinstance(encrypted_data, bytes):
+                else:
+                    print(f"[ERROR] Missing required keys in dictionary: {list(encrypted_data.keys())}")
+                    return None
+            
+            # Format 3: SIP Message (als Bytes)
+            elif isinstance(encrypted_data, bytes):
+                print("[DEBUG] Processing SIP message bytes")
                 try:
-                    encrypted_data = encrypted_data.decode('utf-8')
-                    encrypted_data = json.loads(encrypted_data)
-                except (UnicodeDecodeError, json.JSONDecodeError):
-                    raise ValueError("Invalid message format - expected JSON")
+                    sip_msg = parse_sip_message(encrypted_data.decode('utf-8'))
+                    if sip_msg and 'custom_data' in sip_msg:
+                        custom_data = sip_msg['custom_data']
+                        if 'encrypted_secret' in custom_data and 'encrypted_phonebook' in custom_data:
+                            encrypted_secret = base64.b64decode(custom_data['encrypted_secret'])
+                            encrypted_phonebook = base64.b64decode(custom_data['encrypted_phonebook'])
+                except Exception as e:
+                    print(f"[DEBUG] SIP parse error: {str(e)}")
+                    return None
+            
+            else:
+                print(f"[ERROR] Unsupported input format: {type(encrypted_data)}")
+                return None
 
-            # 2. Validierung der Felder
-            if not isinstance(encrypted_data, dict):
-                raise ValueError("Expected dictionary data")
+            # 3. VALIDATION
+            print(f"[DEBUG] Secret length: {len(encrypted_secret) if encrypted_secret else 'N/A'} bytes")
+            print(f"[DEBUG] Phonebook length: {len(encrypted_phonebook) if encrypted_phonebook else 'N/A'} bytes")
+            
+            if not encrypted_secret or not encrypted_phonebook:
+                print("[ERROR] Missing encrypted data parts")
+                return None
                 
-            required_fields = ['ENCRYPTED_SECRET', 'ENCRYPTED_PHONEBOOK']
-            if not all(field in encrypted_data for field in required_fields):
-                raise ValueError(f"Missing required fields: {required_fields}")
+            if len(encrypted_secret) != 512:
+                raise ValueError(f"Invalid secret length: {len(encrypted_secret)} bytes (expected 512)")
 
-            # 3. Base64 Decoding
-            encrypted_secret = base64.b64decode(encrypted_data['ENCRYPTED_SECRET'])
-            encrypted_phonebook = base64.b64decode(encrypted_data['ENCRYPTED_PHONEBOOK'])
+            # 4. RSA DECRYPTION
+            print("[DEBUG] RSA decrypting secret...")
+            private_key = load_privatekey()
+            if not private_key or not private_key.startswith('-----BEGIN RSA PRIVATE KEY-----'):
+                raise ValueError("Invalid private key format")
+                
+            priv_key = RSA.load_key_string(private_key.encode())
+            decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
+            secure_del(priv_key)
+            
+            print(f"[DEBUG] RSA decrypted: {len(decrypted_secret)} bytes")
+            print(f"[DEBUG] First 32 bytes (hex): {binascii.hexlify(decrypted_secret[:32])}")
 
-            # 4. RSA Entschlüsselung
-            priv_key = RSA.load_key_string(self.private_key.encode())
-            decrypted = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
-            
-            # 5. Padding Check (16 Bytes)
-            padding = b"SECURE_v4_2024____"
-            if not decrypted.startswith(padding):
-                raise ValueError("Invalid padding - possible key mismatch")
+            # 5. EXTRACT AES COMPONENTS
+            prefix = b"+++secret+++"
+            if not decrypted_secret.startswith(prefix):
+                print("[ERROR] Secret prefix not found in decrypted data")
+                print(f"[DEBUG] Actual prefix: {decrypted_secret[:11]!r}")
+                raise ValueError("Secret prefix not found in decrypted data")
                 
-            # 6. Extrahiere Schlüsselkomponenten
-            secret = decrypted[len(padding):len(padding)+48]  # 48 Bytes
-            if len(secret) != 48:
-                raise ValueError("Invalid secret length")
+            secret_start = len(prefix)
+            extracted_secret = decrypted_secret[secret_start:secret_start+48]
+            secure_del(decrypted_secret)
+            
+            if len(extracted_secret) != 48:
+                raise ValueError(f"Invalid secret length: {len(extracted_secret)} bytes (expected 48)")
                 
-            iv = secret[:16]
-            aes_key = secret[16:48]
+            print(f"[DEBUG] Extracted secret length: {len(extracted_secret)}")
             
-            # 7. AES Entschlüsselung
-            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
-            decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
+            iv = extracted_secret[:16]
+            key = extracted_secret[16:48]
             
-            # 8. JSON Parsing
-            return json.loads(decrypted_data.decode('utf-8'))
+            print("[DEBUG] AES components:")
+            print(f"IV (16 bytes): {binascii.hexlify(iv)}")
+            print(f"Key (32 bytes): {binascii.hexlify(key[:8])}...")
+
+            # 6. AES DECRYPTION
+            print("[DEBUG] AES decrypting phonebook...")
+            print(f"[DEBUG] Encrypted phonebook length: {len(encrypted_phonebook)} bytes")
             
+            # Try different padding modes
+            try:
+                cipher = EVP.Cipher("aes_256_cbc", key, iv, 0, padding=1)
+                decrypted = cipher.update(encrypted_phonebook) + cipher.final()
+                print("[DEBUG] AES decryption successful with PKCS#7 padding")
+            except EVP.EVPError as padding_error:
+                print(f"[DEBUG] PKCS#7 padding failed: {padding_error}")
+                # Fallback: Try without padding
+                try:
+                    cipher = EVP.Cipher("aes_256_cbc", key, iv, 0, padding=0)
+                    decrypted = cipher.update(encrypted_phonebook) + cipher.final()
+                    print("[DEBUG] AES decryption successful without padding")
+                except EVP.EVPError as no_padding_error:
+                    print(f"[DEBUG] No padding also failed: {no_padding_error}")
+                    raise ValueError("AES decryption failed with both padding modes")
+
+            print(f"[DEBUG] Decrypted data length: {len(decrypted)} bytes")
+            print(f"[DEBUG] First 100 bytes: {decrypted[:100].decode('ascii', errors='replace')}")
+
+            # 7. JSON PARSING
+            try:
+                phonebook_data = json.loads(decrypted.decode('utf-8'))
+                print("[DEBUG] Successfully parsed as JSON")
+            except UnicodeDecodeError:
+                print("[DEBUG] UTF-8 decode failed, trying other encodings")
+                # Try alternative encodings
+                for encoding in ['latin-1', 'ascii', 'utf-16']:
+                    try:
+                        decoded_str = decrypted.decode(encoding)
+                        print(f"[DEBUG] Successfully decoded as {encoding}")
+                        phonebook_data = json.loads(decoded_str)
+                        break
+                    except (UnicodeDecodeError, json.JSONDecodeError):
+                        continue
+                else:
+                    raise ValueError("Failed to decode decrypted data with any encoding")
+
+            if not isinstance(phonebook_data, dict):
+                raise ValueError("Decrypted data is not a valid JSON object")
+                
+            print(f"[DEBUG] Phonebook keys: {list(phonebook_data.keys())}")
+            if 'clients' in phonebook_data:
+                print(f"[DEBUG] Phonebook entries: {len(phonebook_data.get('clients', []))}")
+
+            # 8. UI UPDATE - DIREKT UND EINFACH!
+            print("[DEBUG] Attempting UI update...")
+            
+            if hasattr(self, 'update_phonebook') and callable(self.update_phonebook):
+                print("[DEBUG] Calling update_phonebook directly")
+                try:
+                    self.update_phonebook(phonebook_data)
+                    print("[DEBUG] update_phonebook called successfully!")
+                except Exception as e:
+                    print(f"[UI UPDATE ERROR] {e}")
+                    import traceback
+                    traceback.print_exc()
+            else:
+                print("[ERROR] update_phonebook method not available")
+
+            print("="*80)
+            print("=== DECRYPTION COMPLETED SUCCESSFULLY ===")
+            print("="*80)
+            
+            return phonebook_data
+                
         except Exception as e:
-            print(f"[DECRYPT ERROR] {str(e)}")
+            error_msg = f"Entschlüsselung fehlgeschlagen: {str(e)}"
+            print(f"[CRITICAL ERROR] {error_msg}")
+            self._connection_status = error_msg
+            self.connectionStatusChanged.emit(self._connection_status)
+            import traceback
             traceback.print_exc()
-            raise
+            return None
+             
     def _process_sip_message(self, message):
         """Verarbeitet SIP-Nachrichten mit verschlüsselten Daten"""
         sip_data = parse_sip_message(message)
@@ -2112,7 +2182,7 @@ class PHONEBOOK(QObject):
                             encrypted_secret = base64.b64decode(message_data["ENCRYPTED_SECRET"])
                             encrypted_phonebook = base64.b64decode(message_data["ENCRYPTED_PHONEBOOK"])
                             combined = encrypted_secret + encrypted_phonebook
-                            return self._decrypt_phonebook_data(combined)
+                            return self._decrypt_phonebook(combined)
                     except (json.JSONDecodeError, UnicodeDecodeError):
                         pass
                         
@@ -2126,14 +2196,14 @@ class PHONEBOOK(QObject):
                             encrypted_secret = base64.b64decode(secret_part)
                             encrypted_phonebook = base64.b64decode(phonebook_part)
                             combined = encrypted_secret + encrypted_phonebook
-                            return self._decrypt_phonebook_data(combined)
+                            return self._decrypt_phonebook(combined)
                         except binascii.Error as e:
                             print(f"[ERROR] Base64 decode failed: {e}")
                 
                 # Direct processing if no headers found
                 if len(encrypted_data) >= 512:
                     print("[DEBUG] Trying direct encrypted phonebook processing")
-                    return self._decrypt_phonebook_data(encrypted_data)
+                    return self._decrypt_phonebook(encrypted_data)
                     
             # 3. Handle dict input
             elif isinstance(encrypted_data, dict):
@@ -2142,7 +2212,7 @@ class PHONEBOOK(QObject):
                     encrypted_secret = base64.b64decode(encrypted_data['ENCRYPTED_SECRET'])
                     encrypted_phonebook = base64.b64decode(encrypted_data['ENCRYPTED_PHONEBOOK'])
                     combined = encrypted_secret + encrypted_phonebook
-                    return self._decrypt_phonebook_data(combined)
+                    return self._decrypt_phonebook(combined)
                     
             print("[ERROR] No valid encrypted data format detected")
             return False
@@ -2153,6 +2223,394 @@ class PHONEBOOK(QObject):
             import sys
             sys.stderr.write(f"Error processing encrypted phonebook: {str(e)}\n")
             return False
+
+    def update_phonebook(self, phonebook_data):
+        """Aktualisiert das Telefonbuch für QML - sendet immer eine Liste"""
+        print("\n" + "="*80)
+        print("=== UPDATE_PHONEBOOK DEBUG START ===")
+        print("="*80)
+        
+        try:
+            # 1. EXTREME INPUT DEBUGGING
+            print(f"[DEBUG] Input type: {type(phonebook_data)}")
+            print(f"[DEBUG] Input repr: {repr(phonebook_data)[:200]}...")
+            
+            if hasattr(phonebook_data, '__len__'):
+                print(f"[DEBUG] Input length: {len(phonebook_data)}")
+            else:
+                print("[DEBUG] Input has no length attribute")
+            
+            # 2. NORMALIZE TO LIST FORMAT FOR QML
+            clients_list = []
+            
+            if isinstance(phonebook_data, dict) and 'clients' in phonebook_data:
+                print("[DEBUG] Extracting clients from dictionary")
+                clients_list = phonebook_data['clients']
+                
+            elif isinstance(phonebook_data, list):
+                print("[DEBUG] Using data directly as list")
+                clients_list = phonebook_data
+                
+            elif isinstance(phonebook_data, dict):
+                print("[DEBUG] Converting dictionary to single-item list")
+                clients_list = [phonebook_data]
+                
+            else:
+                error_msg = f"Ungültiges Telefonbuchformat: {type(phonebook_data)}"
+                print(f"[ERROR] {error_msg}")
+                self._connection_status = error_msg
+                self.connectionStatusChanged.emit(self._connection_status)
+                return
+
+            # 3. VALIDATE CLIENTS LIST
+            print(f"[DEBUG] Final clients list type: {type(clients_list)}")
+            print(f"[DEBUG] Final clients list length: {len(clients_list)}")
+            
+            if clients_list:
+                print(f"[DEBUG] First client: {clients_list[0]}")
+                print(f"[DEBUG] First client type: {type(clients_list[0])}")
+                if isinstance(clients_list[0], dict):
+                    print(f"[DEBUG] First client keys: {list(clients_list[0].keys())}")
+
+            # 4. DIREKTER UI UPDATE - KEIN TIMER MEHR!
+            try:
+                print("[UI UPDATE] Emitting clients list to QML DIRECTLY")
+                print(f"[UI UPDATE] List length: {len(clients_list)}")
+                
+                # Send ONLY the clients list to QML
+                self.phonebookUpdated.emit(clients_list)
+                
+                # Status update
+                status_msg = f"Telefonbuch aktualisiert ({len(clients_list)} Einträge)"
+                print(f"[STATUS] {status_msg}")
+                
+                self._connection_status = status_msg
+                self.connectionStatusChanged.emit(self._connection_status)
+                
+                print("[UI UPDATE] Signal emitted successfully!")
+                
+            except Exception as e:
+                error_msg = f"UI Update failed: {str(e)}"
+                print(f"[ERROR] {error_msg}")
+                import traceback
+                traceback.print_exc()
+                self._connection_status = error_msg
+                self.connectionStatusChanged.emit(self._connection_status)
+
+            print("="*80)
+            print("=== UPDATE_PHONEBOOK COMPLETED ===")
+            print("="*80)
+
+        except Exception as e:
+            error_msg = f"KRITISCHER FEHLER in update_phonebook: {str(e)}"
+            print(error_msg)
+            import traceback
+            traceback.print_exc()
+            self._connection_status = error_msg
+            self.connectionStatusChanged.emit(self._connection_status)
+
+    def _handle_identity_challenge(self, message):
+        """Qt-compatible identity challenge handler"""
+        try:
+            print("\n" + "="*60)
+            print("[IDENTITY] START: Handling identity challenge from server")
+            print("="*60)
+            
+            # 1. Parse SIP message
+            print("[DEBUG] Step 1: Parsing SIP message")
+            sip_data = parse_sip_message(message)
+            if not sip_data:
+                print("[IDENTITY ERROR] Invalid SIP message format")
+                self._connection_status = "Ungültige Identity Challenge vom Server"
+                self.connectionStatusChanged.emit(self._connection_status)
+                return False
+            
+            print(f"[DEBUG] SIP data keys: {list(sip_data.keys())}")
+            if 'headers' in sip_data:
+                print(f"[DEBUG] Headers: {list(sip_data['headers'].keys())}")
+            if 'custom_data' in sip_data:
+                print(f"[DEBUG] Custom data keys: {list(sip_data['custom_data'].keys())}")
+            
+            # 2. Extract challenge data
+            print("[DEBUG] Step 2: Extracting challenge data")
+            custom_data = sip_data.get('custom_data', {})
+            encrypted_challenge_b64 = custom_data.get('ENCRYPTED_CHALLENGE')
+            challenge_id = custom_data.get('CHALLENGE_ID')
+            
+            print(f"[DEBUG] Encrypted challenge present: {encrypted_challenge_b64 is not None}")
+            print(f"[DEBUG] Challenge ID present: {challenge_id is not None}")
+            print(f"[DEBUG] Challenge ID: {challenge_id}")
+            print(f"[DEBUG] Encrypted challenge length: {len(encrypted_challenge_b64) if encrypted_challenge_b64 else 0}")
+            
+            if not encrypted_challenge_b64 or not challenge_id:
+                print("[IDENTITY ERROR] Missing challenge data")
+                print(f"[DEBUG] Available custom_data: {custom_data}")
+                self._connection_status = "Unvollständige Identity Challenge vom Server"
+                self.connectionStatusChanged.emit(self._connection_status)
+                return False
+            
+            # 3. Base64 decode
+            print("[DEBUG] Step 3: Base64 decoding challenge")
+            try:
+                encrypted_challenge = base64.b64decode(encrypted_challenge_b64)
+                print(f"[DEBUG] Decoded challenge length: {len(encrypted_challenge)} bytes")
+                print(f"[DEBUG] First 16 bytes (hex): {encrypted_challenge[:16].hex()}")
+            except Exception as e:
+                print(f"[IDENTITY ERROR] Base64 decode failed: {str(e)}")
+                self._connection_status = "Fehler beim Decodieren der Challenge"
+                self.connectionStatusChanged.emit(self._connection_status)
+                return False
+            
+            # 4. Decrypt with client private key
+            print("[DEBUG] Step 4: Decrypting with client private key")
+            try:
+                private_key = load_privatekey()
+                print(f"[DEBUG] Client private key loaded: {len(private_key)} chars")
+                print(f"[DEBUG] Private key starts with: {private_key[:50]}...")
+                
+                priv_key = RSA.load_key_string(private_key.encode())
+                decrypted_challenge = priv_key.private_decrypt(
+                    encrypted_challenge, 
+                    RSA.pkcs1_padding
+                )
+                challenge = decrypted_challenge.decode('utf-8')
+                print(f"[DEBUG] Decrypted challenge: {challenge}")
+                print(f"[DEBUG] Decrypted challenge length: {len(challenge)} chars")
+                
+            except Exception as e:
+                print(f"[IDENTITY ERROR] Decryption failed: {str(e)}")
+                self._connection_status = "Fehler beim Entschlüsseln der Challenge"
+                self.connectionStatusChanged.emit(self._connection_status)
+                import traceback
+                traceback.print_exc()
+                return False
+            
+            # 5. Create response
+            print("[DEBUG] Step 5: Creating response")
+            response_data = challenge + "VALIDATED"
+            print(f"[DEBUG] Response data: {response_data}")
+            print(f"[DEBUG] Response length: {len(response_data)} chars")
+            
+            # 6. Encrypt response with server public key
+            print("[DEBUG] Step 6: Encrypting with server public key")
+            try:
+                server_pubkey = load_server_publickey()
+                print(f"[DEBUG] Server pubkey loaded: {len(server_pubkey)} chars")
+                print(f"[DEBUG] Server pubkey starts with: {repr(server_pubkey[:50])}")
+                print(f"[DEBUG] Server pubkey ends with: {repr(server_pubkey[-50:])}")
+                
+                # Ersetze literal \n durch echte Newlines
+                if '\\n' in server_pubkey:
+                    print("[DEBUG] Found literal \\n in key - replacing with actual newlines")
+                    original_pubkey = server_pubkey
+                    server_pubkey = server_pubkey.replace('\\n', '\n')
+                    print(f"[DEBUG] Fixed key starts with: {repr(server_pubkey[:50])}")
+                    print(f"[DEBUG] Fixed key ends with: {repr(server_pubkey[-50:])}")
+                
+                # Versuche den Key zu laden
+                print("[DEBUG] Attempting to load key with BIO...")
+                server_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(server_pubkey.encode()))
+                print("[DEBUG] Key loaded successfully with BIO")
+                
+                encrypted_response = server_key.public_encrypt(
+                    response_data.encode('utf-8'), 
+                    RSA.pkcs1_padding
+                )
+                print(f"[DEBUG] Encrypted response length: {len(encrypted_response)} bytes")
+                print(f"[DEBUG] First 16 bytes (hex): {encrypted_response[:16].hex()}")
+                
+            except Exception as e:
+                print(f"[IDENTITY ERROR] Encryption failed: {str(e)}")
+                print("[DEBUG] Trying alternative loading method...")
+                
+                try:
+                    # Alternative: Speichere Key temporär und lade von Datei
+                    with open("temp_server_key.pem", "w") as f:
+                        f.write(server_pubkey)
+                    server_key = RSA.load_pub_key("temp_server_key.pem")
+                    encrypted_response = server_key.public_encrypt(
+                        response_data.encode('utf-8'), 
+                        RSA.pkcs1_padding
+                    )
+                    print("[DEBUG] Encryption successful with file method")
+                    os.remove("temp_server_key.pem")
+                except Exception as e2:
+                    print(f"[IDENTITY ERROR] File method also failed: {str(e2)}")
+                    self._connection_status = "Fehler beim Verschlüsseln der Response"
+                    self.connectionStatusChanged.emit(self._connection_status)
+                    import traceback
+                    traceback.print_exc()
+                    return False
+            
+            # 7. Send response back to server
+            print("[DEBUG] Step 7: Sending response to server")
+            
+            # Verwende Dictionary für JSON-Format
+            response_payload = {
+                "MESSAGE_TYPE": "IDENTITY_RESPONSE",
+                "CHALLENGE_ID": challenge_id,
+                "ENCRYPTED_RESPONSE": base64.b64encode(encrypted_response).decode('utf-8')
+            }
+            
+            # ERWEITERTES DEBUGGING
+            print(f"[DEBUG] Response payload: {response_payload}")
+            print(f"[DEBUG] ENCRYPTED_RESPONSE length: {len(response_payload['ENCRYPTED_RESPONSE'])}")
+            print(f"[DEBUG] ENCRYPTED_RESPONSE preview: {response_payload['ENCRYPTED_RESPONSE'][:50]}...")
+            
+            response_msg = build_sip_message(
+                "MESSAGE", 
+                "server", 
+                response_payload  # Als Dictionary für JSON-Format
+            )
+            
+            print(f"[DEBUG] Response message length: {len(response_msg)} chars")
+            print(f"[DEBUG] Response message preview: {repr(response_msg[:300])}")
+            print(f"[DEBUG] Contains MESSAGE_TYPE: {'MESSAGE_TYPE' in response_msg}")
+            print(f"[DEBUG] Contains CHALLENGE_ID: {'CHALLENGE_ID' in response_msg}")
+            print(f"[DEBUG] Contains ENCRYPTED_RESPONSE: {'ENCRYPTED_RESPONSE' in response_msg}")
+            print(f"[DEBUG] Response payload keys: {list(response_payload.keys())}")
+            
+            send_frame(self.client_socket, response_msg.encode('utf-8'))
+            print("[IDENTITY] Response sent to server successfully!")
+            
+            self._connection_status = "Identity Challenge erfolgreich beantwortet"
+            self.connectionStatusChanged.emit(self._connection_status)
+            
+            print("="*60)
+            print("[IDENTITY] END: Challenge handling completed successfully")
+            print("="*60)
+            
+            return True
+            
+        except Exception as e:
+            error_msg = f"Identity Challenge fehlgeschlagen: {str(e)}"
+            print(f"[IDENTITY ERROR] {error_msg}")
+            self._connection_status = error_msg
+            self.connectionStatusChanged.emit(self._connection_status)
+            import traceback
+            traceback.print_exc()
+            
+            print("="*60)
+            print("[IDENTITY] END: Challenge handling failed")
+            print("="*60)
+            
+            return False
+
+    def _handle_identity_verified(self, message):
+        """Verarbeitet Identity Verification Bestätigung vom Server"""
+        try:
+            print("[IDENTITY] Received verification confirmation from server")
+            
+            sip_data = parse_sip_message(message)
+            if not sip_data:
+                print("[IDENTITY ERROR] Invalid SIP message format")
+                self._connection_status = "Ungültige Verifizierungsbestätigung"
+                self.connectionStatusChanged.emit(self._connection_status)
+                return False
+            
+            custom_data = sip_data.get('custom_data', {})
+            status = custom_data.get('STATUS')
+            
+            if status == 'IDENTITY_VERIFIED':
+                print("[IDENTITY] Successfully verified by server!")
+                self._connection_status = "Identity erfolgreich verifiziert"
+                self.connectionStatusChanged.emit(self._connection_status)
+                return True
+            else:
+                error_msg = f"Verifizierung fehlgeschlagen: {custom_data.get('REASON', 'Unknown error')}"
+                print(f"[IDENTITY] {error_msg}")
+                self._connection_status = error_msg
+                self.connectionStatusChanged.emit(self._connection_status)
+                return False
+                
+        except Exception as e:
+            error_msg = f"Verifizierungsverarbeitung fehlgeschlagen: {str(e)}"
+            print(f"[IDENTITY ERROR] {error_msg}")
+            self._connection_status = error_msg
+            self.connectionStatusChanged.emit(self._connection_status)
+            return False
+
+    def _process_encrypted_phonebook(self, encrypted_data):
+        """Process encrypted phonebook data without recursion - Qt compatible"""
+        print("\n=== PROCESSING ENCRYPTED PHONEBOOK ===")
+        
+        try:
+            # 1. Validate input
+            if not encrypted_data:
+                print("[ERROR] Empty encrypted data received")
+                self._connection_status = "Keine verschlüsselten Daten empfangen"
+                self.connectionStatusChanged.emit(self._connection_status)
+                return False
+                
+            # 2. Handle bytes input
+            if isinstance(encrypted_data, bytes):
+                # Skip frame header if present (first 4 bytes)
+                if len(encrypted_data) > 4 and encrypted_data[:4] == struct.pack('!I', len(encrypted_data)-4):
+                    encrypted_data = encrypted_data[4:]
+                
+                # Try to find SIP message body
+                body_start = encrypted_data.find(b'\r\n\r\n')
+                if body_start != -1:
+                    headers = encrypted_data[:body_start]
+                    body = encrypted_data[body_start+4:]  # Skip \r\n\r\n
+                    
+                    print("[DEBUG] Found SIP message with body")
+                    
+                    # Try to parse as JSON
+                    try:
+                        message_data = json.loads(body.decode('utf-8'))
+                        if "ENCRYPTED_SECRET" in message_data and "ENCRYPTED_PHONEBOOK" in message_data:
+                            print("[DEBUG] Found encrypted phonebook in JSON body")
+                            encrypted_secret = base64.b64decode(message_data["ENCRYPTED_SECRET"])
+                            encrypted_phonebook = base64.b64decode(message_data["ENCRYPTED_PHONEBOOK"])
+                            combined = encrypted_secret + encrypted_phonebook
+                            return self._decrypt_phonebook(combined)
+                    except (json.JSONDecodeError, UnicodeDecodeError):
+                        pass
+                        
+                    # Try key-value format
+                    if b"ENCRYPTED_SECRET:" in body and b"ENCRYPTED_PHONEBOOK:" in body:
+                        print("[DEBUG] Found encrypted phonebook in key-value body")
+                        secret_part = body.split(b"ENCRYPTED_SECRET:")[1].split(b"\n")[0].strip()
+                        phonebook_part = body.split(b"ENCRYPTED_PHONEBOOK:")[1].split(b"\n")[0].strip()
+                        
+                        try:
+                            encrypted_secret = base64.b64decode(secret_part)
+                            encrypted_phonebook = base64.b64decode(phonebook_part)
+                            combined = encrypted_secret + encrypted_phonebook
+                            return self._decrypt_phonebook(combined)
+                        except binascii.Error as e:
+                            print(f"[ERROR] Base64 decode failed: {e}")
+                
+                # Direct processing if no headers found
+                if len(encrypted_data) >= 512:
+                    print("[DEBUG] Trying direct encrypted phonebook processing")
+                    return self._decrypt_phonebook(encrypted_data)
+                    
+            # 3. Handle dict input
+            elif isinstance(encrypted_data, dict):
+                if 'ENCRYPTED_SECRET' in encrypted_data and 'ENCRYPTED_PHONEBOOK' in encrypted_data:
+                    print("[DEBUG] Found encrypted phonebook in dict")
+                    encrypted_secret = base64.b64decode(encrypted_data['ENCRYPTED_SECRET'])
+                    encrypted_phonebook = base64.b64decode(encrypted_data['ENCRYPTED_PHONEBOOK'])
+                    combined = encrypted_secret + encrypted_phonebook
+                    return self._decrypt_phonebook(combined)
+                    
+            print("[ERROR] No valid encrypted data format detected")
+            self._connection_status = "Ungültiges verschlüsseltes Datenformat"
+            self.connectionStatusChanged.emit(self._connection_status)
+            return False
+                
+        except Exception as e:
+            error_msg = f"Verarbeitung verschlüsselter Daten fehlgeschlagen: {str(e)}"
+            print(f"[CRITICAL ERROR] {error_msg}")
+            self._connection_status = error_msg
+            self.connectionStatusChanged.emit(self._connection_status)
+            # Use simpler error logging to avoid recursion
+            import sys
+            sys.stderr.write(f"Error processing encrypted phonebook: {str(e)}\n")
+            return False
+
 
     def _process_sip_framed_phonebook(self, sip_data):
         """Process SIP-framed encrypted phonebook message with multiple format support"""
@@ -2281,125 +2739,7 @@ class PHONEBOOK(QObject):
             traceback.print_exc()
             return False
     
-    def _process_phonebook_update(self, message):
-        """Verarbeitet Phonebook-Updates mit vollständiger Entschlüsselung und ausführlichem Debugging"""
-        print("\n=== CLIENT PHONEBOOK UPDATE PROCESSING ===")
-        
-        try:
-            # 1. Validierung der Eingangsdaten
-            print("[DEBUG] Validating input message...")
-            if not isinstance(message, dict):
-                print("[ERROR] Invalid message format - not a dictionary")
-                return False
-    
-            # 2. Extrahiere verschlüsselte Daten
-            print("[DEBUG] Extracting encrypted data from message...")
-            try:
-                encrypted_secret = base64.b64decode(message['ENCRYPTED_SECRET'])
-                encrypted_phonebook = base64.b64decode(message['ENCRYPTED_PHONEBOOK'])
-                print("[DEBUG] Encrypted secret length: {}".format(len(encrypted_secret)))
-                print("[DEBUG] Encrypted phonebook length: {}".format(len(encrypted_phonebook)))
-            except KeyError as e:
-                print("[ERROR] Missing required field: {}".format(str(e)))
-                return False
-            except binascii.Error as e:
-                print("[ERROR] Base64 decoding failed: {}".format(str(e)))
-                return False
-    
-            # 3. Entschlüssele das Geheimnis
-            print("[DEBUG] Decrypting secret with private key...")
-            try:
-                with open("private_key.pem", "rb") as f:
-                    priv_key = RSA.load_key_string(f.read())
-                    print("[DEBUG] Private key loaded successfully")
-                    
-                decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
-                print("[DEBUG] Decrypted secret (len={}): {}...".format(
-                    len(decrypted_secret),
-                    ''.join('{:02x}'.format(b) for b in decrypted_secret[:16])  # Hex conversion without .hex()
-                ))            
-            except Exception as e:
-                print("[ERROR] Failed to decrypt secret: {}".format(str(e)))
-                return False
-    
-            # 4. Validiere das Geheimnis
-            print("[DEBUG] Validating decrypted secret...")
-            if not decrypted_secret.startswith(b"+++secret+++"):
-                print("[ERROR] Invalid secret format - missing overhead")
-                return False
-                
-            secret = decrypted_secret[11:59]  # 48 Bytes
-            iv = secret[:16]
-            aes_key = secret[16:]
-            print("[DEBUG] IV: {}".format(''.join('{:02x}'.format(b) for b in iv)))
-            print("[DEBUG] AES Key: {}...".format(''.join('{:02x}'.format(b) for b in aes_key[:8])))
-    
-            # 5. Entschlüssele das Phonebook
-            print("[DEBUG] Decrypting phonebook with AES...")
-            try:
-                cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 0)
-                decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
-                
-                print("[DEBUG] Decrypted data (len={}): {}...".format(
-                    len(decrypted_data),
-                    decrypted_data[:100].decode('utf-8', errors='replace')
-                ))
-            except EVP.EVPError as e:
-                error_msg = "AES decryption failed: {}".format(str(e))
-                print("[ERROR] {}".format(error_msg))
-                logging.error(error_msg, exc_info=True)
-                return False
-            except Exception as e:
-                error_msg = "Unexpected error during decryption: {}".format(str(e))
-                print("[CRITICAL] {}".format(error_msg))
-                logging.critical(error_msg, exc_info=True)
-                return False
-    
-            # 6. Parse JSON-Daten
-            print("[DEBUG] Parsing decrypted JSON data...")
-            try:
-                phonebook_data = json.loads(decrypted_data.decode('utf-8'))
-                print("[DEBUG] Raw phonebook data: {}".format(phonebook_data))
-            except json.JSONDecodeError as e:
-                print("[ERROR] JSON decode failed: {}".format(str(e)))
-                # Safe debug output for potentially sensitive data
-                print("[DEBUG] Problematic data ({} bytes): {}".format(
-                    len(decrypted_data),
-                    repr(decrypted_data[:200].decode('utf-8', errors='replace'))
-                ))
-                return False
-    
-            # 7. Filtere gültige Einträge
-            print("[DEBUG] Validating phonebook entries...")
-            valid_entries = []
-            for entry in phonebook_data:
-                try:
-                    if (isinstance(entry, dict) and 
-                        str(entry.get('id', '')).isdigit() and 
-                        entry.get('name')):
-                        print("[DEBUG] Valid entry found: {}: {}".format(
-                            entry['id'],
-                            entry['name']
-                        ))
-                        valid_entries.append(entry)
-                except Exception as e:
-                    print("[WARNING] Invalid entry skipped: {}".format(str(e)))
-    
-            # 8. Aktualisiere UI
-            if valid_entries:
-                print("[DEBUG] Updating UI with {} valid entries".format(len(valid_entries)))
-                self.phonebook_update_signal.emit(phonebook_data.get('clients', []))
-                return True
-            else:
-                print("[ERROR] No valid entries found in phonebook")
-                return False
-                
-        except Exception as e:
-            print("[CRITICAL] Processing error: {}".format(str(e)))
-            traceback.print_exc()
-            return False
-        finally:
-            print("=== CLIENT PHONEBOOK UPDATE PROCESSING END ===")
+
     
     def store_secret_safely(self, secret):
         """Sichert das Geheimnis mit SecureVault"""
