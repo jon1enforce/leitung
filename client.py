@@ -396,9 +396,44 @@ def encrypt_audio_chunk(chunk, key, seed):
 
 
 def load_privatekey():
-    with open("client_private_key.pem", "rb") as privHandle:
-        private_key = privHandle.read()
-    return private_key.decode('utf-8')
+    """Lädt den privaten Schlüssel - konsistent mit generate_keys()"""
+    if not os.path.exists("client_private_key.pem"):
+        # Generiere neuen RSA-Schlüssel
+        bits = 4096
+        new_key = RSA.gen_key(bits, 65537)
+
+        # Speichere den privaten Schlüssel im PKCS#8 Format (konsistent mit generate_keys)
+        from M2Crypto import EVP
+        pkey = EVP.PKey()
+        pkey.assign_rsa(new_key)
+        
+        priv_memory = BIO.MemoryBuffer()
+        pkey.save_key_bio(priv_memory, cipher=None)
+        
+        with open("client_private_key.pem", "wb") as privHandle:
+            privHandle.write(priv_memory.getvalue())
+        
+        # Speichere auch den öffentlichen Schlüssel
+        pub_memory = BIO.MemoryBuffer()
+        new_key.save_pub_key_bio(pub_memory)
+        public_key_pem = pub_memory.getvalue().decode('utf-8')
+
+        with open("client_public_key.pem", "w") as pubHandle:
+            pubHandle.write(public_key_pem)
+            
+        return public_key_pem
+        
+    else:
+        # Lade den privaten Schlüssel
+        with open("client_private_key.pem", "rb") as f:
+            private_key_data = f.read()
+        
+        # Validiere dass es ein privater Schlüssel ist (akzeptiere beide Formate)
+        private_key_str = private_key_data.decode('utf-8')
+        if not ('-----BEGIN PRIVATE KEY-----' in private_key_str):
+            raise ValueError("Invalid private key format in file")
+        
+        return private_key_data.decode('utf-8')
 def load_server_publickey():
     """Lädt den öffentlichen Server-Schlüssel aus der Datei"""
     if not os.path.exists("server_public_key.pem"):
@@ -848,7 +883,7 @@ def load_client_id():
 
 
 def load_publickey():
-    if not os.path.exists("client_public_key.pem"):
+    if not os.path.exists("client_public_key.pem") or not os.path.exists("client_private_key.pem"):
         # Generiere neuen RSA-Schlüssel
         bits = 4096
         new_key = RSA.gen_key(bits, 65537)
@@ -1414,11 +1449,16 @@ class PHONEBOOK(ctk.CTk):
             print(f"[UI ERROR] Failed to update phonebook UI: {str(e)}")
             traceback.print_exc()
     def update_phonebook(self, phonebook_data):
-        """Aktualisiert das Telefonbuch mit vollständiger Fehlerbehandlung
-            
-        Args:
-            phonebook_data: Entschlüsselte Telefonbuchdaten (Liste von Dicts oder JSON-String)
-        """
+        print(f"\n🔥 update_phonebook called with: {type(phonebook_data)}")
+        print(f"🔥 Thread: {threading.current_thread().name}")
+        
+        # Sofortiges emit versuchen
+        try:
+            if isinstance(phonebook_data, dict):
+                self.phonebookUpdated.emit(phonebook_data)
+                print("🔥 Direct emit attempted")
+        except Exception as e:
+            print(f"🔥 Direct emit failed: {e}")
         print("\n=== UPDATING PHONEBOOK ===")
         
         try:
@@ -2252,7 +2292,7 @@ class PHONEBOOK(ctk.CTk):
             # 3. RSA decrypt
             print("[DEBUG] RSA decrypting secret...")
             private_key = load_privatekey()
-            if not private_key or not private_key.startswith('-----BEGIN RSA PRIVATE KEY-----'):
+            if not private_key or not private_key.startswith('-----BEGIN PRIVATE KEY-----'):
                 raise ValueError("Invalid private key format")
                 
             priv_key = RSA.load_key_string(private_key.encode())
@@ -2414,7 +2454,7 @@ class PHONEBOOK(ctk.CTk):
             # RSA decrypt
             print("[DEBUG] RSA decrypting secret...")
             private_key = load_privatekey()
-            if not private_key or not private_key.startswith('-----BEGIN RSA PRIVATE KEY-----'):
+            if not private_key or not private_key.startswith('-----BEGIN PRIVATE KEY-----'):
                 raise ValueError("Invalid private key format")
                 
             priv_key = RSA.load_key_string(private_key.encode())
