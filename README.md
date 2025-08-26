@@ -18,7 +18,8 @@ python3 server.py
 python3 client.py  
 ___________________________________________________  
 # TODO
-1. "Call", die bidirektionale Audioübertragung testen und gegebenfalls korrigieren.
+1. "Call", die bidirektionale Audioübertragung testen und gegebenfalls korrigieren.  (Funktioniert noch nicht!)  
+2. review der thread sicherheit, gegebenfalls ein fix. 
 ___________________________________________________  
 
 # FINISHED  
