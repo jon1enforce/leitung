@@ -18,8 +18,7 @@ python3 server.py
 python3 client.py  
 ___________________________________________________  
 # TODO
-1. Mehrere clients threadsafe verwalten. Auf 2 ports 5060/5061  
-2. "Call", die bidirektionale Audioübertragung testen und gegebenfalls korrigieren.
+1. "Call", die bidirektionale Audioübertragung testen und gegebenfalls korrigieren.
 ___________________________________________________  
 
 # FINISHED  
@@ -27,3 +26,4 @@ ___________________________________________________
 2. User Interface  
 3. "Setup" -> verbindet erfolgreich  
 4. "Update" -> Telefonbuch update und Identitäts-session erfolgreich  
+5. Mehrere clients threadsafe verwalten. Auf 2 ports 5060/5061  - braucht review, das meiste funktioniert.
