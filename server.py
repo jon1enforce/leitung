@@ -1158,7 +1158,7 @@ class Server:
                 print(f"[DEBUG] ERROR: Server private key file not found: {private_key_path}")
                 print(f"[DEBUG] Current working directory: {os.getcwd()}")
                 print(f"[DEBUG] Files in directory: {os.listdir('.')}")
-                return False
+                return False, None
             
             print(f"[DEBUG] Using server private key: {private_key_path}")
             
@@ -1177,7 +1177,7 @@ class Server:
                 print(f"[DEBUG] Challenge encrypted successfully, length: {len(encrypted_challenge)} bytes")
             except Exception as e:
                 print(f"[DEBUG] Encryption error: {e}")
-                return False
+                return False, challenge_id
             
             # 3. Challenge per SIP-Nachricht senden
             challenge_msg = self.build_sip_message("MESSAGE", client_name, {
@@ -1236,7 +1236,7 @@ class Server:
             
             if not identity_response_found:
                 print("[DEBUG] Identity test failed: No identity response found within timeout")
-                return False
+                return False, challenge_id
             
             # 5. Response parsen und verifizieren
             print(f"[DEBUG] Parsing identity response...")
@@ -1272,15 +1272,15 @@ class Server:
             
             if message_type != "IDENTITY_RESPONSE":
                 print("[DEBUG] Identity test failed: Not an identity response")
-                return False
+                return False, challenge_id
             
             if not all([response_challenge_id, encrypted_response]):
                 print("[DEBUG] Identity test failed: Missing response fields")
-                return False
+                return False, challenge_id
             
             if response_challenge_id != challenge_id:
                 print(f"[DEBUG] Identity test failed: Challenge ID mismatch")
-                return False
+                return False, challenge_id
             
             # Response entschlüsseln und verifizieren
             try:
@@ -1309,24 +1309,24 @@ class Server:
                         "CHALLENGE_ID": challenge_id
                     })
                     send_frame(client_socket, success_msg)
-                    return True
+                    return True, challenge_id
                 else:
                     print("[DEBUG] Identity test failed: Invalid response content")
                     print(f"[DEBUG]   Expected: '{expected_response}' (length: {len(expected_response)})")
                     print(f"[DEBUG]   Received: '{decrypted_text}' (length: {len(decrypted_text)})")
-                    return False
+                    return False, challenge_id
                     
             except Exception as e:
                 print(f"[DEBUG] Response verification error: {e}")
                 import traceback
                 traceback.print_exc()
-                return False
+                return False, challenge_id
                 
         except Exception as e:
             print(f"[DEBUG] Identity test error: {e}")
             import traceback
             traceback.print_exc()
-            return False
+            return False, None
     def process_identity_response(self, sip_data, client_socket):
         """Verarbeitet die Identity-Response vom Client und validiert die Challenge"""
         try:
@@ -1687,7 +1687,18 @@ class Server:
         
         try:
             print(f"[IDENTITY] Starte Challenge für {client_name}")
-            identity_verified = self.test_identity_sip(client_socket, client_pubkey, client_name)
+            identity_verified, challenge_id = self.test_identity_sip(client_socket, client_pubkey, client_name)
+            
+            # Speichere Challenge-ID für spätere Verifikation
+            if challenge_id:
+                if not hasattr(self, 'pending_challenges'):
+                    self.pending_challenges = {}
+                self.pending_challenges[challenge_id] = {
+                    'client': client_name,
+                    'client_id': client_id,
+                    'timestamp': time.time()
+                }
+                print(f"[DEBUG] Challenge {challenge_id} für {client_name} gespeichert")
             
             if identity_verified:
                 print(f"[IDENTITY] {client_name} erfolgreich verifiziert")
@@ -1720,6 +1731,30 @@ class Server:
             
             if not client_id:
                 print(f"[IDENTITY ERROR] No client_id provided for {client_name}")
+                return
+            
+            # Prüfe ob Challenge-ID bekannt ist
+            if not hasattr(self, 'pending_challenges') or response_challenge_id not in self.pending_challenges:
+                print(f"[IDENTITY ERROR] Unknown challenge ID: {response_challenge_id}")
+                if hasattr(self, 'pending_challenges'):
+                    print(f"[DEBUG] Known challenge IDs: {list(self.pending_challenges.keys())}")
+                else:
+                    print("[DEBUG] pending_challenges not initialized")
+                
+                # Fehlermeldung senden
+                error_msg = self.build_sip_message("401 Unauthorized", client_name, {
+                    "STATUS": "IDENTITY_FAILED",
+                    "ERROR": "Unknown challenge ID",
+                    "CHALLENGE_ID": response_challenge_id,
+                    "TIMESTAMP": int(time.time())
+                })
+                
+                self._message_queue.append({
+                    'type': 'send_response',
+                    'response': error_msg,
+                    'client_socket': client_socket,
+                    'client_name': client_name
+                })
                 return
             
             # Response entschlüsseln und verifizieren
