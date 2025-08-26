@@ -28,3 +28,18 @@ ___________________________________________________
 3. "Setup" -> verbindet erfolgreich  
 4. "Update" -> Telefonbuch update und Identitäts-session erfolgreich  
 5. Mehrere clients threadsafe verwalten. Auf 2 ports 5060/5061  - braucht review, das meiste funktioniert.
+
+# Sicherheitswarnungen
+Sicherheit ist kein Absolutismus,    
+Einschränkungen der Sicherheit können unter anderem eintreten, wenn:  
+-> Die Soundkarte, bzw. der Soundkartentreiber kompromittiert ist. [KRITISCH]  
+-> Die Entropie des Systems kompromittiert ist. [UNKRITISCH]  
+-> Das System einen Trojaner/rootkit implementiert. [kann aber gesehen werden mit access_monitor.py]  
+-> Andere Eingabe und Ausgabe Schnittstellen kompromittiert sind. -> Hardware treiber...[KRITISCH]  
+-> Wenn der Nutzer seinen privaten Schlüssel preis gibt. [KRITISCH]  
+-> ...  code injection ...  
+keine Gewähr. Enjoy <3
+
+
+
+
