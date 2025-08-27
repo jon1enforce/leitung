@@ -1,7 +1,6 @@
 import socket
 import threading
 from M2Crypto import RSA, BIO, EVP, Rand
-import hashlib
 import json
 import os
 import time
@@ -22,7 +21,8 @@ import importlib
 import wave
 import numpy as np
 from typing import Optional
-
+import hmac
+import hashlib
 try:
     from PyQt5.QtCore import QObject, pyqtSignal as Signal, pyqtSlot as Slot, pyqtProperty as Property, QUrl
     from PyQt5.QtGui import QGuiApplication
@@ -421,7 +421,25 @@ def get_disk_entropy(size):
     except Exception as e:
         print("Fehler beim Lesen der Festplatten-Entropie:", e)
         return None
-
+def secure_random(size):
+    """
+    Einfache Version die NUR die Zufallsdaten zurückgibt
+    """
+    state = os.urandom(32)
+    result = b''
+    counter = 0
+    
+    while len(result) < size:
+        h = hmac.new(
+            state, 
+            counter.to_bytes(8, 'big') + os.urandom(16),
+            hashlib.sha512
+        )
+        state = h.digest()
+        result += state
+        counter += 1
+    
+    return result[:size]  # Nur die Daten zurückgeben, kein Tuple!
 def generate_secret():
     """
     Erzeuge ein 48-Byte-Geheimnis:
@@ -430,14 +448,14 @@ def generate_secret():
     :return: 48-Byte-Geheimnis als Bytes.
     """
     # Erzeuge den Seed: 8 Bytes aus os.urandom + 8 Bytes aus der Festplatten-Entropie
-    seed_part1 = os.urandom(8)  # 8 Bytes aus os.urandom
+    seed_part1 = secure_random(8)  # 8 Bytes aus os.urandom
     seed_part2 = get_disk_entropy(8)  # 8 Bytes aus der Festplatten-Entropie
     if not seed_part2:
         raise RuntimeError("Konnte die Festplatten-Entropie nicht lesen.")
     seed = seed_part1 + seed_part2  # 16 Bytes Seed
 
     # Erzeuge den Schlüssel: 16 Bytes aus os.urandom + 16 Bytes aus der Festpla tten-Entropie
-    key_part1 = os.urandom(16)  # 16 Bytes aus os.urandom
+    key_part1 = secure_random(16)  # 16 Bytes aus os.urandom
     key_part2 = get_disk_entropy(16)  # 16 Bytes aus der Festplatten-Entropie
     if not key_part2:
         raise RuntimeError("Konnte die Festplatten-Entropie nicht lesen.")
@@ -1162,6 +1180,7 @@ class PHONEBOOK(QObject):
         self._call_status = ""
         self._client_name = ""  # Korrektes privates Attribut
         self.client_name = ""   # Öffentliche Property
+        self.selected_entry = None
         self.load_client_name()
         self.clientNameRequested.connect(self.handle_name_request)
         self.phonebook_update_signal.connect(self.update_phonebook)
@@ -1247,46 +1266,8 @@ class PHONEBOOK(QObject):
     def phonebookEntries(self):
         return self.phonebook_entries if hasattr(self, 'phonebook_entries') else []
 
-    def _handle_standard_sip(self, sip_data):
-        """Verarbeitet reguläre SIP-Nachrichten"""
-        # Hier können andere SIP-Nachrichten behandelt werden
-        print("[CLIENT] Handling standard SIP message: {}".format(sip_data))
-        return True
 
-    def send_client_secret(self):
-        """Generiert und sendet das AES-Geheimnis an den Server"""
-        try:
-            # 1. Generiere 48-Byte Geheimnis (16 IV + 32 AES Key)
-            secret = generate_secret()  # Ihre existierende Funktion
-            
-            # 2. Lade Server Public Key
-            server_pubkey = RSA.load_pub_key_bio(
-                BIO.MemoryBuffer(self.server_public_key.encode())
-            )
-            
-            # 3. Verschlüssele das Geheimnis mit dem Server Public Key
-            encrypted_secret = server_pubkey.public_encrypt(
-                secret, 
-                RSA.pkcs1_padding
-            )
-            
-            # 4. Sende an Server
-            request = self.build_sip_message(
-                "MESSAGE",
-                "server",
-                {
-                    "CLIENT_SECRET": base64.b64encode(encrypted_secret).decode('utf-8')
-                }
-            )
-            self.client_socket.sendall(request.encode('utf-8'))
-            
-            # Speichere das Geheimnis für spätere Entschlüsselung
-            self.encrypted_secret = encrypted_secret
-            self.aes_iv = secret[:16]
-            self.aes_key = secret[16:48]
-            
-        except Exception as e:
-            print("Fehler beim Senden des Geheimnisses: {}".format(e))
+
 
     @Slot(str, str)
     def on_connect_click(self, server_ip, server_port):
@@ -1431,24 +1412,49 @@ class PHONEBOOK(QObject):
 
     @Slot(int)
     def on_entry_click(self, index):
+        print(f"🚀 DEBUG: on_entry_click called with index: {index}")
+        print(f"📊 DEBUG: phonebook_entries length: {len(self.phonebook_entries)}")
+        
+        # Debug-Ausgabe aller Einträge
+        for i, entry in enumerate(self.phonebook_entries):
+            print(f"   [{i}] {entry.get('id', 'N/A')}: {entry.get('name', 'Unknown')}")
+        
+        if not self.phonebook_entries:
+            print("❌ ERROR: phonebook_entries is EMPTY!")
+            return
+            
         if 0 <= index < len(self.phonebook_entries):
-            entry = self.phonebook_entries[index]
-            print("Selected entry: {}: {}".format(entry['id'], entry['name']))
-            self.initiate_call(entry)
+            self.selected_entry = self.phonebook_entries[index]
+            print(f"✅ DEBUG: Selected entry: {self.selected_entry.get('id', 'N/A')}: {self.selected_entry.get('name', 'Unknown')}")
+        else:
+            print(f"❌ ERROR: Invalid index {index} (valid range: 0-{len(self.phonebook_entries)-1})")
 
     @Slot()
     def on_call_click(self):
-        secret = generate_secret()
-        seed = secret[:16]
-        key = secret[16:]
-        
+        # This method needs to be updated to get the target information
+        # You'll need to track which entry is selected first
+        if self.selected_entry is None:  # NUR auf den Wert prüfen, nicht auf Attribut-Existenz
+            self._call_status = "Bitte zuerst einen Kontakt auswählen"
+            self.callStatusChanged.emit(self._call_status)
+            print("DEBUG: selected_entry is None")
+            return
+            
         try:
-            send_audio_stream(key, seed)
+            secret = generate_secret()
+            seed = secret[:16]
+            key = secret[16:]
+            
+            # Get target information from the selected entry
+            target_ip = self.selected_entry['ip']
+            target_port = self.selected_entry['port']
+            
+            # Use the version that takes target_ip and target_port
+            send_audio_stream(key, seed, target_ip, target_port)
             receive_audio_stream(key, seed)
             self._call_status = "Anruf gestartet"
             self.callStatusChanged.emit(self._call_status)
         except Exception as e:
-            self._call_status = "Anruf fehlgeschlagen: {}".format(e)
+            self._call_status = f"Anruf fehlgeschlagen: {e}"
             self.callStatusChanged.emit(self._call_status)
 
     @Slot()
@@ -2261,7 +2267,9 @@ class PHONEBOOK(QObject):
                 self._connection_status = error_msg
                 self.connectionStatusChanged.emit(self._connection_status)
                 return
-
+            
+            self.phonebook_entries = clients_list  # oder clients_list.copy() für Sicherheit
+            print(f"[DEBUG] Updated self.phonebook_entries: {len(self.phonebook_entries)} entries")
             # 3. VALIDATE CLIENTS LIST
             print(f"[DEBUG] Final clients list type: {type(clients_list)}")
             print(f"[DEBUG] Final clients list length: {len(clients_list)}")

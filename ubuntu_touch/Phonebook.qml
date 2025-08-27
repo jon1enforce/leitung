@@ -10,7 +10,7 @@ ApplicationWindow {
     height: 1000
     minimumWidth: 400
     minimumHeight: 600
-    title: qsTr("PHONEBOOK - DEBUG MODE")
+    title: qsTr("PHONEBOOK")
     color: "#000000"
 
     // Farbpalette
@@ -36,42 +36,12 @@ ApplicationWindow {
     property string lastServerIp: ""
     property string lastServerPort: "5060"
 
-    // Debug variables
-    property string debugInfo: "Debug information will appear here"
-    property int signalCount: 0
-
     // Phonebook data storage
-    property var receivedData: null
     property ListModel phonebookModel: ListModel {}
-    property ListModel debugModel: ListModel {}
 
     ColumnLayout {
         anchors.fill: parent
         spacing: margin
-
-        // Debug Panel
-        Rectangle {
-            Layout.fillWidth: true
-            height: 120
-            color: "#222222"
-            radius: 3
-            border.color: buttonBlue
-            border.width: 2
-            
-            ScrollView {
-                anchors.fill: parent
-                anchors.margins: 5
-                contentWidth: availableWidth
-                
-                Text {
-                    id: debugText
-                    color: textWhite
-                    font.pixelSize: 12
-                    text: debugInfo
-                    wrapMode: Text.Wrap
-                }
-            }
-        }
 
         // Statusbar
         Rectangle {
@@ -174,7 +144,6 @@ ApplicationWindow {
                         onClicked: {
                             selectedIndex = index
                             phonebook.on_entry_click(index)
-                            addDebug("Clicked on entry: " + model.name)
                         }
                     }
                 }
@@ -215,7 +184,6 @@ ApplicationWindow {
                     font { pixelSize: 16; bold: true }
                 }
                 onClicked: {
-                    addDebug("Update button clicked")
                     phonebook.on_update_click()
                 }
             }
@@ -237,7 +205,6 @@ ApplicationWindow {
                     font { pixelSize: 16; bold: true }
                 }
                 onClicked: {
-                    addDebug("Setup button clicked")
                     serverSetupPopup.open()
                 }
             }
@@ -260,7 +227,6 @@ ApplicationWindow {
                     font { pixelSize: 16; bold: true }
                 }
                 onClicked: {
-                    addDebug("Call button clicked for index: " + selectedIndex)
                     callInProgress = true
                     callProgress = 0.0
                     phonebook.on_call_click()
@@ -284,7 +250,6 @@ ApplicationWindow {
                     font { pixelSize: 16; bold: true }
                 }
                 onClicked: {
-                    addDebug("Hang Up button clicked")
                     callInProgress = false
                     phonebook.on_hangup_click()
                 }
@@ -376,7 +341,6 @@ ApplicationWindow {
                         font { pixelSize: 16; bold: true }
                     }
                     onClicked: {
-                        addDebug("Server setup cancelled")
                         serverSetupPopup.close()
                     }
                 }
@@ -398,7 +362,6 @@ ApplicationWindow {
                     onClicked: {
                         lastServerIp = ipField.text
                         lastServerPort = portField.text
-                        addDebug("Connecting to server: " + ipField.text + ":" + portField.text)
                         phonebook.on_connect_click(ipField.text, portField.text)
                         serverSetupPopup.close()
                     }
@@ -469,7 +432,6 @@ ApplicationWindow {
                         font { pixelSize: 16; bold: true }
                     }
                     onClicked: {
-                        addDebug("Name input cancelled")
                         nameInputPopup.close()
                         connectionStatus = "Connection canceled - No name provided"
                     }
@@ -491,7 +453,6 @@ ApplicationWindow {
                     }
                     onClicked: {
                         if (nameInputField.text.trim() !== "") {
-                            addDebug("Saving client name: " + nameInputField.text.trim())
                             phonebook.save_client_name(nameInputField.text.trim())
                             nameInputPopup.close()
                             phonebook.on_connect_click(lastServerIp, lastServerPort)
@@ -556,7 +517,6 @@ ApplicationWindow {
                     font { pixelSize: 16; bold: true }
                 }
                 onClicked: {
-                    addDebug("Call cancelled from status popup")
                     callInProgress = false
                     callStatusPopup.close()
                     phonebook.on_hangup_click()
@@ -565,148 +525,59 @@ ApplicationWindow {
         }
     }
 
-    // Debug functions
-    function addDebug(message) {
-        var timestamp = new Date().toLocaleTimeString();
-        var debugMessage = "[" + timestamp + "] " + message;
-        console.log(debugMessage);
-        debugInfo = debugMessage + "\n" + debugInfo;
-        
-        // Keep only last 10 lines
-        var lines = debugInfo.split("\n");
-        if (lines.length > 10) {
-            debugInfo = lines.slice(0, 10).join("\n");
-        }
-    }
-
-    function inspectObject(obj, depth) {
-        if (!depth) depth = 0;
-        var indent = "  ".repeat(depth);
-        var result = "";
-        
-        if (obj === null) return "null";
-        if (obj === undefined) return "undefined";
-        
-        var type = typeof obj;
-        result += indent + "Type: " + type;
-        
-        if (type === "object") {
-            if (Array.isArray(obj)) {
-                result += " (Array, length: " + obj.length + ")\n";
-                for (var i = 0; i < Math.min(obj.length, 5); i++) {
-                    result += indent + "  [" + i + "]: " + inspectObject(obj[i], depth + 2) + "\n";
-                }
-                if (obj.length > 5) result += indent + "  ... and " + (obj.length - 5) + " more\n";
-            } else {
-                result += "\n";
-                var keys = Object.keys(obj);
-                for (var j = 0; j < Math.min(keys.length, 10); j++) {
-                    var key = keys[j];
-                    result += indent + "  " + key + ": " + inspectObject(obj[key], depth + 2) + "\n";
-                }
-                if (keys.length > 10) result += indent + "  ... and " + (keys.length - 10) + " more keys\n";
-            }
-        } else if (type === "string") {
-            result += ": '" + obj.substring(0, 50) + (obj.length > 50 ? "..." : "") + "'\n";
-        } else {
-            result += ": " + obj + "\n";
-        }
-        
-        return result;
-    }
-
     Component.onCompleted: {
-        addDebug("QML Application started");
-        addDebug("Waiting for phonebook data...");
+        console.log("QML Application started");
     }
 
     Connections {
         target: phonebook
         
         function onConnectionStatusChanged(status) {
-            addDebug("Connection status: " + status);
             connectionStatus = status;
         }
         
         function onCallStatusChanged(status) {
-            addDebug("Call status: " + status);
             callStatus = status;
         }
         
         function onPhonebookUpdated(data) {
-            signalCount++;
-            addDebug("=== PHONEBOOK UPDATE SIGNAL #" + signalCount + " ===");
-            addDebug("Signal received at: " + new Date().toLocaleTimeString());
+            console.log("Phonebook update received");
             
-            // Store raw received data
-            receivedData = data;
+            phonebookModel.clear();
             
-            // Extreme debugging of received data
-            addDebug("Data type: " + typeof data);
-            addDebug("Is array: " + Array.isArray(data));
-            
-            if (data !== null && data !== undefined) {
-                if (Array.isArray(data)) {
-                    addDebug("Array length: " + data.length);
-                    if (data.length > 0) {
-                        addDebug("First item type: " + typeof data[0]);
-                        addDebug("First item keys: " + (typeof data[0] === 'object' ? Object.keys(data[0]).join(", ") : "N/A"));
+            if (Array.isArray(data)) {
+                for (var i = 0; i < data.length; i++) {
+                    var client = data[i];
+                    if (client && typeof client === 'object') {
+                        phonebookModel.append({
+                            id: client.id || "N/A",
+                            name: client.name || "Unknown",
+                            ip: client.ip || "",
+                            port: client.port || "",
+                            public_key: client.public_key || ""
+                        });
                     }
-                } else if (typeof data === 'object') {
-                    addDebug("Object keys: " + Object.keys(data).join(", "));
-                }
-            }
-            
-            // Process the data
-            try {
-                phonebookModel.clear();
-                
-                if (Array.isArray(data)) {
-                    addDebug("Processing as array with " + data.length + " items");
-                    
-                    for (var i = 0; i < data.length; i++) {
-                        var client = data[i];
-                        if (client && typeof client === 'object') {
-                            phonebookModel.append({
-                                id: client.id || "N/A",
-                                name: client.name || "Unknown",
-                                ip: client.ip || "",
-                                port: client.port || "",
-                                public_key: client.public_key || ""
-                            });
-                            addDebug("Added client: " + (client.name || "Unknown"));
-                        }
-                    }
-                    
-                    connectionStatus = "Telefonbuch: " + data.length + " Einträge";
-                    addDebug("Successfully processed " + data.length + " clients");
-                    
-                } else {
-                    addDebug("ERROR: Received data is not an array: " + typeof data);
-                    connectionStatus = "Fehler: Ungültiges Datenformat";
                 }
                 
-            } catch (error) {
-                addDebug("ERROR processing phonebook data: " + error);
-                connectionStatus = "Fehler beim Verarbeiten der Daten";
+                connectionStatus = "Phonebook: " + data.length + " entries";
+                
+            } else {
+                console.log("ERROR: Received data is not an array");
+                connectionStatus = "Error: Invalid data format";
             }
-            
-            addDebug("=== END PHONEBOOK UPDATE ===");
         }
         
         function onServerSettingsChanged(ip, port) {
-            addDebug("Server settings: " + ip + ":" + port);
             lastServerIp = ip;
             lastServerPort = port;
         }
         
         function onClientNameRequested() {
-            addDebug("Client name requested - opening dialog");
             nameInputPopup.open();
         }
         
         function onClientNameChanged(name) {
-            addDebug("Client name changed to: " + name);
+            console.log("Client name changed to: " + name);
         }
     }
 }
