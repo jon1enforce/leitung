@@ -1,4 +1,5 @@
 import socket
+from access_monitor import SecurityMonitor
 import threading
 from M2Crypto import RSA, BIO, EVP, Rand
 import json
@@ -10,11 +11,13 @@ import uuid
 import random
 import binascii
 from datetime import datetime
+from typing import Optional, NoReturn, Tuple
 import base64
 import re
 import stun
 import struct
 import ctypes
+from ctypes import CDLL, c_void_p, c_int, c_ubyte, byref, cast, POINTER, create_string_buffer, c_size_t, c_char_p
 import platform
 import traceback
 import importlib
@@ -578,43 +581,9 @@ def load_server_publickey():
     
     with open("server_public_key.pem", "rb") as f:
         return f.read().decode('utf-8')
-def send_audio_stream(key, seed):
-    # Audio aus WAV-Datei lesen und senden
-    with wave.open(WAV_INPUT, 'rb') as wf:
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.connect((HOST, PORT))
-            s.sendall(seed)  # IV senden
-            
-            print("Sende WAV-Audio...")
-            while True:
-                chunk = wf.readframes(CHUNK)
-                if not chunk:
-                    break  # Ende der Datei
-                
-                encrypted = encrypt_audio_chunk(chunk, key, seed)
-                s.sendall(encrypted)
 
-def receive_audio_stream(key, seed):
-    # Empfangene Daten in WAV-Datei schreiben
-    with wave.open(WAV_OUTPUT, 'wb') as wf:
-        wf.setnchannels(CHANNELS)
-        wf.setsampwidth(2)  # 16-bit = 2 bytes
-        wf.setframerate(RATE)
-        
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            s.bind((HOST, PORT))
-            s.listen(1)
-            conn, addr = s.accept()
-            iv = conn.recv(IV_LEN)
-            
-            print("Empfange Audio...")
-            while True:
-                encrypted = conn.recv(CHUNK + 32)  # Mit Padding
-                if not encrypted:
-                    break
-                
-                decrypted = decrypt_audio_chunk(encrypted, key, iv)
-                wf.writeframes(decrypted)
+
+
 
 @staticmethod
 def build_sip_request(method, recipient, client_name, server_ip, server_port):
@@ -1002,145 +971,97 @@ def load_privatekey():
     return private_key.decode('utf-8')
 
 
-#bidirektionale kommunikation
-def start_audio_streams(called_client_ip, called_client_port, key, seed):
-    # Thread für das Senden von Audio
-    send_thread = threading.Thread(target=send_audio_stream, args=(key, seed, called_client_ip, called_client_port))
-    send_thread.daemon = True
-    send_thread.start()
 
-    # Thread für das Empfangen von Audio
-    receive_thread = threading.Thread(target=receive_audio_stream, args=(key, seed))
-    receive_thread.daemon = True
-    receive_thread.start()
 
-def send_audio_stream(key, seed, target_ip, target_port):
-    audio = pyaudio.PyAudio()
-    stream = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, input=True, frames_per_buffer=CHUNK)
 
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.connect((target_ip, target_port))
-        s.sendall(seed)  # Sende den IV
 
-        try:
-            while True:
-                chunk = stream.read(CHUNK)
-                encrypted_chunk = encrypt_audio_chunk(chunk, key, seed)
-                s.sendall(encrypted_chunk)
-        except Exception as e:
-            print("Fehler beim Senden von Audio: {}".format(e))
-        finally:
-            stream.stop_stream()
-            stream.close()
-            audio.terminate()
-
-def receive_audio_stream(key, seed):
-    audio = pyaudio.PyAudio()
-    stream = audio.open(format=FORMAT, channels=CHANNELS, rate=RATE, output=True, frames_per_buffer=CHUNK)
-
-    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-        s.bind((HOST, PORT))
-        s.listen(1)
-        conn, addr = s.accept()
-        iv = conn.recv(IV_LEN)
-
-        try:
-            while True:
-                encrypted_chunk = conn.recv(CHUNK + IV_LEN)
-                if not encrypted_chunk:
-                    break
-                decrypted_chunk = decrypt_audio_chunk(encrypted_chunk, key, iv)
-                stream.write(decrypted_chunk)
-        except Exception as e:
-            print("Fehler beim Empfangen von Audio: {}".format(e))
-        finally:
-            stream.stop_stream()
-            stream.close()
-            audio.terminate()
-
+# Nur für die bidirektionale Audioübertragungs - session, client - client(peer-peer):
+# Nur für die bidirektionale Audioübertragungs - session, client - client(peer-peer):
 class SecureVault:
+    IV_SIZE = 16      # initialisation vector (first 16 bytes)
+    KEY_SIZE = 32     # aes key (last 32 bytes)
+    SECRET_SIZE = IV_SIZE + KEY_SIZE  # 48 Bytes total
+
     def __init__(self):
-        self.lib = None
-        self.vault = None
-        self.gen_lib = None
-        self._load_libraries()
+                # Security Monitor Integration
+        self.monitor = SecurityMonitor()
         
-    def _load_libraries(self):
-        """Lädt alle benötigten Bibliotheken für die aktuelle Architektur mit erweiterter ARM64-Erkennung"""
-        arch = platform.machine().lower()
-        print("[DEBUG] Detected architecture: {}".format(arch))
-  # Debug-Ausgabe
-    
-        # Erweitertes Mapping für ARM-Architekturen
-        ARCH_ALIASES = {
-            'aarch64': 'arm64',
-            'armv8l': 'arm64',
-            'armv8b': 'arm64',
-            'arm64': 'arm64',
-            'armv7l': 'armv7',
-            'armv7': 'armv7'
-        }
-        
-        # Normalisiere die Architekturbezeichnung
-        normalized_arch = ARCH_ALIASES.get(arch, arch)
-        print("[DEBUG] Normalized architecture: {}".format(normalized_arch))
-    
-        # Bibliotheks-Mapping mit Prioritäten
-        LIBRARY_MAP = {
-            'arm64': {
-                'vault': 'libauslagern_arm64.so',
-                'generator': 'libsecuregen_arm64.so',
-                'fallback': 'libauslagern_armv7.so'  # Fallback für ARMv7-Kompatibilität
-            },
-            'armv7': {
-                'vault': 'libauslagern_armv7.so',
-                'generator': 'libsecuregen_armv7.so'
-            },
-            'x86_64': {
-                'vault': 'libauslagern_x86_64.so',
-                'generator': 'libsecuregen_x86_64.so'
-            }
-        }
-    
-    def create(self) -> bool:
-        """Erstellt einen neuen Vault"""
-        if not self.lib:
-            return False
-        self.vault = self.lib.vault_create()
-        return bool(self.vault)
-    
-    def generate_secret(self):
-        """Generiert ein 48-Byte Geheimnis und gibt nur die Speicheradresse zurück"""
-        if not self.gen_lib:
-            return None
-        buf = (ctypes.c_ubyte * 48)()
-        self.gen_lib.generate_secret(buf)
-        return ctypes.addressof(buf)
-    
-    def store(self, secret_ptr):
-        """Speichert ein Geheimnis (nur über Speicheradresse)"""
-        if not self.vault or not secret_ptr:
-            return False
-        self.lib.vault_load(ctypes.c_void_p(self.vault), ctypes.c_void_p(secret_ptr))
-        return True
-    
-    def retrieve(self):
-        """Holt das Geheimnis zurück (gibt nur Speicheradresse zurück)"""
+        # Bibliothek sicher laden
+        lib_path = os.path.join(os.path.dirname(__file__), "libauslagern_x86_64.so")
+        self.lib = self.monitor.library_loader.load_library(lib_path)
+        self._init_function_definitions()
+        self.vault = self.lib.secure_vault_create()
         if not self.vault:
-            return None
-        buf = (ctypes.c_ubyte * 48)()
-        self.lib.vault_retrieve(ctypes.c_void_p(self.vault), ctypes.cast(ctypes.byref(buf), ctypes.POINTER(ctypes.c_ubyte)))
-        return ctypes.addressof(buf)
-    
-    def wipe(self):
-        """Löscht den Vault sicher"""
-        if self.vault:
-            self.lib.vault_wipe(ctypes.c_void_p(self.vault))
-            self.vault = None
-    
+            raise RuntimeError("Failed to create vault")
+
+    def _init_function_definitions(self):
+        """Initialize C function signatures"""
+        self.lib.secure_vault_create.restype = c_void_p
+        
+        self.lib.secure_vault_store_secret.argtypes = [
+            c_void_p,       # vault
+            c_char_p,       # name
+            POINTER(c_ubyte), # secret
+            c_size_t        # length
+        ]
+        
+        self.lib.secure_vault_get_secret_parts.argtypes = [
+            c_void_p,       # vault
+            c_char_p,       # name
+            POINTER(c_ubyte), # iv
+            POINTER(c_ubyte)  # key
+        ]
+        
+        self.lib.secure_vault_is_locked.argtypes = [c_void_p]
+        self.lib.secure_vault_is_locked.restype = c_int
+        
+        self.lib.secure_vault_wipe.argtypes = [c_void_p]
+
+    def store_secret_safely(self, secret: bytes, key_name: str = "server_key") -> bool:
+        """Store secret with name tracking"""
+        if len(secret) != self.SECRET_SIZE:
+            raise ValueError(f"Invalid secret size: {len(secret)} (expected {self.SECRET_SIZE})")
+            
+        buffer = (c_ubyte * self.SECRET_SIZE).from_buffer_copy(secret)
+        name_buffer = create_string_buffer(key_name.encode('utf-8'))
+        
+        result = self.lib.secure_vault_store_secret(
+            c_void_p(self.vault),
+            name_buffer,
+            cast(buffer, POINTER(c_ubyte)),
+            self.SECRET_SIZE
+        )
+        
+        return result == 0
+
+    def get_secret_parts(self, key_name: str = "server_key") -> Tuple[bytes, bytes]:
+        """Get IV (16B) and Key (32B) for named secret"""
+        iv = (c_ubyte * self.IV_SIZE)()
+        key = (c_ubyte * self.KEY_SIZE)()
+        name_buffer = create_string_buffer(key_name.encode('utf-8'))
+        
+        if self.lib.secure_vault_get_secret_parts(
+            c_void_p(self.vault),
+            name_buffer,
+            cast(iv, POINTER(c_ubyte)),
+            cast(key, POINTER(c_ubyte))
+        ) != 0:
+            raise RuntimeError(f"Failed to retrieve secret parts for key: {key_name}")
+            
+        return bytes(iv), bytes(key)
+
+    def is_locked(self) -> bool:
+        """Check if the vault is locked"""
+        return bool(self.lib.secure_vault_is_locked(c_void_p(self.vault)))
+
+    def wipe(self) -> None:
+        """Securely wipe the vault"""
+        self.lib.secure_vault_wipe(c_void_p(self.vault))
+        self.vault = None
+
     def __del__(self):
-        """Destruktor für sichere Bereinigung"""
-        self.wipe()
+        if hasattr(self, 'vault') and self.vault:
+            self.wipe()
 # Füge diese Hilfsklassen hinzu
 class CustomEvent:
     """Einfaches Event für thread-sichere Operationen"""
@@ -1173,13 +1094,27 @@ class PHONEBOOK(QObject):
         self.aes_iv = None
         self.aes_key = None
         self.secret_vault = SecureVault()
-        self.secret_vault.create()
         self.current_secret = None
         self.phonebook_entries = []
         self._connection_status = "Nicht verbunden"
         self._call_status = ""
         self._client_name = ""  # Korrektes privates Attribut
         self.client_name = ""   # Öffentliche Property
+                # Audio-Konstanten definieren
+        self.AUDIO_HOST = "0.0.0.0"
+        self.AUDIO_FORMAT = pyaudio.paInt16
+        self.AUDIO_CHANNELS = 1
+        self.AUDIO_RATE = 44100
+        self.AUDIO_CHUNK = 1024
+        self.AUDIO_IV_LEN = 16
+        
+        # Audio-Ports definieren (unterschiedlich für Senden/Empfangen)
+        self.audio_port_out = 50001  # Für ausgehende Verbindungen
+        self.audio_port_in = 50002   # Für eingehende Verbindungen
+        
+        # Thread-Management
+        self.audio_threads = []
+        self.active_call = False
         self.selected_entry = None
         self.load_client_name()
         self.clientNameRequested.connect(self.handle_name_request)
@@ -1431,31 +1366,26 @@ class PHONEBOOK(QObject):
 
     @Slot()
     def on_call_click(self):
-        # This method needs to be updated to get the target information
-        # You'll need to track which entry is selected first
-        if self.selected_entry is None:  # NUR auf den Wert prüfen, nicht auf Attribut-Existenz
+        """Handler für den Call-Button - Ruft initiate_call auf"""
+        if not self.selected_entry:
             self._call_status = "Bitte zuerst einen Kontakt auswählen"
             self.callStatusChanged.emit(self._call_status)
             print("DEBUG: selected_entry is None")
             return
             
         try:
-            secret = generate_secret()
-            seed = secret[:16]
-            key = secret[16:]
-            
-            # Get target information from the selected entry
-            target_ip = self.selected_entry['ip']
-            target_port = self.selected_entry['port']
-            
-            # Use the version that takes target_ip and target_port
-            send_audio_stream(key, seed, target_ip, target_port)
-            receive_audio_stream(key, seed)
+            # Rufe initiate_call mit dem ausgewählten Eintrag auf
+            self.initiate_call(self.selected_entry)
             self._call_status = "Anruf gestartet"
             self.callStatusChanged.emit(self._call_status)
+            
         except Exception as e:
-            self._call_status = f"Anruf fehlgeschlagen: {e}"
+            error_msg = f"Anruf fehlgeschlagen: {str(e)}"
+            print(f"[CALL ERROR] {error_msg}")
+            self._call_status = error_msg
             self.callStatusChanged.emit(self._call_status)
+            import traceback
+            traceback.print_exc()
 
     @Slot()
     def on_hangup_click(self):
@@ -1471,101 +1401,7 @@ class PHONEBOOK(QObject):
     def open_language_settings(self):
         self._call_status = "Spracheinstellungen (nicht implementiert)"
         self.callStatusChanged.emit(self._call_status)
-    def handle_incoming_call(self, sip_data):
-        """Verarbeitet eingehende Anrufe"""
-        try:
-            # 1. Extrahiere verschlüsseltes Geheimnis
-            encrypted_secret = base64.b64decode(sip_data['custom_data']['ENCRYPTED_SECRET'])
-            
-            # 2. Entschlüssele mit eigenem privaten Schlüssel
-            with open("private_key.pem", "rb") as f:
-                priv_key = RSA.load_key_string(f.read())
-            
-            decrypted = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
-            
-            # 3. Überprüfe Overhead
-            if not decrypted.startswith(b"+++secret+++"):
-                raise ValueError("Ungültiges Geheimnis - Falscher Overhead")
-                
-            secret = decrypted[11:]  # 11 Bytes Overhead entfernen
-            self.current_secret = secret
-            self.secret_vault.store(secret)
-            
-            # 4. Extrahiere Anrufer-Daten
-            caller_ip = sip_data['custom_data']['CALLER_IP']
-            caller_port = int(sip_data['custom_data']['CALLER_PORT'])
-            caller_name = sip_data['custom_data']['CALLER_NAME']
-            
-            # 5. Bestätige den Anruf
-            response = self.build_sip_message(
-                "200 OK",
-                caller_name,
-                {"STATUS": "ACCEPTED"}
-            )
-            self.client_socket.sendall(response.encode('utf-8'))
-            
-            # 6. Starte Audio-Streams
-            iv = secret[:16]
-            aes_key = secret[16:]
-            start_audio_streams(caller_ip, caller_port, aes_key, iv)
-            
-            messagebox.showinfo("Anruf", "Verbunden mit {}".format(caller_name))
 
-            
-        except Exception as e:
-            print("Fehler bei Anrufannahme: {}".format(e))
-            if 'CALLER_NAME' in sip_data['custom_data']:
-                # Sende Ablehnung
-                response = self.build_sip_message(
-                    "603 DECLINE",
-                    sip_data['custom_data']['CALLER_NAME'],
-                    {"STATUS": "REJECTED"}
-                )
-                self.client_socket.sendall(response.encode('utf-8'))
-    def initiate_call(self, recipient):
-        """Startet einen verschlüsselten Anruf zu einem anderen Client"""
-        try:
-            # 1. Generiere neues 48-Byte Geheimnis
-            secret = generate_secret()  # Ihre existierende Funktion
-            self.current_secret = secret
-            
-            # 2. Verschlüssele mit Public Key des Empfängers
-            recipient_pubkey = RSA.load_pub_key_bio(BIO.MemoryBuffer(recipient['public_key'].encode()))
-            
-            # Mit Overhead verschlüsseln
-            secret_with_overhead = b"+++secret+++" + secret
-            encrypted_secret = recipient_pubkey.public_encrypt(
-                secret_with_overhead, 
-                RSA.pkcs1_padding
-            )
-            
-            # 3. Sichere das Geheimnis lokal
-            self.secret_vault.store(secret)
-            
-            # 4. Sende INVITE Nachricht
-            request = self.build_sip_message(
-                "INVITE",
-                recipient['name'],
-                {
-                    "ENCRYPTED_SECRET": base64.b64encode(encrypted_secret).decode('utf-8'),
-                    "CALLER_NAME": load_client_name(),
-                    "CALLER_IP": socket.gethostbyname(socket.gethostname()),
-                    "CALLER_PORT": str(PORT)  # Globaler Audio-Port
-                }
-            )
-            self.client_socket.sendall(request.encode('utf-8'))
-            
-            # 5. Starte Audio-Streams
-            iv = secret[:16]
-            aes_key = secret[16:]
-            start_audio_streams(recipient['ip'], recipient['port'], aes_key, iv)
-            
-            messagebox.showinfo("Anruf", "Verbinde mit {}...".format(recipient['name']))
-
-            
-        except Exception as e:
-            messagebox.showerror("Anruf fehlgeschlagen", str(e))
-            self.current_secret = None
     def _process_json_body(self, body):
         try:
             data = json.loads(body)
@@ -1756,7 +1592,34 @@ class PHONEBOOK(QObject):
                     
                     elif queue_item.get('type') == 'update_request':
                         print("[UPDATE] Request wurde verarbeitet")
-                
+                            # ✅ INCOMING CALL HANDLING - NEU HINZUGEFÜGT
+                elif isinstance(queue_item, (str, bytes, dict)):
+                    # Konvertiere zu String für die Analyse
+                    if isinstance(queue_item, bytes):
+                        try:
+                            message_str = queue_item.decode('utf-8')
+                        except UnicodeDecodeError:
+                            continue
+                    elif isinstance(queue_item, dict):
+                        # Falls bereits geparst
+                        message_str = str(queue_item)
+                    else:
+                        message_str = queue_item
+                    
+                    # Prüfe auf eingehende Anrufe (INVITE Nachrichten)
+                    if 'INVITE' in message_str and 'ENCRYPTED_SECRET' in message_str:
+                        print("[INCOMING CALL] INVITE Nachricht erkannt")
+                        
+                        try:
+                            # Parse die SIP Nachricht
+                            sip_data = parse_sip_message(message_str)
+                            if sip_data and sip_data.get('method') == 'INVITE':
+                                print("[INCOMING CALL] Gültige INVITE Nachricht")
+                                self.handle_incoming_call(sip_data)
+                                continue
+                        except Exception as e:
+                            print(f"[INCOMING CALL ERROR] {str(e)}")
+                            continue
                 # ✅ Unbekanntes Format
                 else:
                     print(f"[CLIENT WARN] Unbekanntes Queue-Format: {type(queue_item)}")
@@ -2763,9 +2626,290 @@ class PHONEBOOK(QObject):
             print("Warnung: Geheimnis konnte nicht sicher gespeichert werden: {0}".format(e))
             # Fallback: Temporär in Memory behalten
             self.temp_secret = secret
+    def receive_audio_stream(self, key, seed):
+        """
+        Empfängt verschlüsselte Audiodaten, entschlüsselt sie und gibt sie über die Lautsprecher aus.
+        Kompatibel für beide Clients.
+        """
+        audio = pyaudio.PyAudio()
+        stream = audio.open(format=FORMAT, channels=CHANNELS, 
+                           rate=RATE, output=True, frames_per_buffer=CHUNK)
 
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            # Socket für eingehende Verbindungen
+            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            s.bind((HOST, self.audio_port_in))
+            s.listen(1)
+            
+            print(f"Warte auf Audio-Verbindung auf Port {self.audio_port_in}...")
+            conn, addr = s.accept()
+            print(f"Audio verbunden mit {addr}")
 
+            try:
+                # Empfange IV/Seed (16 Bytes)
+                received_seed = conn.recv(16)
+                if len(received_seed) != 16:
+                    raise ValueError("Ungültiger IV empfangen")
+
+                while self.active_call:
+                    # Empfange verschlüsselten Chunk
+                    encrypted_chunk = conn.recv(CHUNK + 16)  # Chunk + Padding
+                    if not encrypted_chunk:
+                        break
+
+                    # Entschlüssele und spiele ab
+                    decrypted_chunk = decrypt_audio_chunk(encrypted_chunk, key, received_seed)
+                    stream.write(decrypted_chunk)
+                    
+            except Exception as e:
+                print(f"Audio-Empfangsfehler: {e}")
+            finally:
+                stream.stop_stream()
+                stream.close()
+                audio.terminate()
+                conn.close()            
+
+    def initiate_call(self, recipient):
+        """
+        Startet einen verschlüsselten Anruf zu einem anderen Client.
+        Kompatibel für beide Clients.
+        """
+        try:
+            # 1. Generiere neues 48-Byte Geheimnis
+            secret = generate_secret()
+            self.current_secret = secret
+            
+            # 2. Verschlüssele mit Public Key des Empfängers
+            recipient_pubkey = RSA.load_pub_key_bio(
+                BIO.MemoryBuffer(recipient['public_key'].encode()))
+            
+            # Mit Overhead verschlüsseln
+            secret_with_overhead = b"+++secret+++" + secret
+            encrypted_secret = recipient_pubkey.public_encrypt(
+                secret_with_overhead, 
+                RSA.pkcs1_padding
+            )
+            
+            # 3. Sichere das Geheimnis lokal
+            self.secret_vault.store_secret_safely(secret, "call_session")
+            
+            # 4. Sende INVITE Nachricht
+            request = build_sip_message(
+                "INVITE",
+                recipient['name'],
+                {
+                    "ENCRYPTED_SECRET": base64.b64encode(encrypted_secret).decode('utf-8'),
+                    "CALLER_NAME": self._client_name,
+                    "CALLER_IP": socket.gethostbyname(socket.gethostname()),
+                    "CALLER_PORT": str(self.audio_port_out)
+                }
+            )
+            self.client_socket.sendall(request.encode('utf-8'))
+            
+            # 5. Starte Audio-Streams
+            iv = secret[:16]
+            aes_key = secret[16:]
+            
+            # Starte Audio-Empfang im Hintergrund
+            audio_receive_thread = threading.Thread(
+                target=self.receive_audio_stream,
+                args=(aes_key, iv),
+                daemon=True
+            )
+            audio_receive_thread.start()
+            
+            # Kurze Verzögerung, dann Audio senden
+            time.sleep(0.5)
+            audio_send_thread = threading.Thread(
+                target=self.send_audio_stream,
+                args=(aes_key, iv, recipient['ip'], int(recipient['port'])),
+                daemon=True
+            )
+            audio_send_thread.start()
+            
+            # UI aktualisieren
+            self.active_call = True
+            self.update_call_ui(active=True, caller_name=recipient['name'])
+            
+            print(f"Anruf an {recipient['name']} initiiert")
+            
+        except Exception as e:
+            print(f"Anruf fehlgeschlagen: {str(e)}")
+            self.cleanup_call_resources()
+    def send_sip_response(self, sip_data, status_code, reason_phrase):
+        """Sendet eine SIP-Antwort für eingehende Anrufe"""
+        try:
+            response = (
+                f"SIP/2.0 {status_code} {reason_phrase}\r\n"
+                f"From: {sip_data.get('headers', {}).get('FROM', '')}\r\n"
+                f"To: {sip_data.get('headers', {}).get('TO', '')}\r\n"
+                f"Call-ID: {sip_data.get('headers', {}).get('CALL-ID', '')}\r\n"
+                f"CSeq: {sip_data.get('headers', {}).get('CSEQ', '')}\r\n"
+                f"Content-Length: 0\r\n\r\n"
+            )
+            
+            if hasattr(self, 'client_socket') and self.client_socket:
+                send_frame(self.client_socket, response.encode('utf-8'))
+                print(f"[SIP RESPONSE] Sent {status_code} {reason_phrase}")
+                
+        except Exception as e:
+            print(f"[SIP RESPONSE ERROR] Failed to send response: {str(e)}")            
+    def handle_incoming_call(self, sip_data):
+        """
+        Verarbeitet eingehende Anrufe.
+        Kompatibel für beide Clients.
+        """
+        if self.active_call:
+            # Bereits in einem Anruf - busy senden
+            self.send_sip_response(sip_data, "486", "Busy Here")
+            return
+        
+        try:
+            custom_data = sip_data.get('custom_data', {})
+            
+            # 1. Extrahiere und entschlüssele das Geheimnis
+            encrypted_secret = base64.b64decode(custom_data['ENCRYPTED_SECRET'])
+            
+            with open("client_private_key.pem", "rb") as f:
+                priv_key = RSA.load_key_string(f.read())
+                decrypted = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
+            
+            # 2. Überprüfe Overhead
+            if not decrypted.startswith(b"+++secret+++"):
+                raise ValueError("Ungültiges Geheimnisformat")
+                
+            secret = decrypted[11:59]  # 48 Bytes
+            self.current_secret = secret
+            self.secret_vault.store_secret_safely(secret, "incoming_call")
+            
+            # 3. Extrahiere Anrufer-Daten
+            caller_ip = custom_data['CALLER_IP']
+            caller_port = int(custom_data['CALLER_PORT'])
+            caller_name = custom_data['CALLER_NAME']
+            
+            # 4. Bestätige den Anruf
+            self.send_sip_response(sip_data, "200", "OK")
+            
+            # 5. Starte Audio-Streams
+            iv = secret[:16]
+            aes_key = secret[16:]
+            
+            # Audio zum Anrufer senden
+            audio_send_thread = threading.Thread(
+                target=self.send_audio_stream,
+                args=(aes_key, iv, caller_ip, caller_port),
+                daemon=True
+            )
+            audio_send_thread.start()
+            
+            # Audio vom Anrufer empfangen
+            audio_receive_thread = threading.Thread(
+                target=self.receive_audio_stream,
+                args=(aes_key, iv),
+                daemon=True
+            )
+            audio_receive_thread.start()
+            
+            # 6. UI aktualisieren
+            self.active_call = True
+            self.update_call_ui(active=True, caller_name=caller_name)
+            
+            print(f"Eingehender Anruf von {caller_name} angenommen")
+            
+        except Exception as e:
+            print(f"Anrufannahme fehlgeschlagen: {str(e)}")
+            self.send_sip_response(sip_data, "500", "Internal Error")
+            self.cleanup_call_resources() 
+    def cleanup_call_resources(self):
+        """Bereinigt Anruf-Ressourcen"""
+        self.active_call = False
+        self.current_secret = None
+        
+        # Secure Vault bereinigen
+        if hasattr(self, 'secret_vault'):
+            try:
+                self.secret_vault.wipe()
+            except Exception as e:
+                print(f"[CLEANUP WARNING] Vault cleanup failed: {str(e)}")
+        
+        # UI zurücksetzen
+        self.update_call_ui(active=False)
+        print("[CLEANUP] Call resources cleaned up")
+
+    def update_call_ui(self, active, caller_name=None):
+        """Aktualisiert die UI für den Anrufstatus"""
+        self.active_call = active
+        
+        if active:
+            status_text = f"Aktiver Anruf mit: {caller_name}" if caller_name else "Aktiver Anruf"
+            print(f"[CALL UI] {status_text}")
+        else:
+            status_text = "Bereit für Anrufe"
+            print("[CALL UI] Anruf beendet")
+        
+        # Qt Signal emit für UI Update
+        self._call_status = status_text
+        self.callStatusChanged.emit(self._call_status)
+        
+        # Optional: Weitere UI Updates hier
+        if hasattr(self, 'callStatusChanged'):
+            self.callStatusChanged.emit(status_text)                  
+    def send_audio_stream(self, key, seed, target_ip, target_port):
+        """
+        Sendet verschlüsselte Audiodaten an einen Ziel-Client.
+        Kompatibel für beide Clients.
+        """
+        audio = pyaudio.PyAudio()
+        stream = audio.open(format=FORMAT, channels=CHANNELS,
+                           rate=RATE, input=True, frames_per_buffer=CHUNK)
+
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+            try:
+                # Verbinde zum Ziel-Client
+                s.connect((target_ip, target_port))
+                
+                # Sende den IV/Seed zuerst (16 Bytes)
+                s.sendall(seed)
+                
+                print(f"Sende Audio an {target_ip}:{target_port}...")
+                
+                # Sende Audio-Daten
+                while self.active_call:
+                    chunk = stream.read(CHUNK)
+                    encrypted_chunk = encrypt_audio_chunk(chunk, key, seed)
+                    s.sendall(encrypted_chunk)
+                    
+            except Exception as e:
+                print(f"Audio-Sendefehler: {str(e)}")
+            finally:
+                stream.stop_stream()
+                stream.close()
+                audio.terminate()
+                s.close()           
+
+def is_linux():
+    return sys.platform.startswith("linux")
 def main():
+    print("[DEBUG] Starting application...")
+    security_monitor = None
+    
+    # Nur unter Linux versuchen
+    if is_linux():
+        try:
+            from access_monitor import SecurityMonitor
+            security_monitor = SecurityMonitor(hardening_rules={
+                'prevent_fd_leaks': False,
+                'restrict_env': False,
+                'disable_debugger': True,
+                'strict_path_checking': True
+            })
+            print("[INFO] Security Monitor aktiviert (Linux-only)")
+        except ImportError:
+            print("[INFO] access_monitor.py nicht gefunden - Laufe ohne Sicherheitsmonitor")
+        except Exception as e:
+            print(f"[WARN] Security Monitor fehlgeschlagen: {str(e)}")
+    else:
+        print(f"[INFO] Kein Security Monitor auf {sys.platform} (nur Linux unterstützt)")
     # App muss zuerst erstellt werden
     app = QApplication(sys.argv) if 'QApplication' in globals() else QGuiApplication(sys.argv)
     
