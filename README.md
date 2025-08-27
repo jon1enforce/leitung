@@ -34,10 +34,10 @@ Sicherheit ist kein Absolutismus,
 Einschränkungen der Sicherheit können unter anderem eintreten, wenn:  
 -> Die Soundkarte, bzw. der Soundkartentreiber kompromittiert ist. [KRITISCH]  
 -> Die Entropie des Systems kompromittiert ist. [UNKRITISCH]  
--> Das System einen Trojaner/rootkit implementiert. [kann aber gesehen werden mit access_monitor.py]  
+-> Das System einen Trojaner/rootkit implementiert. [KRITISCH; KANN ABER GESEHEN WERDEN MIT access_monitor.py]  
 -> Andere Eingabe und Ausgabe Schnittstellen kompromittiert sind. -> Hardware treiber...[KRITISCH]  
--> Wenn der Nutzer seinen privaten Schlüssel preis gibt. [KRITISCH]  
--> ...  code injection ...  -> mit Cython kompilieren schützt -> Kopierschutz.  [KRITISCH JE NACH SYSTENUMGEBUNG]
+-> Wenn der Nutzer seinen privaten Schlüssel preis gibt. [KRITISCH JE NACH SYSTEMUMGEBUNG UND NUTZERVERHALTEN]  
+-> ...  code injection ...  -> mit Cython kompilieren schützt -> Kopierschutz.  [KRITISCH JE NACH SYSTENUMGEBUNG]  
 keine Gewähr. Enjoy <3
 
 
