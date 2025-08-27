@@ -37,7 +37,7 @@ Einschränkungen der Sicherheit können unter anderem eintreten, wenn:
 -> Das System einen Trojaner/rootkit implementiert. [kann aber gesehen werden mit access_monitor.py]  
 -> Andere Eingabe und Ausgabe Schnittstellen kompromittiert sind. -> Hardware treiber...[KRITISCH]  
 -> Wenn der Nutzer seinen privaten Schlüssel preis gibt. [KRITISCH]  
--> ...  code injection ...  -> mit Cython kompilieren schützt.
+-> ...  code injection ...  -> mit Cython kompilieren schützt -> Kopierschutz.  [KRITISCH JE NACH SYSTENUMGEBUNG]
 keine Gewähr. Enjoy <3
 
 
