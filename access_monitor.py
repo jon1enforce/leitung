@@ -251,6 +251,12 @@ class SecurityMonitor:
             '/usr/local/lib',
             *[p for p in sys.path if p and os.path.exists(p)]
         })
+         # NEU: Zugriff auf Entropie-Geräte erlauben
+        self.allowed_paths.update({
+            '/dev/urandom',  # Für Zufallszahlengenerierung
+            '/dev/random',   # Alternative Entropie-Quelle
+        })
+        self.logger.info("Entropie-Geräte für Zugriff freigegeben: /dev/urandom, /dev/random")
 
     def _check_access(self, path):
         """Überprüft den Pfadzugriff"""
