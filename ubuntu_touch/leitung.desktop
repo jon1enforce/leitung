@@ -1,0 +1,8 @@
+[Desktop Entry]
+Name=leitung
+Comment=phonebook voip app, with hybrid encryption
+Exec=appname %u
+Icon=phone
+Terminal=false
+Type=Application
+X-Ubuntu-Touch=true

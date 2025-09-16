@@ -1,0 +1,19 @@
+<!-- Vereinfachte Version für bessere Skalierung -->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- Hintergrund (Ubuntu-Orange) -->
+  <rect width="128" height="128" rx="26" fill="#E95420"/>
+  
+  <!-- Telefongehäuse -->
+  <rect x="20" y="30" width="88" height="68" rx="5" fill="#4a3520" stroke="#2a2015" stroke-width="2"/>
+  
+  <!-- Roter Kabelausschnitt (zentriert) -->
+  <path d="M64 90 L128 60" stroke="#b00a0a" stroke-width="14" stroke-linecap="round">
+    <animate attributeName="stroke-dashoffset" values="0;20" dur="3s" repeatCount="indefinite"/>
+  </path>
+  
+  <!-- M2Crypto Schriftzug -->
+  <text x="64" y="70" font-family="Ubuntu" font-size="18" font-weight="bold" 
+        text-anchor="middle" fill="#fff">M2</text>
+  <text x="64" y="90" font-family="Ubuntu" font-size="18" font-weight="bold" 
+        text-anchor="middle" fill="#fff">CRYPTO</text>
+</svg>

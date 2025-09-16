@@ -1,0 +1,16 @@
+{
+    "description": "Telefonbuch-App für Ubuntu Touch",
+    "framework": "ubuntu-sdk-16.04",
+    "architecture": "all",
+    "hooks": {
+        "leitung": {
+            "apparmor": "leitung.apparmor",
+            "desktop": "leitung.desktop",
+            "icon": "icons/phone.png"
+        }
+    },
+    "maintainer": "Dein Name <deine@email.com>",
+    "name": "com.ubuntu.developer.username.leitung",
+    "title": "Leitung",
+    "version": "0.1"
+}
