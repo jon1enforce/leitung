@@ -378,7 +378,11 @@ class Server:
                 print(f"Host changed to: {host}")
             else:
                 print("Keeping default host")
-        
+        self.active_calls = {}  # Aktive Calls verwalten
+        self.call_timeout = 30  # Timeout in Sekunden
+    
+        # Lock für Thread-sicheren Zugriff auf active_calls
+        self.call_lock = threading.RLock()
         self.host = host
         self.port = port
         self.all_public_keys = {}
@@ -848,7 +852,149 @@ class Server:
                             })
                             send_frame(client_socket, ack_msg.encode('utf-8'))
                             continue
+                        
+                        # NEU: GET_PUBLIC_KEY Handling für Anrufprotokoll
+                        if custom_data.get('MESSAGE_TYPE') == 'GET_PUBLIC_KEY':
+                            print(f"[CALL] Public key request from {client_name}")
+                            target_client_id = custom_data.get('TARGET_CLIENT_ID')
                             
+                            # Finde den Ziel-Client
+                            target_client = None
+                            with self.clients_lock:
+                                for cid, client_data in self.clients.items():
+                                    if cid == target_client_id:
+                                        target_client = client_data
+                                        break
+                            
+                            if target_client and 'public_key' in target_client:
+                                # Sende Public Key an Anrufer
+                                response_msg = self.build_sip_message("MESSAGE", client_name, {
+                                    "MESSAGE_TYPE": "PUBLIC_KEY_RESPONSE",
+                                    "TARGET_CLIENT_ID": target_client_id,
+                                    "PUBLIC_KEY": target_client['public_key'],
+                                    "TIMESTAMP": int(time.time())
+                                })
+                                send_frame(client_socket, response_msg.encode('utf-8'))
+                                print(f"[CALL] Sent public key for client {target_client_id} to {client_name}")
+                                
+                                # Generiere Session Key (48 Bytes: 16 IV + 32 Key)
+                                session_secret = self.generate_secret()
+                                iv = session_secret[:16]
+                                aes_key = session_secret[16:48]
+                                
+                                # Verschlüssele Session Key mit beiden Public Keys
+                                try:
+                                    # Finde caller client_id
+                                    caller_id = None
+                                    with self.clients_lock:
+                                        for cid, client_data in self.clients.items():
+                                            if client_data.get('name') == client_name:
+                                                caller_id = cid
+                                                break
+                                    
+                                    if caller_id and caller_id in self.clients and 'public_key' in self.clients[caller_id]:
+                                        caller_pubkey = RSA.load_pub_key_bio(BIO.MemoryBuffer(self.clients[caller_id]['public_key'].encode()))
+                                        callee_pubkey = RSA.load_pub_key_bio(BIO.MemoryBuffer(target_client['public_key'].encode()))
+                                        
+                                        # Für Anrufer
+                                        encrypted_for_caller = caller_pubkey.public_encrypt(
+                                            b"+++session_key+++" + session_secret, 
+                                            RSA.pkcs1_padding
+                                        )
+                                        
+                                        # Für Angerufenen
+                                        encrypted_for_callee = callee_pubkey.public_encrypt(
+                                            b"+++session_key+++" + session_secret, 
+                                            RSA.pkcs1_padding
+                                        )
+                                        
+                                        # Sende Session Key an beide Clients
+                                        caller_msg = self.build_sip_message("MESSAGE", client_name, {
+                                            "MESSAGE_TYPE": "SESSION_KEY",
+                                            "ENCRYPTED_SESSION": base64.b64encode(encrypted_for_caller).decode('utf-8'),
+                                            "TARGET_CLIENT_ID": target_client_id,
+                                            "TIMESTAMP": int(time.time())
+                                        })
+                                        
+                                        callee_msg = self.build_sip_message("MESSAGE", target_client['name'], {
+                                            "MESSAGE_TYPE": "SESSION_KEY",
+                                            "ENCRYPTED_SESSION": base64.b64encode(encrypted_for_callee).decode('utf-8'),
+                                            "CALLER_CLIENT_ID": caller_id,
+                                            "TIMESTAMP": int(time.time())
+                                        })
+                                        
+                                        # Sende Nachrichten
+                                        send_frame(client_socket, caller_msg.encode('utf-8'))
+                                        if target_client.get('socket'):
+                                            send_frame(target_client['socket'], callee_msg.encode('utf-8'))
+                                        
+                                        print(f"[CALL] Session keys sent to both clients")
+                                    else:
+                                        print(f"[CALL ERROR] Caller client {client_name} not found")
+                                        
+                                except Exception as e:
+                                    print(f"[CALL ERROR] Failed to encrypt session keys: {str(e)}")
+                                    
+                            else:
+                                print(f"[CALL ERROR] Target client {target_client_id} not found or no public key")
+                                error_msg = self.build_sip_message("MESSAGE", client_name, {
+                                    "MESSAGE_TYPE": "CALL_ERROR",
+                                    "ERROR": "TARGET_NOT_FOUND",
+                                    "TARGET_ID": target_client_id,
+                                    "TIMESTAMP": int(time.time())
+                                })
+                                send_frame(client_socket, error_msg.encode('utf-8'))
+                            continue
+                        
+                        # NEU: WIREGUARD_KEY Handling für Anrufprotokoll
+                        if custom_data.get('MESSAGE_TYPE') == 'WIREGUARD_KEY':
+                            print(f"[CALL] WireGuard key received from {client_name}")
+                            encrypted_wg_key = custom_data.get('ENCRYPTED_WG_KEY')
+                            target_client_id = custom_data.get('TARGET_CLIENT_ID')
+                            
+                            if encrypted_wg_key and target_client_id:
+                                # Finde den Ziel-Client
+                                target_client = None
+                                with self.clients_lock:
+                                    for cid, client_data in self.clients.items():
+                                        if cid == target_client_id:
+                                            target_client = client_data
+                                            break
+                                
+                                if target_client and target_client.get('socket'):
+                                    # Leite den verschlüsselten WG Key weiter
+                                    forward_msg = self.build_sip_message("MESSAGE", target_client['name'], {
+                                        "MESSAGE_TYPE": "WIREGUARD_KEY",
+                                        "ENCRYPTED_WG_KEY": encrypted_wg_key,
+                                        "CALLER_CLIENT_ID": client_id,
+                                        "TIMESTAMP": int(time.time())
+                                    })
+                                    
+                                    send_frame(target_client['socket'], forward_msg.encode('utf-8'))
+                                    print(f"[CALL] WireGuard key forwarded to client {target_client_id}")
+                                else:
+                                    print(f"[CALL ERROR] Target client {target_client_id} not found or offline")
+                            continue
+                        
+                        # NEU: CALL_END Handling für Hangup
+                        if custom_data.get('MESSAGE_TYPE') == 'CALL_END':
+                            print(f"[CALL] Hangup request from {client_name}")
+                            reason = custom_data.get('REASON', 'unknown')
+                            
+                            # Finde alle Clients, die mit diesem Client in einem Anruf sind
+                            # (Hier müsste eine Anrufverwaltung implementiert werden)
+                            # Für jetzt: Sende Bestätigung
+                            ack_msg = self.build_sip_message("200 OK", client_name, {
+                                "MESSAGE_TYPE": "CALL_END_ACK",
+                                "STATUS": "CALL_TERMINATED",
+                                "REASON": reason,
+                                "TIMESTAMP": int(time.time())
+                            })
+                            
+                            send_frame(client_socket, ack_msg.encode('utf-8'))
+                            print(f"[CALL] Call terminated for {client_name}, reason: {reason}")
+                            continue
+                                
                         # Normale SIP Nachrichten verarbeiten
                         custom_data = msg.get('custom_data', {})
                         
@@ -1156,6 +1302,273 @@ class Server:
                 client_socket.close()
             except:
                 pass
+    def _get_client_public_key(self, client_name):
+        """Ermittelt den Public Key eines Clients"""
+        with self.clients_lock:
+            for client_data in self.clients.values():
+                if client_data.get('name') == client_name and 'public_key' in client_data:
+                    return client_data['public_key']
+        return None
+
+    def _call_timeout_watchdog(self, call_id):
+        """Überwacht Call-Timeout (30 Sekunden)"""
+        timeout = 30
+        start_time = time.time()
+        
+        while call_id in self.active_calls:
+            if time.time() - start_time > timeout:
+                print(f"[CALL] Timeout for call {call_id}")
+                call_data = self.active_calls[call_id]
+                
+                # Sende Timeout an beide Clients
+                for client_name in [call_data['caller'], call_data['callee']]:
+                    timeout_msg = self.build_sip_message("MESSAGE", client_name, {
+                        "MESSAGE_TYPE": "CALL_TIMEOUT",
+                        "CALL_ID": call_id,
+                        "TIMESTAMP": int(time.time())
+                    })
+                    self._send_to_client_safe(client_name, timeout_msg)
+                
+                # Entferne Call
+                del self.active_calls[call_id]
+                break
+            
+            time.sleep(1)
+
+    def handle_session_key_ack(self, sip_data, client_socket, client_name):
+        """Verarbeitet Session Key Bestätigungen"""
+        try:
+            custom_data = sip_data.get('custom_data', {})
+            if custom_data.get('MESSAGE_TYPE') != 'SESSION_KEY_ACK':
+                return False
+            
+            client_id = custom_data.get('CLIENT_ID')
+            
+            # Finde den zugehörigen Call
+            for call_id, call_data in self.active_calls.items():
+                if call_data['caller_id'] == client_id or call_data['callee_id'] == client_id:
+                    if 'acks' not in call_data:
+                        call_data['acks'] = []
+                    
+                    if client_id not in call_data['acks']:
+                        call_data['acks'].append(client_id)
+                        print(f"[CALL] Session key ACK from {client_name}")
+                    
+                    # Wenn beide bestätigt haben
+                    if len(call_data['acks']) >= 2:
+                        print(f"[CALL] Both clients confirmed session keys for call {call_id}")
+                        call_data['status'] = 'session_keys_confirmed'
+                    
+                    break
+            
+            return True
+            
+        except Exception as e:
+            print(f"[CALL ERROR] Session key ACK handling failed: {str(e)}")
+            return False
+
+    def handle_wg_connected(self, sip_data, client_socket, client_name):
+        """Verarbeitet WG-Verbindungsbestätigungen"""
+        try:
+            custom_data = sip_data.get('custom_data', {})
+            if custom_data.get('MESSAGE_TYPE') != 'WG_CONNECTED':
+                return False
+            
+            client_id = custom_data.get('CLIENT_ID')
+            
+            # Finde den zugehörigen Call
+            for call_id, call_data in self.active_calls.items():
+                if call_data['caller_id'] == client_id or call_data['callee_id'] == client_id:
+                    if 'wg_connected' not in call_data:
+                        call_data['wg_connected'] = []
+                    
+                    if client_id not in call_data['wg_connected']:
+                        call_data['wg_connected'].append(client_id)
+                        print(f"[CALL] WG connected ACK from {client_name}")
+                    
+                    # Wenn beide verbunden sind
+                    if len(call_data['wg_connected']) >= 2:
+                        print(f"[CALL] Both clients have WG connection for call {call_id}")
+                        call_data['status'] = 'wg_connected'
+                        
+                        # Benachrichtige beide Clients, dass Audio starten kann
+                        for client in [call_data['caller'], call_data['callee']]:
+                            audio_ready_msg = self.build_sip_message("MESSAGE", client, {
+                                "MESSAGE_TYPE": "AUDIO_READY",
+                                "CALL_ID": call_id,
+                                "TIMESTAMP": int(time.time())
+                            })
+                            self._send_to_client_safe(client, audio_ready_msg)
+                    
+                    break
+            
+            return True
+            
+        except Exception as e:
+            print(f"[CALL ERROR] WG connected handling failed: {str(e)}")
+            return False                
+    def handle_call_request(self, sip_data, client_socket, client_name):
+        """Verarbeitet eingehende Anrufanfragen mit komplettem Key-Management"""
+        try:
+            custom_data = sip_data.get('custom_data', {})
+            
+            if custom_data.get('MESSAGE_TYPE') != 'CALL_REQUEST':
+                return False
+                
+            target_client_id = custom_data.get('TARGET_CLIENT_ID')
+            encrypted_wg_key = custom_data.get('ENCRYPTED_WG_KEY')
+            caller_name = custom_data.get('CALLER_NAME')
+            
+            if not all([target_client_id, encrypted_wg_key, caller_name]):
+                print("[CALL] Missing required call data")
+                return False
+            
+            # Finde Ziel-Client
+            target_client = None
+            with self.clients_lock:
+                for client_id, client_data in self.clients.items():
+                    if client_id == target_client_id:
+                        target_client = client_data
+                        break
+            
+            if not target_client or not target_client.get('socket'):
+                print(f"[CALL] Target client {target_client_id} not found or offline")
+                
+                # Sende Fehler an Anrufer
+                error_msg = self.build_sip_message("MESSAGE", client_name, {
+                    "MESSAGE_TYPE": "CALL_ERROR",
+                    "ERROR": "TARGET_NOT_AVAILABLE",
+                    "TARGET_ID": target_client_id,
+                    "TIMESTAMP": int(time.time())
+                })
+                
+                self._send_to_client_safe(client_name, error_msg)
+                return False
+            
+            # 1. Generiere AES Session Key (48 Bytes: 16 IV + 32 Key)
+            try:
+                session_secret = self.generate_secret()
+                print(f"[CALL] Generated session key: {binascii.hexlify(session_secret[:8])}...")
+            except Exception as e:
+                print(f"[CALL ERROR] Failed to generate session key: {str(e)}")
+                return False
+            
+            # 2. Verschlüssele Session Key für beide Clients
+            try:
+                # Für Anrufer
+                caller_pubkey = RSA.load_pub_key_bio(
+                    BIO.MemoryBuffer(self._get_client_public_key(client_name).encode()))
+                encrypted_for_caller = caller_pubkey.public_encrypt(
+                    b"+++session_key+++" + session_secret, 
+                    RSA.pkcs1_padding
+                )
+                
+                # Für Angerufenen
+                callee_pubkey = RSA.load_pub_key_bio(
+                    BIO.MemoryBuffer(target_client['public_key'].encode()))
+                encrypted_for_callee = callee_pubkey.public_encrypt(
+                    b"+++session_key+++" + session_secret, 
+                    RSA.pkcs1_padding
+                )
+                
+            except Exception as e:
+                print(f"[CALL ERROR] Failed to encrypt session keys: {str(e)}")
+                return False
+            
+            # 3. Leite verschlüsselte WG Key an Ziel-Client weiter
+            forward_msg = self.build_sip_message("MESSAGE", target_client['name'], {
+                "MESSAGE_TYPE": "INCOMING_CALL",
+                "CALLER_NAME": caller_name,
+                "CALLER_CLIENT_ID": self._find_client_id_by_name(client_name),
+                "ENCRYPTED_WG_KEY": encrypted_wg_key,
+                "TIMESTAMP": int(time.time())
+            })
+            
+            # Sende an Ziel-Client
+            success = self._send_to_client_safe(target_client['name'], forward_msg)
+            
+            if not success:
+                print(f"[CALL] Failed to forward call to {target_client['name']}")
+                return False
+            
+            # 4. Sende Session Keys an beide Clients
+            try:
+                # An Anrufer
+                caller_session_msg = self.build_sip_message("MESSAGE", client_name, {
+                    "MESSAGE_TYPE": "SESSION_KEY",
+                    "ENCRYPTED_SESSION": base64.b64encode(encrypted_for_caller).decode('utf-8'),
+                    "TARGET_CLIENT_ID": target_client_id,
+                    "TIMESTAMP": int(time.time())
+                })
+                self._send_to_client_safe(client_name, caller_session_msg)
+                
+                # An Angerufenen (nach kurzer Verzögerung)
+                time.sleep(0.5)
+                callee_session_msg = self.build_sip_message("MESSAGE", target_client['name'], {
+                    "MESSAGE_TYPE": "SESSION_KEY",
+                    "ENCRYPTED_SESSION": base64.b64encode(encrypted_for_callee).decode('utf-8'),
+                    "CALLER_CLIENT_ID": self._find_client_id_by_name(client_name),
+                    "TIMESTAMP": int(time.time())
+                })
+                self._send_to_client_safe(target_client['name'], callee_session_msg)
+                
+            except Exception as e:
+                print(f"[CALL ERROR] Failed to send session keys: {str(e)}")
+                return False
+            
+            print(f"[CALL] Call forwarded from {client_name} to {target_client['name']}")
+            
+            # 5. Bestätigung an Anrufer
+            ack_msg = self.build_sip_message("MESSAGE", client_name, {
+                "MESSAGE_TYPE": "CALL_FORWARDED",
+                "TARGET_NAME": target_client['name'],
+                "TARGET_ID": target_client_id,
+                "TIMESTAMP": int(time.time())
+            })
+            
+            self._send_to_client_safe(client_name, ack_msg)
+            
+            # 6. Speichere Call-Status für Timeout-Überwachung
+            call_id = f"{client_name}_{target_client['name']}_{int(time.time())}"
+            self.active_calls[call_id] = {
+                'caller': client_name,
+                'callee': target_client['name'],
+                'caller_id': self._find_client_id_by_name(client_name),
+                'callee_id': target_client_id,
+                'session_key': session_secret,
+                'start_time': time.time(),
+                'status': 'initiated'
+            }
+            
+            # Starte Timeout-Überwachung
+            threading.Thread(target=self._call_timeout_watchdog, args=(call_id,), daemon=True).start()
+            
+            return True
+                
+        except Exception as e:
+            print(f"[CALL ERROR] Call handling failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
+    def _send_to_client_safe(self, client_name, message):
+        """Sicherer Versand an Client"""
+        try:
+            with self.clients_lock:
+                for client_data in self.clients.values():
+                    if client_data.get('name') == client_name and client_data.get('socket'):
+                        send_frame(client_data['socket'], message.encode('utf-8'))
+                        return True
+            return False
+        except Exception as e:
+            print(f"[SEND ERROR] Failed to send to {client_name}: {str(e)}")
+            return False            
+    def _find_client_id_by_name(self, client_name):
+        """Findet Client-ID anhand des Namens"""
+        with self.clients_lock:
+            for client_id, client_data in self.clients.items():
+                if client_data.get('name') == client_name:
+                    return client_id
+        return None             
     def test_identity_sip(self, client_socket, client_pubkey, client_name):
         """
         Führt einen Identity-Test über SIP-Nachrichten durch mit erweitertem Debugging

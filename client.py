@@ -28,7 +28,7 @@ import seccomp
 from ctypes import CDLL, c_void_p, c_int, c_ubyte, byref, cast, POINTER, create_string_buffer, c_size_t, c_char_p
 import hmac
 import hashlib
-
+import ipaddress
 #fallback für bessere kompatibilität:
 try:
     from tkinter import simpledialog
@@ -36,7 +36,19 @@ except AttributeError:
     import tkinter as tk
     import tkinter.simpledialog as simpledialog
 connected = False
-
+try:
+    hashlib.sha3_256(b'').digest()  # Test ob verfügbar
+    USE_PYSHA3 = False
+except (AttributeError, ValueError):
+    # Fallback auf pysha3 für Python 3.5
+    try:
+        import sha3  # pysha3 Paket
+        USE_PYSHA3 = True
+    except ImportError:
+        raise ImportError(
+            "SHA3 benötigt 'pysha3' unter Python 3.5.\n"
+            "Installieren mit: pip install pysha3"
+        )
 BUFFER_SIZE = 4096
 
 
@@ -145,25 +157,6 @@ def get_public_ip():
     return public_ip, public_port  # Für SIP-Contact-Header
 
 
-def shorten_public_key(key):
-    """Kürzt die Darstellung des öffentlichen Schlüssels."""
-    shortened = key.replace("-----BEGIN PUBLIC KEY-----", "").replace("-----END PUBLIC KEY-----", "").replace("END_OF_KEYS","").replace("\n", "")
-    return shortened
-
-def test_key_pair():
-    priv_key = RSA.load_key_string(private_key.encode())
-    pub_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(public_key.encode()))
-    
-    test_data = b"Test message"
-    encrypted = pub_key.public_encrypt(test_data, RSA.pkcs1_padding)
-    decrypted = priv_key.private_decrypt(encrypted, RSA.pkcs1_padding)
-    
-    assert decrypted == test_data, "Key pair mismatch"
-
-def merge_public_keys(keys):
-    """Identisch auf Client und Server"""
-    return "|||".join(normalize_key(k) for k in keys if k)
-
 def normalize_key(key):
     """Improved normalization that matches server's implementation"""
     if not key or not isinstance(key, str):
@@ -193,24 +186,7 @@ def normalize_key(key):
         pass
     return None
 
-def quantum_safe_hash(data):
-    return hashlib.sha3_256(data.encode('utf-8')).hexdigest()
 
-def build_merkle_tree(data_blocks):
-    data_blocks = list(data_blocks)
-    if not data_blocks:
-        return None
-    
-    # Erstelle die Blattknoten des Merkle Trees
-    tree = [quantum_safe_hash(block) for block in data_blocks]
-
-    # Reduziere den Baum, bis nur noch der Root-Hash übrig ist
-    while len(tree) > 1:
-        if len(tree) % 2 != 0:
-            tree.append(tree[-1])  # Dupliziere den letzten Hash, wenn die Anzahl ungerade ist
-        tree = [quantum_safe_hash(tree[i] + tree[i + 1]) for i in range(0, len(tree), 2)]
-
-    return tree[0]  # Der Merkle Root-Hash
 
 
 def is_valid_public_key(key):
@@ -317,19 +293,43 @@ def validate_key_pair(private_key_pem, public_key_pem):
     except Exception as e:
         print(f"[KEY VALIDATION ERROR] {str(e)}")
         return False
-
-def get_disk_entropy(size):
+def quantum_safe_hash(data):
     """
-    Lese zufällige Daten von der Festplatte (z. B. /dev/urandom).
-    :param size: Anzahl der zu lesenden Bytes.
-    :return: Zufällige Daten als Bytes.
+    Garantiert konsistenten SHA3-256-Hash:
+    - Automatische Handhabung von Strings und Bytes
+    - Nutzt pysha3 als Fallback für Python 3.5
+    - Klare Fehlermeldung bei fehlender SHA-3-Implementierung
     """
+    if isinstance(data, str):
+        data = data.encode('utf-8')  # Nur einmal encoden!
+    
     try:
-        with open("/dev/urandom", "rb") as f:
-            return f.read(size)
-    except Exception as e:
-        print("Fehler beim Lesen der Festplatten-Entropie:", e)
+        if USE_PYSHA3 == False:
+            return hashlib.sha3_256(data).hexdigest()
+        else:
+            import sha3  # pysha3-Backup
+            return sha3.sha3_256(data).hexdigest()
+    except ImportError as e:
+        raise RuntimeError(
+            "SHA3-256 benötigt 'pysha3' unter Python 3.5.\n"
+            "Installieren mit: pip install pysha3\n"
+            "Originalfehler: " + str(e)
+        ) from e
+def build_merkle_tree(data_blocks):
+    data_blocks = list(data_blocks)
+    if not data_blocks:
         return None
+    
+    # Erstelle die Blattknoten des Merkle Trees
+    tree = [quantum_safe_hash(block) for block in data_blocks]
+
+    # Reduziere den Baum, bis nur noch der Root-Hash übrig ist
+    while len(tree) > 1:
+        if len(tree) % 2 != 0:
+            tree.append(tree[-1])  # Dupliziere den letzten Hash, wenn die Anzahl ungerade ist
+        tree = [quantum_safe_hash(tree[i] + tree[i + 1]) for i in range(0, len(tree), 2)]
+
+    return tree[0]  # Der Merkle Root-Hash
 
 def generate_secret():
     """
@@ -355,23 +355,6 @@ def generate_secret():
     # Kombiniere Seed und Schlüssel zu einem 48-Byte-Geheimnis
     secret = seed + key  # 16 + 32 = 48 Bytes
     return secret
-
-# Funktion zur Generierung von dynamischem Padding mit SHA-3, quantesicher:
-def generate_dynamic_padding(data, key):
-    # Verwende SHA-3, um eine schlüsselabhängige Padding-Länge zu generieren
-    sha3 = hashlib.sha3_256()
-    sha3.update(key)  # Der Schlüssel wird als Seed für SHA-3 verwendet
-    padding_length = (sha3.digest()[0] % 16) + 1  # Mindestens 1 Byte, maximal 16 Bytes
-    padding = bytes([padding_length] * padding_length)
-    return padding
-
-# Funktion zum Hinzufügen von dynamischem Padding
-def add_dynamic_padding(data, key):
-    # Dynamisches Padding generieren
-    padding = generate_dynamic_padding(data, key)
-    # Daten mit Padding kombinieren
-    padded_data = data + padding
-    return padded_data
 
 
 
@@ -451,7 +434,13 @@ def load_server_publickey():
 @staticmethod
 def build_sip_request(method, recipient, client_name, server_ip, server_port):
     """Generiert standardkonforme SIP-Nachrichten mit korrekten Port-Handlings"""
-    local_ip = socket.gethostbyname(socket.gethostname())
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect((server_ip, 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+    except:
+        local_ip = "127.0.0.1"  # Fallback
     
     # Wichtige Änderungen:
     local_port = random.randint(32768, 60999)  # IANA empfohlener ephemeral port range
@@ -472,15 +461,7 @@ def build_sip_request(method, recipient, client_name, server_ip, server_port):
     )
 
 def build_sip_message(method, recipient, custom_data={}, from_server=False, host=None):
-    """Erweitere SIP-Nachrichtenerstellung mit JSON-Unterstützung (standalone Version)
-    
-    Args:
-        method: SIP Method (z.B. "MESSAGE", "REGISTER")
-        recipient: Empfänger-URI
-        custom_data: Dictionary mit Nachrichtendaten
-        from_server: True für Server-Nachrichten, False für Client
-        host: Server-Host-IP (nur bei from_server=True benötigt)
-    """
+    """Erweitere SIP-Nachrichtenerstellung mit JSON-Unterstützung (standalone Version)"""
     # Entscheide ob Body JSON oder Key-Value sein soll
     if any(isinstance(v, (dict, list)) for v in custom_data.values()):
         body = json.dumps(custom_data, separators=(',', ':'))
@@ -489,14 +470,28 @@ def build_sip_message(method, recipient, custom_data={}, from_server=False, host
         body = "\r\n".join("{}: {}".format(k, v) for k, v in custom_data.items())
         content_type = "text/plain"
     
-    # Absenderadresse bestimmen
+    # Absenderadresse bestimmen - FIXED VERSION
     if from_server:
         from_header = "<sip:server@{}>".format(host) if host else "<sip:server>"
+        client_ip = host if host else "127.0.0.1"
     else:
         client_name = load_client_name()
-        client_ip = socket.gethostbyname(socket.gethostname())
+        # Use a more reliable method to get local IP
+        try:
+            # Method 1: Connect to a known external service
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))  # Google DNS
+            client_ip = s.getsockname()[0]
+            s.close()
+        except:
+            try:
+                # Method 2: Use hostname lookup
+                client_ip = socket.gethostbyname(socket.gethostname())
+            except:
+                # Method 3: Fallback to localhost
+                client_ip = "127.0.0.1"
+        
         from_header = "<sip:{}@{}>".format(client_name, client_ip)
-
     
     return (
         "{method} sip:{recipient} SIP/2.0\r\n"
@@ -580,12 +575,26 @@ def connection_loop(client_socket, server_ip, message_handler=None):
     global connected
     connected = True
     print("[SETUP] connected = True")
+    
+    # Lokale IP ermitteln (korrigierte Version für OpenBSD)
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect((server_ip, 80))
+        local_ip = s.getsockname()[0]
+        s.close()
+        print(f"[DEBUG] Local IP for ping: {local_ip}")
+    except Exception as ip_error:
+        print(f"[WARNING] Could not determine local IP for ping: {ip_error}")
+        local_ip = "127.0.0.1"  # Fallback
+    
+    client_name = load_client_name()
+    
     while True:
         try:
-            # Build ping message
+            # Build ping message with corrected local IP
             ping_msg = (
                 f"MESSAGE sip:{server_ip} SIP/2.0\r\n"
-                f"From: <sip:{load_client_name()}@{socket.gethostbyname(socket.gethostname())}>\r\n"
+                f"From: <sip:{client_name}@{local_ip}>\r\n"  # KORRIGIERT
                 f"To: <sip:{server_ip}>\r\n"
                 f"Content-Type: text/plain\r\n"
                 f"Content-Length: 10\r\n\r\n"
@@ -593,8 +602,7 @@ def connection_loop(client_socket, server_ip, message_handler=None):
             )
             
             # Send ping MIT FRAMING (KEIN FALLBACK!)
-            send_frame(client_socket,ping_msg)
-            
+            send_frame(client_socket, ping_msg.encode('utf-8'))
             print("DEBUG:ping gesendet+++")
 
             # Wait for pong MIT FRAMING (KEIN FALLBACK!)
@@ -683,7 +691,19 @@ def start_connection(server_ip, server_port, client_name, client_socket, message
             raise ValueError("Invalid client public key format")
 
         # 3. Build and send registration
-        local_ip = socket.gethostbyname(socket.gethostname())
+        try:
+            # Methode 1: Direkte Socket-Methode
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect((server_ip, 80))  # Verbindung zu einem beliebigen Port
+            local_ip = s.getsockname()[0]
+            s.close()
+        except:
+            try:
+                # Methode 2: Hostname-Lookup mit Fallback
+                local_ip = socket.gethostbyname(socket.gethostname())
+            except:
+                # Methode 3: Localhost als Fallback
+                local_ip = "127.0.0.1"
         register_msg = (
             f"REGISTER sip:{server_ip}:{server_port} SIP/2.0\r\n"
             f"From: <sip:{client_name}@{local_ip}>\r\n"
@@ -844,30 +864,106 @@ def secure_del(var):
         var.__dict__.clear()  # Falls es ein Objekt ist
         del var
 
-def decrypt_audio_chunk(chunk, key, seed):
-    # AES-Entschlüsselung mit M2Crypto
-    cipher = EVP.Cipher('aes_256_cbc', key=key, iv=seed, op=0)  # op=0 für Entschlüsselung
-    decrypted_data = cipher.update(encrypted_data) + cipher.final()
-    # Dynamisches Padding entfernen
-    original_data = remove_dynamic_padding(decrypted_data, key)
-    return original_data
-
-
-def encrypt_audio_chunk(chunk, key, seed):
-    """
-    Verschlüsselt einen Audio-Chunk mit AES-256 im CBC-Modus.
-    :param chunk: Der Audio-Chunk (Bytes).
-    :param key: Der AES-256-Schlüssel (32 Bytes).
-    :param iv: Der Initialisierungsvektor (16 Bytes).
-    :return: Verschlüsselter Chunk (Bytes).
-    """
-    chunk = add_dynamic_padding(chunk,key)
-    cipher = EVP.Cipher(ENC_METHOD, key=key, iv=seed, op=1)  # op=1 für Verschlüsselung
-    encrypted_chunk = cipher.update(chunk) + cipher.final()
-    return encrypted_chunk
 
 
 
+class WireGuardManager:
+    def __init__(self):
+        self.interface_name = "wg-phonebook"
+        self.config_path = f"/etc/wireguard/{self.interface_name}.conf"
+        self.debug_log = []
+        self.peer_public_key = None
+        self.my_private_key = None
+        self.my_public_key = None
+
+    def _log_debug(self, message):
+        """Log debug messages"""
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        debug_message = f"[{timestamp}] {message}"
+        self.debug_log.append(debug_message)
+        print(debug_message)
+        
+    def generate_keypair(self):
+        """Generiert ein WireGuard Schlüsselpaar"""
+        try:
+            # Private Key generieren
+            private_key = subprocess.run(
+                ["wg", "genkey"],
+                capture_output=True, text=True, check=True
+            ).stdout.strip()
+            
+            # Public Key aus Private Key ableiten
+            public_key = subprocess.run(
+                ["wg", "pubkey"],
+                input=private_key, capture_output=True, text=True, check=True
+            ).stdout.strip()
+            
+            self.my_private_key = private_key
+            self.my_public_key = public_key
+            
+            return private_key, public_key
+            
+        except Exception as e:
+            self._log_debug(f"Key generation failed: {e}")
+            raise
+    
+    def create_interface_config(self, private_key, peer_public_key, peer_endpoint, my_ip):
+        """Erstellt eine WireGuard Konfiguration"""
+        config = f"""[Interface]
+PrivateKey = {private_key}
+Address = {my_ip}/24
+ListenPort = 51820
+
+[Peer]
+PublicKey = {peer_public_key}
+AllowedIPs = 10.8.0.0/24
+Endpoint = {peer_endpoint}
+PersistentKeepalive = 25
+"""
+        return config
+    
+    def setup_wireguard_tunnel(self, config):
+        """Richtet den WireGuard Tunnel ein"""
+        try:
+            # Konfiguration speichern
+            with open(self.config_path, 'w') as f:
+                f.write(config)
+            
+            # Interface starten
+            result = subprocess.run(
+                ["wg-quick", "up", self.config_path],
+                capture_output=True, text=True, timeout=30
+            )
+            
+            if result.returncode != 0:
+                raise Exception(f"WireGuard start failed: {result.stderr}")
+            
+            return True
+            
+        except Exception as e:
+            self._log_debug(f"WireGuard setup failed: {e}")
+            raise
+    
+    def get_wireguard_ip(self):
+        """Ermittelt die WireGuard IP des Interfaces"""
+        try:
+            result = subprocess.run(
+                ["ip", "-4", "addr", "show", "dev", self.interface_name],
+                capture_output=True, text=True, check=True
+            )
+            
+            # Extrahiere die IP-Adresse aus der Ausgabe
+            lines = result.stdout.split('\n')
+            for line in lines:
+                if 'inet ' in line:
+                    ip = line.split()[1].split('/')[0]
+                    return ip
+            
+            return None
+            
+        except Exception as e:
+            self._log_debug(f"Failed to get WireGuard IP: {e}")
+            return None
 
 # Nur für die bidirektionale Audioübertragungs - session, client - client(peer-peer):
 class SecureVault:
@@ -959,6 +1055,7 @@ class SecureVault:
 class PHONEBOOK(ctk.CTk):
     def __init__(self):
         super().__init__()
+        # Vorhandene Initialisierung...
         self.client_socket = None
         self.server_public_key = None
         self.encrypted_secret = None
@@ -969,9 +1066,8 @@ class PHONEBOOK(ctk.CTk):
         self.geometry("600x1000")
         self.configure(fg_color='black')
         ctk.set_appearance_mode("dark")
-        self.secret_vault = SecureVault()  # Neue Instanz für Geheimnis-Speicherung
-        self.current_secret = None  # Aktuelles 48-Byte-Geheimnis für laufende Kommunikation
-        # Nur setup_ui aufrufen, nicht beide!
+        self.secret_vault = SecureVault()
+        self.current_secret = None
         self.setup_ui()
         self.selected_entry = None
         client_name = load_client_name()
@@ -979,21 +1075,26 @@ class PHONEBOOK(ctk.CTk):
         self.current_secret = None
         self.active_call = False
         self.server_ip = "127.0.0.1"
-                # Audio-Konstanten definieren
-        self.AUDIO_HOST = "0.0.0.0"
+        
+        # WireGuard Integration
+        self.wg_manager = WireGuardManager()
+        self.wg_interface_name = "wg-phonebook"
+        self.wg_config_path = f"/etc/wireguard/{self.wg_interface_name}.conf"
+        self.wg_peer_ip = None
+        self.wg_my_ip = None
+        
+        # Audio-Konstanten definieren
+        self.AUDIO_HOST = "10.8.0.0/24"  # WireGuard Netzwerk
         self.AUDIO_FORMAT = pyaudio.paInt16
         self.AUDIO_CHANNELS = 1
         self.AUDIO_RATE = 44100
         self.AUDIO_CHUNK = 1024
         self.AUDIO_IV_LEN = 16
         
-        # Audio-Ports definieren (unterschiedlich für Senden/Empfangen)
-        self.audio_port_out = 50001  # Für ausgehende Verbindungen
-        self.audio_port_in = 50002   # Für eingehende Verbindungen
-        
         # Thread-Management
         self.audio_threads = []
         self.active_call = False
+        
     def setup_ui(self):
         # Stile für die UI-Elemente
         self.style = ttk.Style(self)
@@ -1047,12 +1148,6 @@ class PHONEBOOK(ctk.CTk):
         except Exception as e:
             print(f"Fehler beim Laden des Namens: {e}")
         return ""    
-    def _handle_standard_sip(self, sip_data):
-        """Verarbeitet reguläre SIP-Nachrichten"""
-        # Hier können andere SIP-Nachrichten behandelt werden
-        print(f"[CLIENT] Handling standard SIP message: {sip_data}")
-        return True
-
 
     def create_phonebook_tab(self):
         # Frame für das Telefonbuch mit Scrollbar
@@ -1152,67 +1247,214 @@ class PHONEBOOK(ctk.CTk):
         self.connect_button.pack(side='left', fill="x", expand=True, padx=10)
 
     def cleanup_connection(self):
-        """Clean up connection resources"""
+        """Detailed connection cleanup with debugging"""
+        print("[CLEANUP] Starting connection cleanup...")
+        
         if hasattr(self, 'client_socket') and self.client_socket:
             try:
+                print("[CLEANUP] Closing client socket...")
                 self.client_socket.close()
-            except:
-                pass
+                print("[CLEANUP] Socket closed successfully")
+            except Exception as close_error:
+                print(f"[CLEANUP] Error closing socket: {close_error}")
             finally:
                 self.client_socket = None
+                print("[CLEANUP] Socket reference cleared")
+        
+        # Additional cleanup if needed
+        print("[CLEANUP] Cleanup completed")
     #threading
     def on_connect_click(self):
         if hasattr(self, 'client_socket') and self.client_socket:
             messagebox.showerror("Fehler", "Bereits verbunden")
             return
-    
+
         server_ip = self.server_ip_input.get()
         server_port = self.server_port_input.get()
-    
+
+        print(f"\n{'='*60}")
+        print("[DEBUG] === START CONNECTION ATTEMPT ===")
+        print(f"{'='*60}")
+        
         try:
             # Validate inputs
+            print(f"[DEBUG 1] Input validation - Server: '{server_ip}', Port: '{server_port}'")
             if not server_ip or not server_port:
                 raise ValueError("Server-IP und Port müssen angegeben werden")
             
             port = int(server_port)
             if not (0 < port <= 65535):
                 raise ValueError("Ungültiger Port")
-    
-            # Create and connect socket
-            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            self.client_socket.settimeout(5)  # 5 second timeout
+            print(f"[DEBUG 2] Port validation passed: {port}")
+
+            # Extensive DNS resolution debugging
+            print(f"[DEBUG 3] Starting DNS resolution for: {server_ip}")
+            try:
+                # Get all address information
+                addr_info = socket.getaddrinfo(server_ip, port, socket.AF_INET, socket.SOCK_STREAM)
+                print(f"[DEBUG 4] getaddrinfo results: {len(addr_info)} entries")
+                
+                for i, (family, socktype, proto, canonname, sockaddr) in enumerate(addr_info):
+                    print(f"[DEBUG 4.{i}] Family: {family}, Type: {socktype}, Proto: {proto}")
+                    print(f"[DEBUG 4.{i}] Canonname: {canonname}, Addr: {sockaddr}")
+                
+                # Traditional gethostbyname
+                resolved_ip = socket.gethostbyname(server_ip)
+                print(f"[DEBUG 5] gethostbyname result: {resolved_ip}")
+                
+            except Exception as dns_error:
+                print(f"[DEBUG 6] DNS resolution failed: {dns_error}")
+                print(f"[DEBUG 6] DNS error type: {type(dns_error).__name__}")
+                import traceback
+                traceback.print_exc()
+
+            # Socket creation with extensive debugging
+            print("[DEBUG 7] Creating socket...")
+            try:
+                self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                print("[DEBUG 8] Socket created successfully")
+                
+                # Set various socket options for debugging
+                self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                print("[DEBUG 9] Socket options set")
+                
+                # Get socket details before connection
+                sock_fd = self.client_socket.fileno()
+                sock_family = self.client_socket.family
+                sock_type = self.client_socket.type
+                sock_proto = self.client_socket.proto
+                print(f"[DEBUG 10] Socket details - FD: {sock_fd}, Family: {sock_family}, Type: {sock_type}, Proto: {sock_proto}")
+                
+            except Exception as sock_error:
+                print(f"[DEBUG 11] Socket creation failed: {sock_error}")
+                print(f"[DEBUG 11] Socket error type: {type(sock_error).__name__}")
+                raise
+
+            # Connection attempt with detailed timing
+            print(f"[DEBUG 12] Setting socket timeout to 15 seconds")
+            self.client_socket.settimeout(15)
+            
+            print(f"[DEBUG 13] Attempting connection to {server_ip}:{port}")
+            connection_start_time = time.time()
             
             try:
-                self.client_socket.connect((self.server_ip, port))
+                self.client_socket.connect((server_ip, port))
+                connection_time = time.time() - connection_start_time
+                print(f"[DEBUG 14] Connection successful! Time: {connection_time:.3f} seconds")
                 
+                # Get connection details
+                try:
+                    local_addr = self.client_socket.getsockname()
+                    peer_addr = self.client_socket.getpeername()
+                    print(f"[DEBUG 15] Local address: {local_addr}")
+                    print(f"[DEBUG 16] Peer address: {peer_addr}")
+                except Exception as addr_error:
+                    print(f"[DEBUG 17] Address info error: {addr_error}")
+
+                # Test socket properties
+                try:
+                    sock_timeout = self.client_socket.gettimeout()
+                    sock_blocking = self.client_socket.getblocking()
+                    print(f"[DEBUG 18] Socket timeout: {sock_timeout}, Blocking: {sock_blocking}")
+                except Exception as prop_error:
+                    print(f"[DEBUG 19] Socket properties error: {prop_error}")
+
                 # Store connection info
                 self.server_ip = server_ip
                 self.server_port = port
                 
                 # Start connection thread
+                print("[DEBUG 20] Starting connection thread...")
                 threading.Thread(
                     target=self.start_connection_wrapper,
-                    daemon=True
+                    daemon=True,
+                    name=f"ConnectionThread-{server_ip}:{port}"
                 ).start()
                 
+                print("[DEBUG 21] Closing connection window")
                 self.connection_window.destroy()
-    
+                print("[DEBUG 22] Connection process completed successfully!")
+
             except socket.timeout:
+                connection_time = time.time() - connection_start_time
+                print(f"[DEBUG 23] Connection timeout after {connection_time:.3f} seconds")
+                print("[DEBUG 24] Socket timeout exception details:")
+                import traceback
+                traceback.print_exc()
+                
                 messagebox.showerror("Fehler", "Verbindungstimeout - Server nicht erreichbar")
                 self.cleanup_connection()
-            except ConnectionRefusedError:
+                
+            except ConnectionRefusedError as cre:
+                connection_time = time.time() - connection_start_time
+                print(f"[DEBUG 25] Connection refused after {connection_time:.3f} seconds")
+                print(f"[DEBUG 26] ConnectionRefusedError: {cre}")
+                print(f"[DEBUG 27] Errno: {cre.errno}")
+                print(f"[DEBUG 28] Strerror: {cre.strerror}")
+                
+                # Additional diagnostic information
+                try:
+                    # Try connecting to a known working service to verify network
+                    test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    test_socket.settimeout(5)
+                    test_socket.connect(("8.8.8.8", 53))  # Google DNS
+                    test_socket.close()
+                    print("[DEBUG 29] Network connectivity test passed")
+                except Exception as test_error:
+                    print(f"[DEBUG 30] Network test failed: {test_error}")
+                
                 messagebox.showerror("Fehler", "Verbindung abgelehnt - Server nicht erreichbar oder Port falsch")
                 self.cleanup_connection()
-            except OSError as e:
-                messagebox.showerror("Fehler", f"Netzwerkfehler: {str(e)}")
+                
+            except OSError as ose:
+                connection_time = time.time() - connection_start_time
+                print(f"[DEBUG 31] OSError after {connection_time:.3f} seconds")
+                print(f"[DEBUG 32] OSError: {ose}")
+                print(f"[DEBUG 33] Errno: {ose.errno}")
+                print(f"[DEBUG 34] Strerror: {ose.strerror}")
+                print("[DEBUG 35] Full traceback:")
+                import traceback
+                traceback.print_exc()
+                
+                # OS-specific debugging
+                import platform
+                print(f"[DEBUG 36] Platform: {platform.system()} {platform.release()}")
+                print(f"[DEBUG 37] Python version: {sys.version}")
+                
+                messagebox.showerror("Fehler", f"Netzwerkfehler: {str(ose)}")
                 self.cleanup_connection()
-    
-        except ValueError as e:
-            messagebox.showerror("Fehler", f"Ungültige Eingabe: {str(e)}")
+                
+            except Exception as e:
+                connection_time = time.time() - connection_start_time
+                print(f"[DEBUG 38] Unexpected error after {connection_time:.3f} seconds")
+                print(f"[DEBUG 39] Error type: {type(e).__name__}")
+                print(f"[DEBUG 40] Error message: {e}")
+                print("[DEBUG 41] Full traceback:")
+                import traceback
+                traceback.print_exc()
+                
+                messagebox.showerror("Fehler", f"Unerwarteter Fehler: {str(e)}")
+                self.cleanup_connection()
+
+        except ValueError as ve:
+            print(f"[DEBUG 42] ValueError: {ve}")
+            print(f"[DEBUG 43] ValueError type: {type(ve).__name__}")
+            messagebox.showerror("Fehler", f"Ungültige Eingabe: {str(ve)}")
             self.cleanup_connection()
+            
         except Exception as e:
+            print(f"[DEBUG 44] General exception: {e}")
+            print(f"[DEBUG 45] Exception type: {type(e).__name__}")
+            print("[DEBUG 46] Full traceback:")
+            import traceback
+            traceback.print_exc()
+            
             messagebox.showerror("Fehler", f"Unerwarteter Fehler: {str(e)}")
             self.cleanup_connection()
+        
+        finally:
+            print(f"[DEBUG 47] === END CONNECTION ATTEMPT ===")
+            print(f"{'='*60}\n")
     def on_update_click(self):
         """Handler für den Update-Button Click - Startet Identity Challenge für Phonebook Update"""
         global connected
@@ -1418,36 +1660,158 @@ class PHONEBOOK(ctk.CTk):
 
 
 
-
+    def end_current_call(self):
+        """Beendet den aktuellen Anruf und bereinigt Ressourcen"""
+        print("[CALL] Ending current call...")
+        self.active_call = False
+        
+        # Bereinige Audio-Ressourcen
+        try:
+            # Stoppe alle Audio-Threads
+            self.cleanup_call_resources()
+        except Exception as e:
+            print(f"[CALL CLEANUP ERROR] {e}")
+        
+        # UI zurücksetzen
+        self.update_call_ui(active=False)
+        print("[CALL] Call ended successfully")
 
     def on_call_click(self):
-        """Handler für den Call-Button"""
-        if self.active_call:
-            self.end_current_call()
-            return
-        
-        if not self.selected_entry:
-            messagebox.showerror("Error", "Please select a contact first")
-            return
-        
+        """Handler für den Call-Button mit vollständigem WireGuard-Protokoll"""
         try:
-            recipient = {
-                'name': self.selected_entry['name'],
-                'public_key': self.selected_entry['public_key'],
-                'ip': self.selected_entry['ip'],
-                'port': int(self.selected_entry['port'])
-            }
-            self.initiate_call(recipient)
-            self.update_call_ui(active=True)
+            if self.active_call:
+                self.end_current_call()
+                return
             
-        except KeyError as e:
-            messagebox.showerror("Missing Data", f"Contact missing required field: {str(e)}")
+            if not self.selected_entry:
+                messagebox.showerror("Error", "Please select a contact first")
+                return
+            
+            # Überprüfe ob alle benötigten Daten vorhanden sind
+            required_fields = ['id', 'name', 'public_key']
+            for field in required_fields:
+                if field not in self.selected_entry:
+                    messagebox.showerror("Error", f"Contact missing required field: {field}")
+                    return
+            
+            # 1. Generiere WireGuard Schlüsselpaar
+            try:
+                wg_private_key, wg_public_key = self.wg_manager.generate_keypair()
+                print(f"[CALL] Generated WG keys: priv={wg_private_key[:20]}..., pub={wg_public_key[:20]}...")
+            except Exception as e:
+                print(f"[CALL ERROR] Failed to generate WG keys: {str(e)}")
+                messagebox.showerror("Error", "Failed to generate encryption keys")
+                return
+            
+            # 2. Verschlüssele WG Public Key mit Server Public Key
+            try:
+                server_pubkey = load_server_publickey()
+                server_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(server_pubkey.encode()))
+                encrypted_wg_key = server_key.public_encrypt(
+                    wg_public_key.encode('utf-8'), 
+                    RSA.pkcs1_padding
+                )
+                encrypted_wg_key_b64 = base64.b64encode(encrypted_wg_key).decode('utf-8')
+            except Exception as e:
+                print(f"[CALL ERROR] Failed to encrypt WG key: {str(e)}")
+                messagebox.showerror("Error", "Failed to encrypt connection data")
+                return
+            
+            # 3. Sende CALL_REQUEST mit verschlüsseltem WG Public Key
+            request_msg = self.build_sip_message("MESSAGE", "server", {
+                "MESSAGE_TYPE": "CALL_REQUEST",
+                "TARGET_CLIENT_ID": self.selected_entry['id'],
+                "CALLER_NAME": self._client_name,
+                "ENCRYPTED_WG_KEY": encrypted_wg_key_b64,
+                "TIMESTAMP": int(time.time())
+            })
+            
+            try:
+                send_frame(self.client_socket, request_msg.encode('utf-8'))
+                print(f"[CALL] Call request sent to server for client {self.selected_entry['id']}")
+            except Exception as e:
+                print(f"[CALL ERROR] Failed to send call request: {str(e)}")
+                messagebox.showerror("Error", "Failed to initiate call")
+                return
+            
+            # Speichere WG Daten für später
+            self.pending_call = {
+                'recipient': self.selected_entry,
+                'wg_private_key': wg_private_key,
+                'wg_public_key': wg_public_key,
+                'status': 'request_sent',
+                'start_time': time.time()
+            }
+            
+            # UI aktualisieren
+            self.update_call_ui(active=True, status="requesting", caller_name=self.selected_entry['name'])
+            
+            # Starte Timeout-Überwachung
+            threading.Thread(target=self._call_timeout_watchdog, daemon=True).start()
+                
         except Exception as e:
-            messagebox.showerror("Call Failed", f"Connection error: {str(e)}")
-            self.cleanup_call_resources()
+            print(f"[CALL CLICK ERROR] {e}")
+            messagebox.showerror("Error", f"Unexpected error: {str(e)}")
+            if hasattr(self, 'pending_call'):
+                del self.pending_call
+
+    def _call_timeout_watchdog(self):
+        """Überwacht Call-Timeout"""
+        timeout = 30  # 30 Sekunden Timeout
+        start_time = time.time()
+        
+        while hasattr(self, 'pending_call') and self.pending_call.get('status') == 'request_sent':
+            if time.time() - start_time > timeout:
+                print("[CALL] Timeout waiting for call response")
+                self.end_current_call()
+                messagebox.showinfo("Call Failed", "No response from recipient")
+                break
+            time.sleep(1)
 
     def on_hangup_click(self):
-        pass
+        """Beendet den aktuellen Anruf und bereinigt alle Ressourcen"""
+        try:
+            if not self.active_call and not hasattr(self, 'pending_call'):
+                print("[HANGUP] No active call to hang up")
+                return
+                
+            print("[HANGUP] Ending call and cleaning up resources...")
+            
+            # 1. Sende Hangup-Nachricht an Server (falls verbunden)
+            if hasattr(self, 'client_socket') and self.client_socket:
+                try:
+                    hangup_msg = self.build_sip_message("MESSAGE", "server", {
+                        "MESSAGE_TYPE": "CALL_END",
+                        "TIMESTAMP": int(time.time()),
+                        "REASON": "user_hangup"
+                    })
+                    send_frame(self.client_socket, hangup_msg.encode('utf-8'))
+                    print("[HANGUP] Hangup message sent to server")
+                except Exception as e:
+                    print(f"[HANGUP WARNING] Failed to send hangup message: {str(e)}")
+            
+            # 2. Beende aktiven Anruf
+            self.end_current_call()
+            
+            # 3. Bereinige pending_call Daten
+            if hasattr(self, 'pending_call'):
+                del self.pending_call
+                
+            # 4. UI zurücksetzen
+            self.update_call_ui(active=False)
+            
+            print("[HANGUP] Call successfully terminated")
+            
+        except Exception as e:
+            print(f"[HANGUP ERROR] Failed to hang up: {str(e)}")
+            # Versuche trotzdem zu bereinigen
+            try:
+                self.cleanup_call_resources()
+                if hasattr(self, 'pending_call'):
+                    del self.pending_call
+                self.update_call_ui(active=False)
+            except:
+                pass
 
     def open_keyboard_settings(self):
         messagebox.showinfo("Tastatur", "Tastatureinstellungen (nicht implementiert)")
@@ -1490,26 +1854,25 @@ class PHONEBOOK(ctk.CTk):
     def handle_server_message(self, raw_data):
         """Improved message handler that properly routes different message types"""
         print("\n=== HANDLING SERVER MESSAGE ===")
-        print(f"[DEBUG] Raw data: {raw_data[:100]}...")  # Print first 100 bytes for debugging
+        print(f"[DEBUG] Raw data: {raw_data[:100]}...")
         
         # Queue-Initialisierung mit DoS-Schutz
         if not hasattr(self, '_message_queue'):
             self._message_queue = []
             self._processing_queue = False
-            self._queue_size_limit = 120  # Max 120 Nachrichten
+            self._queue_size_limit = 120
             self._last_minute_check = time.time()
             self._messages_this_minute = 0
         
         # DoS-Schutz: Nachrichten pro Minute limitieren
         current_time = time.time()
         if current_time - self._last_minute_check >= 60:
-            # Minute abgelaufen, Counter zurücksetzen
             self._last_minute_check = current_time
             self._messages_this_minute = 0
         
         if self._messages_this_minute >= self._queue_size_limit:
             print(f"[DOS PROTECTION] Message limit reached ({self._queue_size_limit}/min) - dropping message")
-            return False  # Nachricht verwerfen
+            return False
         
         self._messages_this_minute += 1
         
@@ -1740,6 +2103,136 @@ class PHONEBOOK(ctk.CTk):
                 if self.connected:
                     print(f"[CLIENT RECV ERROR] {str(e)}")
                 break            
+    def _handle_session_key(self, msg):
+        """Verarbeitet den Session Key für Audio-Verschlüsselung"""
+        try:
+            custom_data = msg.get('custom_data', {})
+            encrypted_session = custom_data.get('ENCRYPTED_SESSION')
+            
+            if not encrypted_session:
+                print("[CALL ERROR] No session key in message")
+                return
+            
+            # Entschlüssele Session Key mit privatem Schlüssel
+            private_key = load_privatekey()
+            priv_key = RSA.load_key_string(private_key.encode())
+            decrypted_session = priv_key.private_decrypt(
+                base64.b64decode(encrypted_session), 
+                RSA.pkcs1_padding
+            )
+            
+            # Extrahiere den eigentlichen Session Key (48 Bytes)
+            if decrypted_session.startswith(b"+++session_key+++"):
+                session_secret = decrypted_session[len(b"+++session_key+++"):]
+                if len(session_secret) == 48:
+                    iv = session_secret[:16]
+                    aes_key = session_secret[16:48]
+                    
+                    # Speichere Session Key für Audio-Übertragung
+                    self.current_secret = session_secret
+                    
+                    if hasattr(self, 'pending_call'):
+                        self.pending_call['aes_iv'] = iv
+                        self.pending_call['aes_key'] = aes_key
+                        self.pending_call['status'] = 'session_key_received'
+                    
+                    print("[CALL] Session key decrypted and stored")
+                    
+                    # Bestätigung an Server senden
+                    ack_msg = self.build_sip_message("MESSAGE", "server", {
+                        "MESSAGE_TYPE": "SESSION_KEY_ACK",
+                        "CLIENT_ID": self._find_my_client_id(),
+                        "TIMESTAMP": int(time.time())
+                    })
+                    send_frame(self.client_socket, ack_msg.encode('utf-8'))
+                    
+                else:
+                    print(f"[CALL ERROR] Invalid session key length: {len(session_secret)}")
+            else:
+                print("[CALL ERROR] Invalid session key format")
+                
+        except Exception as e:
+            print(f"[CALL ERROR] Failed to decrypt session key: {str(e)}")
+    def _find_my_client_id(self):
+        """Ermittelt die eigene Client-ID"""
+        with self.clients_lock:
+            for client_id, client_data in self.clients.items():
+                if client_data.get('name') == self._client_name:
+                    return client_id
+        return None
+
+    def _get_public_ip(self):
+        """Ermittelt die öffentliche IP-Adresse"""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except:
+            return "127.0.0.1"            
+    def _handle_call_response(self, msg):
+        """Verarbeitet Antwort auf Anrufanfrage"""
+        try:
+            custom_data = msg.get('custom_data', {})
+            response = custom_data.get('RESPONSE')
+            caller_client_id = custom_data.get('CALLER_CLIENT_ID')
+            
+            if not hasattr(self, 'pending_call'):
+                print("[CALL WARNING] Received response but no pending call")
+                return
+            
+            if response == "accepted":
+                print("[CALL] Call accepted by recipient")
+                
+                # Setup WireGuard
+                public_ip = self._get_public_ip()
+                wg_config = self.wg_manager.create_interface_config(
+                    self.pending_call['wg_private_key'],
+                    self.pending_call.get('recipient', {}).get('public_key', ''),
+                    f"{public_ip}:{WG_PORT}", 
+                    "10.8.0.2"  # Client IP im WG-Netzwerk
+                )
+                
+                success = self.wg_manager.setup_wireguard_tunnel(wg_config)
+                
+                if success:
+                    self.pending_call['status'] = 'wg_connected'
+                    self.update_call_ui(active=True, status="connected", 
+                                      caller_name=self.pending_call['recipient']['name'])
+                    
+                    # Bestätigung an Server senden
+                    ack_msg = self.build_sip_message("MESSAGE", "server", {
+                        "MESSAGE_TYPE": "WG_CONNECTED",
+                        "CLIENT_ID": self._find_my_client_id(),
+                        "TIMESTAMP": int(time.time())
+                    })
+                    send_frame(self.client_socket, ack_msg.encode('utf-8'))
+                    
+                    # Starte Audio wenn Session Key bereits da
+                    if hasattr(self, 'current_secret') and self.current_secret:
+                        self._start_audio_streams()
+                else:
+                    print("[CALL ERROR] WireGuard setup failed")
+                    self.end_current_call()
+                    
+            elif response == "rejected":
+                print("[CALL] Call rejected by recipient")
+                messagebox.showinfo("Call Rejected", "The recipient rejected your call")
+                self.end_current_call()
+                
+            elif response == "busy":
+                print("[CALL] Recipient is busy")
+                messagebox.showinfo("Call Failed", "The recipient is currently busy")
+                self.end_current_call()
+                
+            else:
+                print(f"[CALL] Unknown response: {response}")
+                self.end_current_call()
+                
+        except Exception as e:
+            print(f"[CALL ERROR] Response handling failed: {str(e)}")
+            self.end_current_call()       
     def _process_queue(self):
         """Verarbeitet Nachrichten aus der Queue - kompatibel mit existing SIP methods"""
         self._processing_queue = True
@@ -1748,84 +2241,51 @@ class PHONEBOOK(ctk.CTk):
             while self._message_queue:
                 queue_item = self._message_queue.pop(0)
                 
-                # ✅ PRÜFE OB queue_item EIN DICTIONARY IST
                 if isinstance(queue_item, dict) and queue_item.get('type') == 'frame_data':
                     frame_data = queue_item['data']
                     
                     try:
-                        # NUR UTF-8 SIP Nachrichten
-                        try:
-                            message = frame_data.decode('utf-8')
-                            print(f"[CLIENT] Empfangen: {len(message)} bytes")
-                            
-                            # Parse mit EXISTIERENDER Methode
-                            sip_data = parse_sip_message(message)
-                            if not sip_data:
-                                print("[CLIENT ERROR] Ungültiges SIP Format")
-                                continue
-                                
-                            # Debug-Ausgabe
-                            debug_msg = message[:200] + "..." if len(message) > 200 else message
-                            print(f"[CLIENT DEBUG] SIP Nachricht:\n{debug_msg}")
-                            
-                            # ✅ KORREKTE Header-Prüfung (UPPERCASE)
-                            headers = sip_data.get('headers', {})
-                            custom_data = sip_data.get('custom_data', {})
-                            
-                            # PONG Handling
-                            if headers.get('PONG') == 'true':
-                                print("[PONG] Vom Server empfangen")
-                                continue
-                                
-                            # Identity Challenge Handling - KORRIGIERT
-                            if (custom_data.get('MESSAGE_TYPE') == 'IDENTITY_CHALLENGE' or 
-                                'IDENTITY_CHALLENGE' in message):
-                                print("[IDENTITY] Challenge vom Server empfangen")
-                                self._handle_identity_challenge(message)
-                                continue
-                                
-                            # Identity Verification Handling
-                            if (custom_data.get('STATUS') == 'IDENTITY_VERIFIED' or 
-                                'IDENTITY_VERIFIED' in message):
-                                print("[IDENTITY] Verifizierung bestätigt vom Server")
-                                self._handle_identity_verified(message)
-                                continue
-                                
-                            # Encrypted Phonebook Handling
-                            if 'ENCRYPTED_SECRET' in custom_data and 'ENCRYPTED_PHONEBOOK' in custom_data:
-                                print("\n=== PHONEBOOK UPDATE EMPFANGEN ===")
-                                self._process_encrypted_phonebook(sip_data)
-                                continue
-                            # Normale SIP Nachrichten
-                            print("[CLIENT] Verarbeite normale SIP Nachricht")
-                            self._process_sip_message(sip_data)
-                                
-                        except UnicodeDecodeError:
-                            print(f"[CLIENT ERROR] Kein UTF-8 SIP")
+                        message = frame_data.decode('utf-8')
+                        msg = self.parse_sip_message(message)
+                        if not msg:
                             continue
                             
-                    except Exception as e:
-                        print(f"[CLIENT ERROR] Frame processing failed: {str(e)}")
-                        import traceback
-                        traceback.print_exc()
-                
-                # ✅ FALLBACK FÜR STRINGS (Identity Challenge erkennen!)
+                        custom_data = msg.get('custom_data', {})
+                        
+                        # INCOMING_CALL Handling (Für angerufenen Client)
+                        if custom_data.get('MESSAGE_TYPE') == 'INCOMING_CALL':
+                            print("[CALL] Incoming call received")
+                            self._handle_incoming_call(msg)
+                            continue
+                        
+                        # SESSION_KEY Handling (Für beide Clients)
+                        if custom_data.get('MESSAGE_TYPE') == 'SESSION_KEY':
+                            print("[CALL] Received session key from server")
+                            self._handle_session_key(msg)
+                            continue
+                        
+                        # CALL_RESPONSE Handling (Für anrufenden Client)
+                        if custom_data.get('MESSAGE_TYPE') == 'CALL_RESPONSE':
+                            print("[CALL] Received call response")
+                            self._handle_call_response(msg)
+                            continue
+                            
+                    except UnicodeDecodeError:
+                        continue
+                        
                 elif isinstance(queue_item, str):
                     print(f"[CLIENT] Verarbeite String aus Queue: {queue_item[:100]}...")
                     
-                    # Identity Challenge erkennen
                     if 'IDENTITY_CHALLENGE' in queue_item:
                         print("[IDENTITY] Challenge vom Server (String-Format) empfangen")
                         self._handle_identity_challenge(queue_item)
                         continue
                         
-                    # Identity Verification erkennen
                     elif 'IDENTITY_VERIFIED' in queue_item:
                         print("[IDENTITY] Verifizierung bestätigt (String-Format)")
                         self._handle_identity_verified(queue_item)
                         continue
                         
-                    # Versuche es als normale SIP Nachricht zu verarbeiten
                     try:
                         sip_data = parse_sip_message(queue_item)
                         if sip_data:
@@ -1836,7 +2296,6 @@ class PHONEBOOK(ctk.CTk):
                     except Exception as e:
                         print(f"[CLIENT ERROR] Failed to process string from queue: {str(e)}")
                 
-                # ✅ Andere Dictionary-Typen
                 elif isinstance(queue_item, dict):
                     if queue_item.get('type') == 'send_message':
                         message = queue_item['message']
@@ -1849,7 +2308,6 @@ class PHONEBOOK(ctk.CTk):
                     elif queue_item.get('type') == 'update_request':
                         print("[UPDATE] Request wurde verarbeitet")
                 
-                # ✅ Unbekanntes Format
                 else:
                     print(f"[CLIENT WARN] Unbekanntes Queue-Format: {type(queue_item)}")
                         
@@ -2464,117 +2922,73 @@ class PHONEBOOK(ctk.CTk):
                     pass
 
 
-    def receive_audio_stream(self, key, seed):
-        """
-        Empfängt verschlüsselte Audiodaten, entschlüsselt sie und gibt sie über die Lautsprecher aus.
-        Kompatibel für beide Clients.
-        """
-        audio = pyaudio.PyAudio()
-        stream = audio.open(format=FORMAT, channels=CHANNELS, 
-                           rate=RATE, output=True, frames_per_buffer=CHUNK)
 
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-            # Socket für eingehende Verbindungen
-            s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            s.bind((HOST, self.audio_port_in))
-            s.listen(1)
-            
-            print(f"Warte auf Audio-Verbindung auf Port {self.audio_port_in}...")
-            conn, addr = s.accept()
-            print(f"Audio verbunden mit {addr}")
-
-            try:
-                # Empfange IV/Seed (16 Bytes)
-                received_seed = conn.recv(16)
-                if len(received_seed) != 16:
-                    raise ValueError("Ungültiger IV empfangen")
-
-                while self.active_call:
-                    # Empfange verschlüsselten Chunk
-                    encrypted_chunk = conn.recv(CHUNK + 16)  # Chunk + Padding
-                    if not encrypted_chunk:
-                        break
-
-                    # Entschlüssele und spiele ab
-                    decrypted_chunk = decrypt_audio_chunk(encrypted_chunk, key, received_seed)
-                    stream.write(decrypted_chunk)
-                    
-            except Exception as e:
-                print(f"Audio-Empfangsfehler: {e}")
-            finally:
-                stream.stop_stream()
-                stream.close()
-                audio.terminate()
-                conn.close()            
 
     def initiate_call(self, recipient):
-        """
-        Startet einen verschlüsselten Anruf zu einem anderen Client.
-        Kompatibel für beide Clients.
-        """
+        """Initiiert einen Anruf mit korrigiertem Protokoll"""
         try:
-            # 1. Generiere neues 48-Byte Geheimnis
-            secret = generate_secret()
-            self.current_secret = secret
+            print(f"[CALL] Initiating call to {recipient['name']}")
             
-            # 2. Verschlüssele mit Public Key des Empfängers
+            # 1. Generiere WireGuard Schlüsselpaar
+            wg_private_key, wg_public_key = self.wg_manager.generate_keypair()
+            
+            # 2. Generiere AES Session Key (48 Bytes: 16 IV + 32 Key)
+            session_secret = generate_secret()
+            iv = session_secret[:16]
+            aes_key = session_secret[16:48]
+            
+            # 3. Bereite Call-Daten vor
+            call_data = {
+                "caller_name": self._client_name,
+                "caller_wg_public_key": wg_public_key,
+                "aes_iv": base64.b64encode(iv).decode('utf-8'),
+                "aes_key": base64.b64encode(aes_key).decode('utf-8'),
+                "timestamp": time.time(),
+                "call_type": "wireguard_audio"
+            }
+            
+            call_data_json = json.dumps(call_data, separators=(',', ':'))
+            
+            # 4. Verschlüssele mit öffentlichem Schlüssel des Empfängers
             recipient_pubkey = RSA.load_pub_key_bio(
                 BIO.MemoryBuffer(recipient['public_key'].encode()))
             
-            # Mit Overhead verschlüsseln
-            secret_with_overhead = b"+++secret+++" + secret
-            encrypted_secret = recipient_pubkey.public_encrypt(
-                secret_with_overhead, 
+            encrypted_data = recipient_pubkey.public_encrypt(
+                call_data_json.encode('utf-8'), 
                 RSA.pkcs1_padding
             )
             
-            # 3. Sichere das Geheimnis lokal
-            self.secret_vault.store_secret_safely(secret, "call_session")
+            # 5. Sende CALL_REQUEST an Server
+            request_msg = self.build_sip_message("MESSAGE", "server", {
+                "MESSAGE_TYPE": "CALL_REQUEST",
+                "TARGET_CLIENT_ID": recipient['id'],
+                "ENCRYPTED_CALL_DATA": base64.b64encode(encrypted_data).decode('utf-8'),
+                "CALLER_NAME": self._client_name,
+                "TIMESTAMP": int(time.time())
+            })
             
-            # 4. Sende INVITE Nachricht
-            request = build_sip_message(
-                "INVITE",
-                recipient['name'],
-                {
-                    "ENCRYPTED_SECRET": base64.b64encode(encrypted_secret).decode('utf-8'),
-                    "CALLER_NAME": self._client_name,
-                    "CALLER_IP": socket.gethostbyname(socket.gethostname()),
-                    "CALLER_PORT": str(self.audio_port_out)
-                }
-            )
-            self.client_socket.sendall(request.encode('utf-8'))
+            send_frame(self.client_socket, request_msg.encode('utf-8'))
+            print(f"[CALL] Call request sent to server for client {recipient['id']}")
             
-            # 5. Starte Audio-Streams
-            iv = secret[:16]
-            aes_key = secret[16:]
+            # Speichere Session-Daten für späteren Gebrauch
+            self.current_call_data = {
+                'recipient': recipient,
+                'wg_private_key': wg_private_key,
+                'wg_public_key': wg_public_key,
+                'aes_iv': iv,
+                'aes_key': aes_key,
+                'status': 'pending'
+            }
             
-            # Starte Audio-Empfang im Hintergrund
-            audio_receive_thread = threading.Thread(
-                target=self.receive_audio_stream,
-                args=(aes_key, iv),
-                daemon=True
-            )
-            audio_receive_thread.start()
-            
-            # Kurze Verzögerung, dann Audio senden
-            time.sleep(0.5)
-            audio_send_thread = threading.Thread(
-                target=self.send_audio_stream,
-                args=(aes_key, iv, recipient['ip'], int(recipient['port'])),
-                daemon=True
-            )
-            audio_send_thread.start()
-            
-            # UI aktualisieren
-            self.active_call = True
-            self.update_call_ui(active=True, caller_name=recipient['name'])
-            
-            print(f"Anruf an {recipient['name']} initiiert")
+            # Setze UI auf "Warte auf Antwort"
+            self.update_call_ui(active=True, status="waiting", caller_name=recipient['name'])
             
         except Exception as e:
-            print(f"Anruf fehlgeschlagen: {str(e)}")
+            print(f"[CALL ERROR] Failed to initiate call: {str(e)}")
+            messagebox.showerror("Call Failed", f"Could not initiate call: {str(e)}")
             self.cleanup_call_resources()
-            messagebox.showerror("Anruf fehlgeschlagen", str(e))
+
+
     def send_sip_response(self, sip_data, status_code, reason_phrase):
         """Sendet eine SIP-Antwort für eingehende Anrufe"""
         try:
@@ -2593,127 +3007,231 @@ class PHONEBOOK(ctk.CTk):
                 
         except Exception as e:
             print(f"[SIP RESPONSE ERROR] Failed to send response: {str(e)}")            
-    def handle_incoming_call(self, sip_data):
-        """
-        Verarbeitet eingehende Anrufe.
-        Kompatibel für beide Clients.
-        """
-        if self.active_call:
-            # Bereits in einem Anruf - busy senden
-            self.send_sip_response(sip_data, "486", "Busy Here")
-            return
-        
+    def _handle_incoming_call(self, msg):
+        """Verarbeitet eingehende Anrufe und fragt Benutzer ab"""
         try:
-            custom_data = sip_data.get('custom_data', {})
+            custom_data = msg.get('custom_data', {})
+            caller_name = custom_data.get('CALLER_NAME')
+            caller_wg_key = custom_data.get('WG_PUBLIC_KEY')
+            caller_client_id = custom_data.get('CALLER_CLIENT_ID')
             
-            # 1. Extrahiere und entschlüssele das Geheimnis
-            encrypted_secret = base64.b64decode(custom_data['ENCRYPTED_SECRET'])
+            if not all([caller_name, caller_wg_key, caller_client_id]):
+                print("[CALL ERROR] Missing call data")
+                self._send_call_response(msg, "rejected")
+                return
             
-            with open("client_private_key.pem", "rb") as f:
-                priv_key = RSA.load_key_string(f.read())
-                decrypted = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
+            # Frage Benutzer ob Anruf angenommen werden soll
+            accept = messagebox.askyesno("Incoming Call", 
+                                        f"Incoming call from {caller_name}. Accept?")
             
-            # 2. Überprüfe Overhead
-            if not decrypted.startswith(b"+++secret+++"):
-                raise ValueError("Ungültiges Geheimnisformat")
+            if accept:
+                # Generiere eigenes WG Schlüsselpaar
+                wg_private_key, wg_public_key = self.wg_manager.generate_keypair()
                 
-            secret = decrypted[11:59]  # 48 Bytes
-            self.current_secret = secret
-            self.secret_vault.store_secret_safely(secret, "incoming_call")
-            
-            # 3. Extrahiere Anrufer-Daten
-            caller_ip = custom_data['CALLER_IP']
-            caller_port = int(custom_data['CALLER_PORT'])
-            caller_name = custom_data['CALLER_NAME']
-            
-            # 4. Bestätige den Anruf
-            self.send_sip_response(sip_data, "200", "OK")
-            
-            # 5. Starte Audio-Streams
-            iv = secret[:16]
-            aes_key = secret[16:]
-            
-            # Audio zum Anrufer senden
-            audio_send_thread = threading.Thread(
-                target=self.send_audio_stream,
-                args=(aes_key, iv, caller_ip, caller_port),
-                daemon=True
+                # Setup WireGuard
+                public_ip = self._get_public_ip()
+                wg_config = self.wg_manager.create_interface_config(
+                    wg_private_key,
+                    caller_wg_key,
+                    f"{public_ip}:51820",
+                    "10.8.0.2"
+                )
+                
+                # WireGuard Interface starten
+                success = self.wg_manager.setup_wireguard_tunnel(wg_config)
+                
+                if success:
+                    # Speichere Call-Daten
+                    self.pending_call = {
+                        'caller_name': caller_name,
+                        'caller_client_id': caller_client_id,
+                        'wg_private_key': wg_private_key,
+                        'wg_peer_key': caller_wg_key,
+                        'status': 'wg_connected'
+                    }
+                    
+                    # Akzeptiere Anruf
+                    self._send_call_response(msg, "accepted")
+                    self.update_call_ui(active=True, status="connected", caller_name=caller_name)
+                else:
+                    print("[CALL ERROR] WireGuard setup failed")
+                    self._send_call_response(msg, "error")
+            else:
+                # Lehne Anruf ab
+                self._send_call_response(msg, "rejected")
+                
+        except Exception as e:
+            print(f"[CALL ERROR] Incoming call handling failed: {str(e)}")
+            self._send_call_response(msg, "error")
+    def _setup_call(self, call_data, caller_name):
+        """Richtet den Anruf ein"""
+        try:
+            # WireGuard Konfiguration
+            wg_config = self.wg_manager.create_interface_config(
+                self.wg_manager.generate_keypair()[0],  # Eigener private key
+                call_data['caller_wg_public_key'],
+                f"{self._get_public_ip()}:51820",  # Eigenes Endpoint
+                "10.8.0.2"  # Eigene IP im VPN
             )
-            audio_send_thread.start()
             
-            # Audio vom Anrufer empfangen
-            audio_receive_thread = threading.Thread(
-                target=self.receive_audio_stream,
-                args=(aes_key, iv),
-                daemon=True
-            )
-            audio_receive_thread.start()
+            self.wg_manager.setup_wireguard_tunnel(wg_config)
             
-            # 6. UI aktualisieren
+            # Audio Setup
+            self.current_secret = base64.b64decode(call_data['aes_iv']) + base64.b64decode(call_data['aes_key'])
+            
+            # Starte Audio-Streams
+            self._start_audio_streams()
+            
+            # UI aktualisieren
             self.active_call = True
             self.update_call_ui(active=True, caller_name=caller_name)
             
-            print(f"Eingehender Anruf von {caller_name} angenommen")
+        except Exception as e:
+            print(f"[CALL SETUP ERROR] {str(e)}")
+            raise
+
+    def _start_audio_streams(self):
+        """Startet die Audio-Streams nur wenn WG verbunden ist"""
+        if not (hasattr(self, 'pending_call') and 
+                self.pending_call.get('status') == 'wg_connected' and
+                hasattr(self, 'current_secret') and self.current_secret):
+            print("[AUDIO] Cannot start audio - missing requirements")
+            return
+            
+        try:
+            print("[AUDIO] Starting audio streams...")
+            
+            # Extrahiere AES Parameter
+            iv = self.current_secret[:16]
+            key = self.current_secret[16:48]
+            
+            # Ziel-IP für Audio-Streaming
+            target_ip = self.pending_call['recipient'].get('wg_ip', self.pending_call['recipient'].get('ip'))
+            
+            # Starte Audio-Streaming
+            self.audio_threads = [
+                threading.Thread(target=self.audio_stream_out, args=(target_ip, iv, key), daemon=True),
+                threading.Thread(target=self.audio_stream_in, args=(iv, key), daemon=True)
+            ]
+            
+            for thread in self.audio_threads:
+                thread.start()
+                
+            print("[AUDIO] Audio streams started successfully")
             
         except Exception as e:
-            print(f"Anrufannahme fehlgeschlagen: {str(e)}")
-            self.send_sip_response(sip_data, "500", "Internal Error")
-            self.cleanup_call_resources() 
+            print(f"[AUDIO ERROR] Failed to start audio streams: {str(e)}")          
+    def _send_call_response(self, sip_data, response):
+        """Sendet Antwort auf Anruf"""
+        try:
+            headers = sip_data.get('headers', {})
+            from_header = headers.get('FROM', '')
+            
+            response_msg = self.build_sip_message("MESSAGE", "server", {
+                "MESSAGE_TYPE": "CALL_RESPONSE",
+                "RESPONSE": response,
+                "ORIGINAL_CALL_ID": headers.get('CALL-ID', ''),
+                "TIMESTAMP": int(time.time())
+            })
+            
+            send_frame(self.client_socket, response_msg.encode('utf-8'))
+            
+        except Exception as e:
+            print(f"[CALL RESPONSE ERROR] {str(e)}")            
+
     def cleanup_call_resources(self):
-        """Bereinigt Anruf-Ressourcen"""
+        """Bereinigt Anruf-Ressourcen inklusive WireGuard"""
+        print("[CLEANUP] Cleaning up call resources including WireGuard...")
         self.active_call = False
         self.current_secret = None
+        
+        # WireGuard Interface herunterfahren
+        try:
+            if os.path.exists(self.wg_config_path):
+                subprocess.run(["wg-quick", "down", self.wg_config_path], 
+                             timeout=10, check=False)
+                os.remove(self.wg_config_path)
+                print("[CLEANUP] WireGuard interface stopped and config removed")
+        except Exception as e:
+            print(f"[CLEANUP WARNING] WireGuard cleanup failed: {str(e)}")
         
         # Secure Vault bereinigen
         if hasattr(self, 'secret_vault'):
             try:
                 self.secret_vault.wipe()
+                print("[CLEANUP] Vault wiped")
             except Exception as e:
                 print(f"[CLEANUP WARNING] Vault cleanup failed: {str(e)}")
         
+        # Audio-Threads stoppen
+        if hasattr(self, 'audio_threads'):
+            for thread in self.audio_threads:
+                try:
+                    if thread.is_alive():
+                        # Thread beenden
+                        pass
+                except:
+                    pass
+            self.audio_threads = []
+            print("[CLEANUP] Audio threads cleared")
+        
         # UI zurücksetzen
-        self.update_call_ui(active=False)
-        print("[CLEANUP] Call resources cleaned up")
+        try:
+            self.update_call_ui(active=False)
+            print("[CLEANUP] UI updated")
+        except Exception as e:
+            print(f"[CLEANUP WARNING] UI update failed: {str(e)}")
+        
+        # WireGuard Variablen zurücksetzen
+        self.wg_peer_ip = None
+        self.wg_my_ip = None
+        
+        print("[CLEANUP] All call resources cleaned up successfully")
 
     def update_call_ui(self, active, caller_name=None):
-        """Aktualisiert die UI für den Anrufstatus mit CustomTkinter"""
-        self.active_call = active
-        
-        if active:
-            status_text = f"Aktiver Anruf mit: {caller_name}" if caller_name else "Aktiver Anruf"
-            call_button_text = f"Beenden ({caller_name})" if caller_name else "Beenden"
-            call_button_color = "red"
-            print(f"[CALL UI] {status_text}")
-        else:
-            status_text = "Bereit für Anrufe"
-            call_button_text = "Anrufen"
-            call_button_color = "#006400"  # Dunkelgrün (wie Ihre anderen Buttons)
-            print("[CALL UI] Anruf beendet")
-        
-        # UI-Elemente aktualisieren
+        """Aktualisiert die UI für den Anrufstatus mit verbesserter Fehlerbehandlung"""
         try:
-            # Status-Label aktualisieren (falls vorhanden)
-            if hasattr(self, 'status_label'):
-                self.status_label.configure(text=status_text)
+            self.active_call = active
             
-            # Call-Button aktualisieren
-            if hasattr(self, 'call_button'):
-                self.call_button.configure(
-                    text=call_button_text,
-                    fg_color=call_button_color
-                )
-            
-            # Optional: Weitere UI-Anpassungen für Anrufstatus
             if active:
-                # Deaktiviere andere Buttons während eines Anrufs
-                self._disable_other_buttons(True)
+                status_text = f"Aktiver Anruf mit: {caller_name}" if caller_name else "Aktiver Anruf"
+                call_button_text = "Beenden"
+                call_button_color = "red"
+                print(f"[CALL UI] {status_text}")
             else:
-                # Reaktiviere andere Buttons nach Anrufende
-                self._disable_other_buttons(False)
+                status_text = "Bereit für Anrufe"
+                call_button_text = "Anrufen"
+                call_button_color = "#006400"  # Dunkelgrün
+                print("[CALL UI] Anruf beendet")
+            
+            # UI-Elemente aktualisieren mit erweiterter Fehlerbehandlung
+            try:
+                # Status-Label aktualisieren (falls vorhanden)
+                if hasattr(self, 'status_label') and self.status_label.winfo_exists():
+                    self.status_label.configure(text=status_text)
+                else:
+                    # Erstelle Status-Label falls nicht vorhanden
+                    self.status_label = ctk.CTkLabel(
+                        self.phonebook_tab,
+                        text=status_text,
+                        text_color="white",
+                        font=("Helvetica", 14)
+                    )
+                    self.status_label.place(relx=0.5, rely=0.02, anchor="n")
+                    print("[CALL UI] Status label created")
+                
+                # Call-Button aktualisieren
+                if hasattr(self, 'call_button') and self.call_button.winfo_exists():
+                    self.call_button.configure(
+                        text=call_button_text,
+                        fg_color=call_button_color
+                    )
+                
+            except Exception as e:
+                print(f"[UI UPDATE ERROR] {e}")
                 
         except Exception as e:
-            print(f"[UI ERROR] Failed to update call UI: {str(e)}")
-            traceback.print_exc()
+            print(f"[CALL UI CRITICAL ERROR] {e}")
 
     def _disable_other_buttons(self, disable):
         """Hilfsfunktion zum Deaktivieren/Reaktivieren anderer Buttons"""
@@ -2730,40 +3248,102 @@ class PHONEBOOK(ctk.CTk):
                 except Exception as e:
                     print(f"[UI WARNING] Could not update button {btn_name}: {str(e)}")
         if hasattr(self, 'callStatusChanged'):
-            self.callStatusChanged.emit(status_text)                  
-    def send_audio_stream(self, key, seed, target_ip, target_port):
+            self.callStatusChanged.emit(status_text)    
+    def setup_audio(self):
         """
-        Sendet verschlüsselte Audiodaten an einen Ziel-Client.
-        Kompatibel für beide Clients.
+        Audio-Initialisierung mit umfassender Fehlerbehandlung
         """
-        audio = pyaudio.PyAudio()
-        stream = audio.open(format=FORMAT, channels=CHANNELS,
-                           rate=RATE, input=True, frames_per_buffer=CHUNK)
-
-        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        audio = None
+        stream_in = None
+        stream_out = None
+        
+        try:
+            audio = pyaudio.PyAudio()
+            
+            # Audio-Device Konfiguration mit Fehlerbehandlung
             try:
-                # Verbinde zum Ziel-Client
-                s.connect((target_ip, target_port))
+                # Versuche Standard-Devices
+                stream_in = audio.open(
+                    format=FORMAT, 
+                    channels=CHANNELS,
+                    rate=RATE, 
+                    input=True,
+                    frames_per_buffer=CHUNK,
+                    input_device_index=None  # Auto-select
+                )
                 
-                # Sende den IV/Seed zuerst (16 Bytes)
-                s.sendall(seed)
+                stream_out = audio.open(
+                    format=FORMAT, 
+                    channels=CHANNELS,
+                    rate=RATE, 
+                    output=True,
+                    frames_per_buffer=CHUNK,
+                    output_device_index=None  # Auto-select
+                )
                 
-                print(f"Sende Audio an {target_ip}:{target_port}...")
-                
-                # Sende Audio-Daten
-                while self.active_call:
-                    chunk = stream.read(CHUNK)
-                    encrypted_chunk = encrypt_audio_chunk(chunk, key, seed)
-                    s.sendall(encrypted_chunk)
-                    
             except Exception as e:
-                print(f"Audio-Sendefehler: {str(e)}")
-            finally:
-                stream.stop_stream()
-                stream.close()
-                audio.terminate()
-                s.close()           
-
+                print(f"[AUDIO WARN] Standard audio failed: {e}")
+                
+                # Fallback: Suche nach verfügbaren Devices
+                device_count = audio.get_device_count()
+                for i in range(device_count):
+                    device_info = audio.get_device_info_by_index(i)
+                    print(f"[AUDIO DEBUG] Device {i}: {device_info['name']}, "
+                          f"in: {device_info['maxInputChannels']}, "
+                          f"out: {device_info['maxOutputChannels']}")
+                    
+                    if device_info['maxInputChannels'] > 0:
+                        try:
+                            stream_in = audio.open(
+                                format=FORMAT,
+                                channels=CHANNELS,
+                                rate=RATE,
+                                input=True,
+                                frames_per_buffer=CHUNK,
+                                input_device_index=i
+                            )
+                            print(f"[AUDIO INFO] Using input device: {device_info['name']}")
+                            break
+                        except Exception as e:
+                            print(f"[AUDIO ERROR] Input device {i} failed: {e}")
+                            continue
+                
+                for i in range(device_count):
+                    device_info = audio.get_device_info_by_index(i)
+                    if device_info['maxOutputChannels'] > 0:
+                        try:
+                            stream_out = audio.open(
+                                format=FORMAT,
+                                channels=CHANNELS,
+                                rate=RATE,
+                                output=True,
+                                frames_per_buffer=CHUNK,
+                                output_device_index=i
+                            )
+                            print(f"[AUDIO INFO] Using output device: {device_info['name']}")
+                            break
+                        except Exception as e:
+                            print(f"[AUDIO ERROR] Output device {i} failed: {e}")
+                            continue
+                
+                # Wenn immer noch keine Devices gefunden wurden
+                if stream_in is None or stream_out is None:
+                    print("[AUDIO WARN] No audio devices found, using dummy mode")
+                    # Setze Streams auf None für Dummy-Modus
+                    
+        except Exception as e:
+            print(f"[AUDIO ERROR] Audio setup failed: {e}")
+            # Versuche es ohne Audio
+            return None, None, None
+            
+        return audio, stream_in, stream_out                          
+    def send_call_request(self, callee_id):
+        request_msg = self.build_sip_message("MESSAGE", "server", {
+            "CALL_TYPE": "REQUEST",
+            "CALLEE_ID": callee_id,
+            "TIMESTAMP": int(time.time())
+        })
+        send_frame(self.client_socket, request_msg.encode('utf-8'))
 
 
 def is_linux():
