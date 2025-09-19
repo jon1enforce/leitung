@@ -10,13 +10,13 @@ import sys
 import pyaudio
 import uuid
 import random
-import subprocess
 import customtkinter as ctk
 import binascii
 from datetime import datetime
 from PIL import ImageFont
 import base64
 import re
+import subprocess
 import tkinter as tk
 import stun
 import struct
@@ -25,7 +25,16 @@ import platform
 import mmap
 import traceback
 from typing import Optional, NoReturn, Tuple
-import seccomp
+# Seccomp nur unter Linux importieren
+if sys.platform.startswith("linux"):
+    try:
+        import seccomp
+        HAS_SECCOMP = True
+    except ImportError:
+        HAS_SECCOMP = False
+        print("[WARN] seccomp nicht verfügbar - Laufe ohne Sandboxing")
+else:
+    HAS_SECCOMP = False
 from ctypes import CDLL, c_void_p, c_int, c_ubyte, byref, cast, POINTER, create_string_buffer, c_size_t, c_char_p
 import hmac
 import hashlib
@@ -1685,14 +1694,14 @@ class PHONEBOOK(ctk.CTk):
                 return
             
             if not self.selected_entry:
-                messagebox.showerror("Error", "Please select a contact first")
+                messagebox.showerror("Error", "Bitte wählen Sie zuerst einen Kontakt aus")
                 return
             
             # Überprüfe ob alle benötigten Daten vorhanden sind
             required_fields = ['id', 'name', 'public_key']
             for field in required_fields:
                 if field not in self.selected_entry:
-                    messagebox.showerror("Error", f"Contact missing required field: {field}")
+                    messagebox.showerror("Error", f"Kontakt fehlt erforderliches Feld: {field}")
                     return
             
             # 1. Generiere WireGuard Schlüsselpaar
@@ -1701,7 +1710,7 @@ class PHONEBOOK(ctk.CTk):
                 print(f"[CALL] Generated WG keys: priv={wg_private_key[:20]}..., pub={wg_public_key[:20]}...")
             except Exception as e:
                 print(f"[CALL ERROR] Failed to generate WG keys: {str(e)}")
-                messagebox.showerror("Error", "Failed to generate encryption keys")
+                messagebox.showerror("Error", "Konnte Verschlüsselungsschlüssel nicht generieren")
                 return
             
             # 2. Verschlüssele WG Public Key mit Server Public Key
@@ -1715,11 +1724,11 @@ class PHONEBOOK(ctk.CTk):
                 encrypted_wg_key_b64 = base64.b64encode(encrypted_wg_key).decode('utf-8')
             except Exception as e:
                 print(f"[CALL ERROR] Failed to encrypt WG key: {str(e)}")
-                messagebox.showerror("Error", "Failed to encrypt connection data")
+                messagebox.showerror("Error", "Konnte Verbindungsdaten nicht verschlüsseln")
                 return
             
             # 3. Sende CALL_REQUEST mit verschlüsseltem WG Public Key
-            request_msg = self.build_sip_message("MESSAGE", "server", {
+            request_msg = build_sip_message("MESSAGE", "server", {
                 "MESSAGE_TYPE": "CALL_REQUEST",
                 "TARGET_CLIENT_ID": self.selected_entry['id'],
                 "CALLER_NAME": self._client_name,
@@ -1732,7 +1741,7 @@ class PHONEBOOK(ctk.CTk):
                 print(f"[CALL] Call request sent to server for client {self.selected_entry['id']}")
             except Exception as e:
                 print(f"[CALL ERROR] Failed to send call request: {str(e)}")
-                messagebox.showerror("Error", "Failed to initiate call")
+                messagebox.showerror("Error", "Konnte Anruf nicht initiieren")
                 return
             
             # Speichere WG Daten für später
@@ -1752,7 +1761,7 @@ class PHONEBOOK(ctk.CTk):
                 
         except Exception as e:
             print(f"[CALL CLICK ERROR] {e}")
-            messagebox.showerror("Error", f"Unexpected error: {str(e)}")
+            messagebox.showerror("Error", f"Unerwarteter Fehler: {str(e)}")
             if hasattr(self, 'pending_call'):
                 del self.pending_call
 
@@ -1885,58 +1894,51 @@ class PHONEBOOK(ctk.CTk):
             return self._process_queue()
         return True
     def _handle_identity_challenge(self, message):
-        """Verarbeitet Identity Challenge vom Server"""
+        """Verarbeitet Identity Challenge vom Server - KORRIGIERTE VERSION"""
         try:
             print("\n" + "="*60)
             print("[IDENTITY] START: Handling identity challenge from server")
             print("="*60)
             
-            # 1. Parse SIP message
-            print("[DEBUG] Step 1: Parsing SIP message")
+            # 1. Parse SIP message als Key-Value (nicht JSON)
+            print("[DEBUG] Step 1: Parsing SIP message as key-value")
             sip_data = parse_sip_message(message)
             if not sip_data:
                 print("[IDENTITY ERROR] Invalid SIP message format")
                 return False
             
-            print(f"[DEBUG] SIP data keys: {list(sip_data.keys())}")
-            if 'headers' in sip_data:
-                print(f"[DEBUG] Headers: {list(sip_data['headers'].keys())}")
-            if 'custom_data' in sip_data:
-                print(f"[DEBUG] Custom data keys: {list(sip_data['custom_data'].keys())}")
+            # 2. Extrahiere custom_data aus Body (Key-Value Format)
+            body = sip_data.get('body', '')
+            custom_data = {}
+            for line in body.split('\n'):
+                if ': ' in line:
+                    key, value = line.split(': ', 1)
+                    custom_data[key.strip()] = value.strip()
             
-            # 2. Extract challenge data
-            print("[DEBUG] Step 2: Extracting challenge data")
-            custom_data = sip_data.get('custom_data', {})
+            print(f"[DEBUG] Custom data extracted: {list(custom_data.keys())}")
+            
+            # 3. Extract challenge data
             encrypted_challenge_b64 = custom_data.get('ENCRYPTED_CHALLENGE')
             challenge_id = custom_data.get('CHALLENGE_ID')
             
-            print(f"[DEBUG] Encrypted challenge present: {encrypted_challenge_b64 is not None}")
-            print(f"[DEBUG] Challenge ID present: {challenge_id is not None}")
-            print(f"[DEBUG] Challenge ID: {challenge_id}")
-            print(f"[DEBUG] Encrypted challenge length: {len(encrypted_challenge_b64) if encrypted_challenge_b64 else 0}")
-            
             if not encrypted_challenge_b64 or not challenge_id:
-                print("[IDENTITY ERROR] Missing challenge data")
-                print(f"[DEBUG] Available custom_data: {custom_data}")
+                print("[IDENTITY ERROR] Missing challenge data in body")
+                print(f"[DEBUG] Body content: {body}")
                 return False
             
-            # 3. Base64 decode
-            print("[DEBUG] Step 3: Base64 decoding challenge")
+            # 4. Base64 decode
+            print("[DEBUG] Base64 decoding challenge")
             try:
                 encrypted_challenge = base64.b64decode(encrypted_challenge_b64)
                 print(f"[DEBUG] Decoded challenge length: {len(encrypted_challenge)} bytes")
-                print(f"[DEBUG] First 16 bytes (hex): {encrypted_challenge[:16].hex()}")
             except Exception as e:
                 print(f"[IDENTITY ERROR] Base64 decode failed: {str(e)}")
                 return False
             
-            # 4. Decrypt with client private key
-            print("[DEBUG] Step 4: Decrypting with client private key")
+            # 5. Decrypt with client private key
+            print("[DEBUG] Decrypting with client private key")
             try:
                 private_key = load_privatekey()
-                print(f"[DEBUG] Client private key loaded: {len(private_key)} chars")
-                print(f"[DEBUG] Private key starts with: {private_key[:50]}...")
-                
                 priv_key = RSA.load_key_string(private_key.encode())
                 decrypted_challenge = priv_key.private_decrypt(
                     encrypted_challenge, 
@@ -1944,103 +1946,54 @@ class PHONEBOOK(ctk.CTk):
                 )
                 challenge = decrypted_challenge.decode('utf-8')
                 print(f"[DEBUG] Decrypted challenge: {challenge}")
-                print(f"[DEBUG] Decrypted challenge length: {len(challenge)} chars")
                 
             except Exception as e:
                 print(f"[IDENTITY ERROR] Decryption failed: {str(e)}")
-                import traceback
-                traceback.print_exc()
                 return False
             
-            # 5. Create response
-            print("[DEBUG] Step 5: Creating response")
+            # 6. Create response
             response_data = challenge + "VALIDATED"
             print(f"[DEBUG] Response data: {response_data}")
-            print(f"[DEBUG] Response length: {len(response_data)} chars")
             
-            # 6. Encrypt response with server public key
-            print("[DEBUG] Step 6: Encrypting with server public key")
+            # 7. Encrypt response with server public key
+            print("[DEBUG] Encrypting with server public key")
             try:
                 server_pubkey = load_server_publickey()
-                print(f"[DEBUG] Server pubkey loaded: {len(server_pubkey)} chars")
-                print(f"[DEBUG] Server pubkey starts with: {repr(server_pubkey[:50])}")
-                print(f"[DEBUG] Server pubkey ends with: {repr(server_pubkey[-50:])}")
-                
-                # ✅✅✅ KRITISCHE KORREKTUR: Ersetze literal \n durch echte Newlines
+                # Bereinige den Key von literal \n Zeichen
                 if '\\n' in server_pubkey:
-                    print("[DEBUG] Found literal \\n in key - replacing with actual newlines")
-                    original_pubkey = server_pubkey
                     server_pubkey = server_pubkey.replace('\\n', '\n')
-                    print(f"[DEBUG] Fixed key starts with: {repr(server_pubkey[:50])}")
-                    print(f"[DEBUG] Fixed key ends with: {repr(server_pubkey[-50:])}")
                 
-                # Versuche den Key zu laden
-                print("[DEBUG] Attempting to load key with BIO...")
                 server_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(server_pubkey.encode()))
-                print("[DEBUG] Key loaded successfully with BIO")
-                
                 encrypted_response = server_key.public_encrypt(
                     response_data.encode('utf-8'), 
                     RSA.pkcs1_padding
                 )
-                print(f"[DEBUG] Encrypted response length: {len(encrypted_response)} bytes")
-                print(f"[DEBUG] First 16 bytes (hex): {encrypted_response[:16].hex()}")
+                encrypted_response_b64 = base64.b64encode(encrypted_response).decode('utf-8')
                 
             except Exception as e:
                 print(f"[IDENTITY ERROR] Encryption failed: {str(e)}")
-                print("[DEBUG] Trying alternative loading method...")
-                
-                try:
-                    # Alternative: Speichere Key temporär und lade von Datei
-                    with open("temp_server_key.pem", "w") as f:
-                        f.write(server_pubkey)
-                    server_key = RSA.load_pub_key("temp_server_key.pem")
-                    encrypted_response = server_key.public_encrypt(
-                        response_data.encode('utf-8'), 
-                        RSA.pkcs1_padding
-                    )
-                    print("[DEBUG] Encryption successful with file method")
-                    os.remove("temp_server_key.pem")
-                except Exception as e2:
-                    print(f"[IDENTITY ERROR] File method also failed: {str(e2)}")
-                    import traceback
-                    traceback.print_exc()
-                    return False
+                return False
             
-            # 7. Send response back to server
-            print("[DEBUG] Step 7: Sending response to server")
+            # 8. Send response back to server als Key-Value (nicht JSON)
+            print("[DEBUG] Sending key-value response to server")
             
-            # ✅✅✅ KRITISCHE KORREKTUR: Verwende Dictionary für JSON-Format
-            response_payload = {
-                "MESSAGE_TYPE": "IDENTITY_RESPONSE",
-                "CHALLENGE_ID": challenge_id,
-                "ENCRYPTED_RESPONSE": base64.b64encode(encrypted_response).decode('utf-8')
-            }
-            
-            # ✅✅✅ ERWEITERTES DEBUGGING
-            print(f"[DEBUG] Response payload: {response_payload}")
-            print(f"[DEBUG] ENCRYPTED_RESPONSE length: {len(response_payload['ENCRYPTED_RESPONSE'])}")
-            print(f"[DEBUG] ENCRYPTED_RESPONSE preview: {response_payload['ENCRYPTED_RESPONSE'][:50]}...")
-            
-            response_msg = build_sip_message(
-                "MESSAGE", 
-                "server", 
-                response_payload  # ← Als Dictionary für JSON-Format
+            response_body = (
+                f"MESSAGE_TYPE: IDENTITY_RESPONSE\r\n"
+                f"CHALLENGE_ID: {challenge_id}\r\n"
+                f"ENCRYPTED_RESPONSE: {encrypted_response_b64}"
             )
             
-            print(f"[DEBUG] Response message length: {len(response_msg)} chars")
-            print(f"[DEBUG] Response message preview: {repr(response_msg[:300])}")
-            print(f"[DEBUG] Contains MESSAGE_TYPE: {'MESSAGE_TYPE' in response_msg}")
-            print(f"[DEBUG] Contains CHALLENGE_ID: {'CHALLENGE_ID' in response_msg}")
-            print(f"[DEBUG] Contains ENCRYPTED_RESPONSE: {'ENCRYPTED_RESPONSE' in response_msg}")
-            print(f"[DEBUG] Response payload keys: {list(response_payload.keys())}")
+            response_msg = (
+                f"MESSAGE sip:server SIP/2.0\r\n"
+                f"From: <sip:{self._client_name}@client>\r\n"
+                f"To: <sip:server>\r\n"
+                f"Content-Type: text/plain\r\n"
+                f"Content-Length: {len(response_body)}\r\n\r\n"
+                f"{response_body}"
+            )
             
             send_frame(self.client_socket, response_msg.encode('utf-8'))
             print("[IDENTITY] Response sent to server successfully!")
-            
-            print("="*60)
-            print("[IDENTITY] END: Challenge handling completed successfully")
-            print("="*60)
             
             return True
             
@@ -2048,11 +2001,6 @@ class PHONEBOOK(ctk.CTk):
             print(f"[IDENTITY ERROR] Challenge handling failed: {str(e)}")
             import traceback
             traceback.print_exc()
-            
-            print("="*60)
-            print("[IDENTITY] END: Challenge handling failed")
-            print("="*60)
-            
             return False
 
 
@@ -2156,10 +2104,10 @@ class PHONEBOOK(ctk.CTk):
             print(f"[CALL ERROR] Failed to decrypt session key: {str(e)}")
     def _find_my_client_id(self):
         """Ermittelt die eigene Client-ID"""
-        with self.clients_lock:
-            for client_id, client_data in self.clients.items():
-                if client_data.get('name') == self._client_name:
-                    return client_id
+        if hasattr(self, 'phonebook_entries'):
+            for entry in self.phonebook_entries:
+                if isinstance(entry, dict) and entry.get('name') == self._client_name:
+                    return entry.get('id')
         return None
 
     def _get_public_ip(self):
@@ -2171,7 +2119,21 @@ class PHONEBOOK(ctk.CTk):
             s.close()
             return ip
         except:
-            return "127.0.0.1"            
+            return "127.0.0.1"
+
+    def _call_timeout_watchdog(self):
+        """Überwacht Call-Timeout"""
+        timeout = 30  # 30 Sekunden Timeout
+        start_time = time.time()
+        
+        while hasattr(self, 'pending_call') and self.pending_call.get('status') == 'request_sent':
+            if time.time() - start_time > timeout:
+                print("[CALL] Timeout waiting for call response")
+                self.end_current_call()
+                messagebox.showinfo("Call Failed", "Keine Antwort vom Empfänger")
+                break
+            time.sleep(1)    
+                   
     def _handle_call_response(self, msg):
         """Verarbeitet Antwort auf Anrufanfrage"""
         try:
@@ -2191,7 +2153,7 @@ class PHONEBOOK(ctk.CTk):
                 wg_config = self.wg_manager.create_interface_config(
                     self.pending_call['wg_private_key'],
                     self.pending_call.get('recipient', {}).get('public_key', ''),
-                    f"{public_ip}:{WG_PORT}", 
+                    f"{public_ip}:51820", 
                     "10.8.0.2"  # Client IP im WG-Netzwerk
                 )
                 
@@ -2203,7 +2165,7 @@ class PHONEBOOK(ctk.CTk):
                                       caller_name=self.pending_call['recipient']['name'])
                     
                     # Bestätigung an Server senden
-                    ack_msg = self.build_sip_message("MESSAGE", "server", {
+                    ack_msg = build_sip_message("MESSAGE", "server", {
                         "MESSAGE_TYPE": "WG_CONNECTED",
                         "CLIENT_ID": self._find_my_client_id(),
                         "TIMESTAMP": int(time.time())
@@ -2219,12 +2181,12 @@ class PHONEBOOK(ctk.CTk):
                     
             elif response == "rejected":
                 print("[CALL] Call rejected by recipient")
-                messagebox.showinfo("Call Rejected", "The recipient rejected your call")
+                messagebox.showinfo("Call Rejected", "Der Empfänger hat Ihren Anruf abgelehnt")
                 self.end_current_call()
                 
             elif response == "busy":
                 print("[CALL] Recipient is busy")
-                messagebox.showinfo("Call Failed", "The recipient is currently busy")
+                messagebox.showinfo("Call Failed", "Der Empfänger ist derzeit beschäftigt")
                 self.end_current_call()
                 
             else:
@@ -2233,7 +2195,7 @@ class PHONEBOOK(ctk.CTk):
                 
         except Exception as e:
             print(f"[CALL ERROR] Response handling failed: {str(e)}")
-            self.end_current_call()       
+            self.end_current_call()
     def _process_queue(self):
         """Verarbeitet Nachrichten aus der Queue - kompatibel mit existing SIP methods"""
         self._processing_queue = True

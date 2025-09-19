@@ -1568,32 +1568,108 @@ class Server:
             for client_id, client_data in self.clients.items():
                 if client_data.get('name') == client_name:
                     return client_id
+        return None        
+    def normalize_client_public_key(self, key):
+        """
+        Normalisiert einen Client Public Key für M2Crypto mit erweitertem Debugging
+        """
+        if not key or not isinstance(key, str):
+            print("[DEBUG] Key is None or not a string")
+            return None
+        
+        key = key.strip()
+        print(f"[DEBUG] Original key length: {len(key)}")
+        print(f"[DEBUG] Key starts with: {repr(key[:50])}")
+        print(f"[DEBUG] Key ends with: {repr(key[-50:])}")
+        
+        # Fall 1: Bereits korrektes PEM Format
+        if key.startswith('-----BEGIN PUBLIC KEY-----') and key.endswith('-----END PUBLIC KEY-----'):
+            print("[DEBUG] Key is already in PEM format")
+            return key
+        
+        # Fall 2: Base64 content ohne PEM Header
+        try:
+            # Entferne eventuelle Prefixe wie "SERVER_PUBLIC_KEY: "
+            if ':' in key:
+                key = key.split(':', 1)[1].strip()
+            
+            # Teste ob es Base64 ist
+            import re
+            # Entferne alle Whitespace Zeichen
+            clean_key = re.sub(r'\s+', '', key)
+            base64.b64decode(clean_key)
+            
+            # Wrap in PEM headers
+            pem_key = f"-----BEGIN PUBLIC KEY-----\n{clean_key}\n-----END PUBLIC KEY-----"
+            print("[DEBUG] Successfully converted Base64 to PEM format")
+            return pem_key
+            
+        except Exception as e:
+            print(f"[DEBUG] Key is not valid Base64: {e}")
+        
+        # Fall 3: Key enthält literal \n Zeichen
+        if '\\n' in key:
+            print("[DEBUG] Key contains literal \\n characters, replacing...")
+            key = key.replace('\\n', '\n')
+            if key.startswith('-----BEGIN PUBLIC KEY-----') and key.endswith('-----END PUBLIC KEY-----'):
+                return key
+        
+        print("[DEBUG] Key format could not be normalized")
         return None             
     def test_identity_sip(self, client_socket, client_pubkey, client_name):
         """
         Führt einen Identity-Test über SIP-Nachrichten durch mit erweitertem Debugging
         """
-        timeout = 30
+        timeout = 45
+        challenge_id = None
+        
         try:
             print(f"[DEBUG] Starting identity test for client: {client_name}")
             
-            # 0. Server Private Key verwenden (nicht temp_server_key.pem!)
+            # 0. Server Private Key verwenden
             private_key_path = "server_private_key.pem"
             if not os.path.exists(private_key_path):
                 print(f"[DEBUG] ERROR: Server private key file not found: {private_key_path}")
-                print(f"[DEBUG] Current working directory: {os.getcwd()}")
-                print(f"[DEBUG] Files in directory: {os.listdir('.')}")
                 return False, None
             
             print(f"[DEBUG] Using server private key: {private_key_path}")
             
-            # 1. Challenge generieren
+            # 1. Private Key laden und validieren
+            try:
+                with open(private_key_path, "rb") as f:
+                    priv_key_data = f.read()
+                    priv_key = RSA.load_key_string(priv_key_data)
+                
+                # Teste ob der private Schlüssel funktioniert
+                test_data = b"test_message_123"
+                encrypted_test = priv_key.public_encrypt(test_data, RSA.pkcs1_padding)
+                decrypted_test = priv_key.private_decrypt(encrypted_test, RSA.pkcs1_padding)
+                
+                if decrypted_test != test_data:
+                    print("[DEBUG] ERROR: Private key test failed - decryption mismatch")
+                    print(f"Expected: {test_data}")
+                    print(f"Got: {decrypted_test}")
+                    return False, None
+                else:
+                    print("[DEBUG] Private key test PASSED")
+                    
+            except Exception as e:
+                print(f"[DEBUG] ERROR: Private key test failed: {e}")
+                import traceback
+                traceback.print_exc()
+                return False, None
+            
+            # 2. Challenge generieren
             challenge = base64.b64encode(secure_random(16)).decode('ascii')
             challenge_id = str(uuid.uuid4())
             print(f"[SERVER] Generated SIP challenge: {challenge} (ID: {challenge_id})")
             
-            # 2. Challenge mit Client-Public-Key verschlüsseln
+            # 3. Challenge mit Client-Public-Key verschlüsseln
             try:
+                if '\\n' in client_pubkey:
+                    print("[DEBUG] Replacing literal \\n with actual newlines")
+                    client_pubkey = client_pubkey.replace('\\n', '\n')
+                
                 pub_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(client_pubkey.encode()))
                 encrypted_challenge = pub_key.public_encrypt(
                     challenge.encode('utf-8'), 
@@ -1602,9 +1678,11 @@ class Server:
                 print(f"[DEBUG] Challenge encrypted successfully, length: {len(encrypted_challenge)} bytes")
             except Exception as e:
                 print(f"[DEBUG] Encryption error: {e}")
+                import traceback
+                traceback.print_exc()
                 return False, challenge_id
             
-            # 3. Challenge per SIP-Nachricht senden
+            # 4. Challenge senden
             challenge_msg = self.build_sip_message("MESSAGE", client_name, {
                 "MESSAGE_TYPE": "IDENTITY_CHALLENGE",
                 "CHALLENGE_ID": challenge_id,
@@ -1612,24 +1690,16 @@ class Server:
                 "TIMESTAMP": int(time.time())
             })
             
-            print(f"[DEBUG] Sending challenge message: {challenge_msg[:200]}...")
-            send_frame(client_socket, challenge_msg)
+            send_frame(client_socket, challenge_msg.encode('utf-8'))
             print("[SERVER] Sent SIP challenge to client")
             
-            # 4. Response vom Client empfangen - NON-BLOCKING mit select
-            client_socket.settimeout(0.1)
+            # 5. Response empfangen
+            client_socket.settimeout(5.0)
             start_time = time.time()
-            identity_response_found = False
             response_text = None
-            
-            print(f"[DEBUG] Waiting for identity response with challenge_id: {challenge_id}")
             
             while time.time() - start_time < timeout:
                 try:
-                    ready_to_read, _, _ = select.select([client_socket], [], [], 0.1)
-                    if not ready_to_read:
-                        continue
-                    
                     response_data = recv_frame(client_socket)
                     if not response_data:
                         continue
@@ -1639,34 +1709,27 @@ class Server:
                     else:
                         response_text = str(response_data)
                     
-                    print(f"[DEBUG] Received message type: {response_text.split()[0] if response_text else 'unknown'}")
+                    # Ping handling
+                    if "PING" in response_text:
+                        pong_response = self.build_sip_message("MESSAGE", client_name, {"PONG": "true"})
+                        send_frame(client_socket, pong_response.encode('utf-8'))
+                        continue
                     
-                    # Prüfen ob es die gesuchte Identity-Response ist
+                    # Identity Response check
                     if "IDENTITY_RESPONSE" in response_text and challenge_id in response_text:
                         print("[DEBUG] ✓ FOUND MATCHING IDENTITY_RESPONSE!")
-                        identity_response_found = True
                         break
-                    elif "IDENTITY_RESPONSE" in response_text:
-                        print("[DEBUG] Found IDENTITY_RESPONSE but wrong challenge_id")
-                    elif "PING" in response_text:
-                        print("[DEBUG] Ignoring PING message")
-                    else:
-                        print(f"[DEBUG] Ignoring other message")
                         
                 except socket.timeout:
                     continue
                 except Exception as e:
                     print(f"[DEBUG] Error receiving response: {e}")
                     continue
-            
-            if not identity_response_found:
-                print("[DEBUG] Identity test failed: No identity response found within timeout")
+            else:
+                print("[DEBUG] Identity test failed: Timeout")
                 return False, challenge_id
             
-            # 5. Response parsen und verifizieren
-            print(f"[DEBUG] Parsing identity response...")
-            
-            # Extrahiere den Body der SIP-Nachricht
+            # 6. Response parsen
             lines = response_text.split('\r\n')
             body_started = False
             body_lines = []
@@ -1678,54 +1741,50 @@ class Server:
                 if body_started:
                     body_lines.append(line.strip())
             
-            response_body = '\n'.join(body_lines)
-            print(f"[DEBUG] Extracted response body: {response_body}")
-            
-            # Manuell die Custom Data aus dem Body parsen
+            # Custom Data parsen
             custom_data = {}
             for line in body_lines:
-                if ':' in line:
-                    key, value = line.split(':', 1)
+                if ': ' in line:
+                    key, value = line.split(': ', 1)
                     custom_data[key.strip()] = value.strip()
             
-            print(f"[DEBUG] Manually parsed custom data: {custom_data}")
-            
-            # Response-Daten extrahieren und verifizieren
             response_challenge_id = custom_data.get('CHALLENGE_ID')
-            encrypted_response = custom_data.get('ENCRYPTED_RESPONSE')
-            message_type = custom_data.get('MESSAGE_TYPE')
+            encrypted_response_b64 = custom_data.get('ENCRYPTED_RESPONSE')
             
-            if message_type != "IDENTITY_RESPONSE":
-                print("[DEBUG] Identity test failed: Not an identity response")
-                return False, challenge_id
-            
-            if not all([response_challenge_id, encrypted_response]):
+            if not all([response_challenge_id, encrypted_response_b64]):
                 print("[DEBUG] Identity test failed: Missing response fields")
                 return False, challenge_id
             
             if response_challenge_id != challenge_id:
-                print(f"[DEBUG] Identity test failed: Challenge ID mismatch")
+                print("[DEBUG] Identity test failed: Challenge ID mismatch")
                 return False, challenge_id
             
-            # Response entschlüsseln und verifizieren
+            # 7. Response entschlüsseln
             try:
-                encrypted_response_bytes = base64.b64decode(encrypted_response)
+                encrypted_response_bytes = base64.b64decode(encrypted_response_b64)
                 print(f"[DEBUG] Decoded encrypted response: {len(encrypted_response_bytes)} bytes")
                 
-                # Server Private Key laden (WICHTIG: server_private_key.pem, nicht temp_server_key.pem!)
-                with open(private_key_path, "rb") as f:
-                    priv_key = RSA.load_key_string(f.read())
+                decrypted_response = priv_key.private_decrypt(encrypted_response_bytes, RSA.pkcs1_padding)
                 
-                decrypted_response = priv_key.private_decrypt(
-                    encrypted_response_bytes, 
-                    RSA.pkcs1_padding
-                )
+                if decrypted_response is None:
+                    print("[DEBUG] Identity test FAILED: Decryption returned None")
+                    return False, challenge_id
+                    
+                if len(decrypted_response) == 0:
+                    print("[DEBUG] Identity test FAILED: Decryption returned empty data")
+                    return False, challenge_id
                 
-                decrypted_text = decrypted_response.decode('utf-8')
-                print(f"[DEBUG] Decrypted response: '{decrypted_text}'")
+                # Decoding versuchen
+                try:
+                    decrypted_text = decrypted_response.decode('utf-8')
+                except UnicodeDecodeError:
+                    try:
+                        decrypted_text = decrypted_response.decode('latin-1')
+                    except:
+                        print("[DEBUG] Identity test FAILED: Could not decode response")
+                        return False, challenge_id
                 
                 expected_response = challenge + "VALIDATED"
-                print(f"[DEBUG] Expected response: '{expected_response}'")
                 
                 if decrypted_text == expected_response:
                     print("[SERVER] Identity test PASSED")
@@ -1733,171 +1792,79 @@ class Server:
                         "STATUS": "IDENTITY_VERIFIED",
                         "CHALLENGE_ID": challenge_id
                     })
-                    send_frame(client_socket, success_msg)
+                    send_frame(client_socket, success_msg.encode('utf-8'))
                     return True, challenge_id
                 else:
-                    print("[DEBUG] Identity test failed: Invalid response content")
-                    print(f"[DEBUG]   Expected: '{expected_response}' (length: {len(expected_response)})")
-                    print(f"[DEBUG]   Received: '{decrypted_text}' (length: {len(decrypted_text)})")
+                    print("[DEBUG] Identity test FAILED: Response mismatch")
+                    print(f"Expected: {expected_response}")
+                    print(f"Got: {decrypted_text}")
                     return False, challenge_id
                     
             except Exception as e:
-                print(f"[DEBUG] Response verification error: {e}")
+                print(f"[DEBUG] Identity test FAILED: Decryption error: {e}")
                 import traceback
                 traceback.print_exc()
                 return False, challenge_id
                 
         except Exception as e:
-            print(f"[DEBUG] Identity test error: {e}")
+            print(f"[DEBUG] Identity test FAILED: {e}")
             import traceback
             traceback.print_exc()
-            return False, None
-    def process_identity_response(self, sip_data, client_socket):
-        """Verarbeitet die Identity-Response vom Client und validiert die Challenge"""
+            return False, challenge_id
+    def _process_identity_response(self, sip_data, raw_data):
+        """Verarbeitet Identity Response - KORRIGIERT FÜR KEY-VALUE"""
         try:
-            print("\n=== SERVER IDENTITY RESPONSE PROCESSING ===")
-            print(f"[DEBUG] Processing identity response from client")
+            print("[DEBUG] ✓ FOUND MATCHING IDENTITY_RESPONSE!")
             
-            # Extrahiere die Custom-Daten aus der SIP-Nachricht
-            custom_data = sip_data.get('custom_data', {})
-            print(f"[DEBUG] Custom data keys: {list(custom_data.keys())}")
+            # Extrahiere Body und parse als Key-Value
+            body = sip_data.get('body', '')
+            custom_data = {}
+            for line in body.split('\n'):
+                line = line.strip()
+                if ': ' in line:
+                    key, value = line.split(': ', 1)
+                    custom_data[key] = value
             
-            # Überprüfe ob alle benötigten Felder vorhanden sind
-            required_fields = ['MESSAGE_TYPE', 'CHALLENGE_ID', 'ENCRYPTED_RESPONSE']
-            missing_fields = [field for field in required_fields if field not in custom_data]
+            challenge_id = custom_data.get('CHALLENGE_ID')
+            encrypted_response_b64 = custom_data.get('ENCRYPTED_RESPONSE')
             
-            if missing_fields:
-                print(f"[IDENTITY ERROR] Missing required fields: {missing_fields}")
-                print(f"[DEBUG] Available fields: {list(custom_data.keys())}")
+            if not challenge_id or not encrypted_response_b64:
+                print("[ERROR] Missing fields in identity response")
                 return False
-                    
-            # Validiere den Nachrichtentyp
-            if custom_data['MESSAGE_TYPE'] != 'IDENTITY_RESPONSE':
-                print(f"[IDENTITY ERROR] Invalid message type: {custom_data['MESSAGE_TYPE']}")
+            
+            # Überprüfe ob Challenge ID existiert
+            if challenge_id not in self.active_challenges:
+                print(f"[ERROR] Unknown challenge ID: {challenge_id}")
                 return False
-                
-            challenge_id = custom_data['CHALLENGE_ID']
-            encrypted_response_b64 = custom_data['ENCRYPTED_RESPONSE']
             
-            print(f"[DEBUG] Challenge ID: {challenge_id}")
-            print(f"[DEBUG] Encrypted response length: {len(encrypted_response_b64)}")
+            original_challenge = self.active_challenges[challenge_id]
             
-            # Überprüfe ob die Challenge-ID bekannt ist
-            if not hasattr(self, 'pending_challenges') or challenge_id not in self.pending_challenges:
-                print(f"[IDENTITY ERROR] Unknown challenge ID: {challenge_id}")
-                if hasattr(self, 'pending_challenges'):
-                    print(f"[DEBUG] Known challenge IDs: {list(self.pending_challenges.keys())}")
-                else:
-                    print("[DEBUG] pending_challenges not initialized")
-                return False
-                
-            # Hole die ursprüngliche Challenge-Information
-            challenge_info = self.pending_challenges[challenge_id]
-            original_challenge = challenge_info['challenge']
-            client_name = challenge_info['client']
-            client_address = challenge_info.get('address', 'unknown')
-            
-            print(f"[DEBUG] Original challenge: {original_challenge}")
-            print(f"[DEBUG] Client name: {client_name}")
-            print(f"[DEBUG] Client address: {client_address}")
-            
-            # Base64 Decoding
+            # Entschlüssele die Response
             try:
                 encrypted_response = base64.b64decode(encrypted_response_b64)
-                print(f"[DEBUG] Decoded encrypted response length: {len(encrypted_response)} bytes")
-                print(f"[DEBUG] First 16 bytes (hex): {binascii.hexlify(encrypted_response[:16]).decode()}")
-            except Exception as e:
-                print(f"[IDENTITY ERROR] Base64 decoding failed: {str(e)}")
-                return False
-            
-            # Lade den privaten Server-Schlüssel
-            try:
-                with open("server_private_key.pem", "rb") as f:
-                    priv_key_data = f.read()
-                    priv_key = RSA.load_key_string(priv_key_data)
-                print("[DEBUG] Server private key loaded successfully")
-            except Exception as e:
-                print(f"[IDENTITY ERROR] Failed to load server private key: {str(e)}")
-                return False
-            
-            # Entschlüssele die Response mit dem privaten Server-Schlüssel
-            try:
-                decrypted_response = priv_key.private_decrypt(encrypted_response, RSA.pkcs1_padding)
-                print(f"[DEBUG] Decrypted response length: {len(decrypted_response)} bytes")
-                if len(decrypted_response) > 0:
-                    print(f"[DEBUG] First 16 bytes (hex): {binascii.hexlify(decrypted_response[:16]).decode()}")
+                decrypted_response = self.private_key.private_decrypt(
+                    encrypted_response, RSA.pkcs1_padding
+                ).decode('utf-8')
+                
+                print(f"[DEBUG] Decrypted response: {decrypted_response}")
+                print(f"[DEBUG] Expected: {original_challenge}VALIDATED")
+                
+                # Validiere die Response
+                if decrypted_response == original_challenge + "VALIDATED":
+                    print(f"[IDENTITY] {sip_data['from_user']} erfolgreich verifiziert")
+                    del self.active_challenges[challenge_id]
+                    return True
+                else:
+                    print("[IDENTITY] Verification failed - response mismatch")
+                    return False
+                    
             except Exception as e:
                 print(f"[IDENTITY ERROR] Decryption failed: {str(e)}")
                 return False
-            
-            # Konvertiere zu String und validiere den Inhalt
-            try:
-                response_text = decrypted_response.decode('utf-8')
-                print(f"[DEBUG] Response text: {response_text}")
                 
-                # Überprüfe ob die Response mit "VALIDATED" endet
-                if not response_text.endswith("VALIDATED"):
-                    print(f"[IDENTITY ERROR] Response does not end with 'VALIDATED'")
-                    print(f"[DEBUG] Response ends with: {response_text[-10:] if len(response_text) >= 10 else 'TOO_SHORT'}")
-                    return False
-                    
-                # Extrahiere den Challenge-Text aus der Response
-                received_challenge = response_text[:-9]  # Remove "VALIDATED" suffix (9 characters)
-                
-                # Vergleiche mit dem originalen Challenge-Text
-                if received_challenge != original_challenge:
-                    print(f"[IDENTITY ERROR] Challenge mismatch!")
-                    print(f"[DEBUG] Original: '{original_challenge}' (len: {len(original_challenge)})")
-                    print(f"[DEBUG] Received: '{received_challenge}' (len: {len(received_challenge)})")
-                    return False
-                    
-            except UnicodeDecodeError:
-                print(f"[IDENTITY ERROR] Response is not valid UTF-8")
-                print(f"[DEBUG] Raw bytes (hex): {binascii.hexlify(decrypted_response).decode()}")
-                return False
-            except Exception as e:
-                print(f"[IDENTITY ERROR] Response validation error: {str(e)}")
-                return False
-            
-            # Alles erfolgreich validiert
-            print(f"[IDENTITY SUCCESS] Client {client_name} successfully verified")
-            
-            # Entferne die Challenge aus der pending-Liste
-            del self.pending_challenges[challenge_id]
-            print(f"[DEBUG] Removed challenge {challenge_id} from pending challenges")
-            
-            # Sende Bestätigung an Client
-            response_msg = self.build_sip_message("200 OK", client_name, {
-                "STATUS": "IDENTITY_VERIFIED",
-                "MESSAGE": "Identity successfully verified",
-                "CLIENT_ID": challenge_info.get('client_id', ''),
-                "TIMESTAMP": int(time.time())
-            })
-            
-            try:
-                send_frame(client_socket, response_msg)
-                print(f"[DEBUG] Sent verification confirmation to {client_name}")
-            except Exception as e:
-                print(f"[WARNING] Failed to send confirmation: {str(e)}")
-            
-            return True
-            
         except Exception as e:
-            print(f"[IDENTITY ERROR] Verification error: {str(e)}")
-            traceback.print_exc()
-            
-            # Sende Fehler an Client falls möglich
-            try:
-                error_msg = self.build_sip_message("401 Unauthorized", "client", {
-                    "STATUS": "IDENTITY_FAILED",
-                    "ERROR": "Verification failed",
-                    "REASON": str(e)[:100]  # Begrenze die Fehlermeldung
-                })
-                send_frame(client_socket, error_msg)
-            except:
-                pass
-                
-            return False                            
+            print(f"[IDENTITY ERROR] Processing failed: {str(e)}")
+            return False                       
     def _process_queue(self):
         """Thread-safe message processing with proper locking"""
         self._processing_queue = True
@@ -2138,129 +2105,101 @@ class Server:
             print(f"[IDENTITY ERROR] Challenge failed: {str(e)}")
             import traceback
             traceback.print_exc()
-    def _process_identity_response(self, queue_item):
-        """Thread-safe identity response processing"""
-        sip_data = queue_item['sip_data']
-        client_socket = queue_item['client_socket']
-        client_name = queue_item['client_name']
-        
-        # ✅✅✅ Explizit übergebene Werte verwenden
-        encrypted_response_b64 = queue_item.get('encrypted_response_b64')
-        response_challenge_id = queue_item.get('response_challenge_id')
-        client_id = queue_item.get('client_id')
-        
+    def _process_identity_response(self, sip_data, raw_data):
+        """Verarbeitet Identity Response - VOLLSTÄNDIG KORRIGIERT"""
         try:
-            if not encrypted_response_b64 or not response_challenge_id:
-                print(f"[IDENTITY ERROR] Missing response fields from {client_name}")
-                return
+            print("[DEBUG] ✓ FOUND MATCHING IDENTITY_RESPONSE!")
             
-            if not client_id:
-                print(f"[IDENTITY ERROR] No client_id provided for {client_name}")
-                return
+            # Extrahiere Body und parse als Key-Value
+            body = sip_data.get('body', '')
+            custom_data = {}
+            for line in body.split('\n'):
+                line = line.strip()
+                if line and ': ' in line:
+                    key, value = line.split(': ', 1)
+                    custom_data[key] = value
             
-            # Prüfe ob Challenge-ID bekannt ist
-            if not hasattr(self, 'pending_challenges') or response_challenge_id not in self.pending_challenges:
-                print(f"[IDENTITY ERROR] Unknown challenge ID: {response_challenge_id}")
-                if hasattr(self, 'pending_challenges'):
-                    print(f"[DEBUG] Known challenge IDs: {list(self.pending_challenges.keys())}")
-                else:
-                    print("[DEBUG] pending_challenges not initialized")
+            print(f"[DEBUG] Extracted custom data: {custom_data}")
+            
+            challenge_id = custom_data.get('CHALLENGE_ID')
+            encrypted_response_b64 = custom_data.get('ENCRYPTED_RESPONSE')
+            
+            if not challenge_id:
+                print("[ERROR] Missing CHALLENGE_ID in identity response")
+                return False
                 
-                # Fehlermeldung senden
-                error_msg = self.build_sip_message("401 Unauthorized", client_name, {
-                    "STATUS": "IDENTITY_FAILED",
-                    "ERROR": "Unknown challenge ID",
-                    "CHALLENGE_ID": response_challenge_id,
-                    "TIMESTAMP": int(time.time())
-                })
-                
-                self._message_queue.append({
-                    'type': 'send_response',
-                    'response': error_msg,
-                    'client_socket': client_socket,
-                    'client_name': client_name
-                })
-                return
+            if not encrypted_response_b64:
+                print("[ERROR] Missing ENCRYPTED_RESPONSE in identity response")
+                return False
             
-            # Response entschlüsseln und verifizieren
-            encrypted_response = base64.b64decode(encrypted_response_b64)
+            # Überprüfe ob Challenge ID existiert
+            if challenge_id not in self.active_challenges:
+                print(f"[ERROR] Unknown challenge ID: {challenge_id}")
+                print(f"[DEBUG] Active challenges: {list(self.active_challenges.keys())}")
+                return False
             
-            with open("server_private_key.pem", "rb") as f:
-                priv_key = RSA.load_key_string(f.read())
+            original_challenge = self.active_challenges[challenge_id]
+            print(f"[DEBUG] Original challenge for ID {challenge_id}: {original_challenge}")
             
-            decrypted_response = priv_key.private_decrypt(encrypted_response, RSA.pkcs1_padding)
-            
-            # Hier sollte die echte Challenge-Verifikation erfolgen
-            print(f"[IDENTITY] Response von {client_name} verifiziert")
-            print(f"[DEBUG] Decrypted response: {decrypted_response[:50]}...")
-            
-            # ✅✅✅ PHONEBOOK UPDATE NACH ERFOLGREICHER VERIFIKATION
-            if client_id:
-                print(f"[UPDATE] Sende Phonebook an {client_name} nach Identity-Verifikation")
-                
-                # ✅ SICHER: Phonebook senden mit client_id
-                phonebook_success = self.send_phonebook(client_id)
-                
-                if phonebook_success:
-                    print(f"[UPDATE] Phonebook erfolgreich an {client_name} gesendet")
-                else:
-                    print(f"[UPDATE ERROR] Phonebook konnte nicht an {client_name} gesendet werden")
-                    
-                    # Fallback: Nochmal versuchen
-                    time.sleep(1)
-                    phonebook_retry = self.send_phonebook(client_id)
-                    if phonebook_retry:
-                        print(f"[UPDATE] Phonebook nach Retry an {client_name} gesendet")
-                    else:
-                        print(f"[UPDATE ERROR] Phonebook auch nach Retry fehlgeschlagen")
-            
-            # Bestätigung senden
-            success_msg = self.build_sip_message("200 OK", client_name, {
-                "STATUS": "IDENTITY_VERIFIED",
-                "CHALLENGE_ID": response_challenge_id,
-                "CLIENT_ID": client_id,
-                "TIMESTAMP": int(time.time())
-            })
-            
-            self._message_queue.append({
-                'type': 'send_response',
-                'response': success_msg,
-                'client_socket': client_socket,
-                'client_name': client_name
-            })
-            
-            # ✅ Optional: Client als verifiziert markieren
+            # Entschlüssele die Response
             try:
-                with self.clients_lock:
-                    if client_id in self.clients:
-                        self.clients[client_id]['verified'] = True
-                        self.clients[client_id]['last_verified'] = time.time()
-                        print(f"[IDENTITY] Client {client_name} als verifiziert markiert")
+                print(f"[DEBUG] Encrypted response (b64): {encrypted_response_b64[:100]}...")
+                encrypted_response = base64.b64decode(encrypted_response_b64)
+                print(f"[DEBUG] Decoded encrypted response length: {len(encrypted_response)} bytes")
+                
+                # DEBUG: Überprüfe ob die Verschlüsselung die richtige Länge hat
+                if len(encrypted_response) != 512:
+                    print(f"[ERROR] Invalid encrypted response length: {len(encrypted_response)} (expected 512)")
+                    return False
+                    
+                # Versuche mit dem privaten Server-Schlüssel zu entschlüsseln
+                decrypted_response = self.private_key.private_decrypt(
+                    encrypted_response, 
+                    RSA.pkcs1_padding
+                )
+                print(f"[DEBUG] Decrypted response raw: {decrypted_response[:100]}...")
+                
+                # Versuche als UTF-8 zu decodieren
+                try:
+                    decrypted_text = decrypted_response.decode('utf-8')
+                    print(f"[DEBUG] Decrypted response text: {decrypted_text}")
+                except UnicodeDecodeError:
+                    print("[ERROR] Failed to decode decrypted response as UTF-8")
+                    # Versuche alternative Encodings
+                    try:
+                        decrypted_text = decrypted_response.decode('latin-1')
+                        print(f"[DEBUG] Decrypted response (latin-1): {decrypted_text}")
+                    except:
+                        print("[ERROR] Failed to decode with any encoding")
+                        return False
+                
+                # Validiere die Response
+                expected_response = original_challenge + "VALIDATED"
+                print(f"[DEBUG] Expected response: {expected_response}")
+                print(f"[DEBUG] Actual response: {decrypted_text}")
+                
+                if decrypted_text == expected_response:
+                    print(f"[IDENTITY] {sip_data['from_user']} erfolgreich verifiziert")
+                    # Lösche die Challenge aus dem aktiven Pool
+                    del self.active_challenges[challenge_id]
+                    return True
+                else:
+                    print("[IDENTITY] Verification failed - response mismatch")
+                    print(f"Expected: '{expected_response}'")
+                    print(f"Received: '{decrypted_text}'")
+                    return False
+                    
             except Exception as e:
-                print(f"[IDENTITY WARNING] Could not mark client as verified: {e}")
-            
+                print(f"[IDENTITY ERROR] Decryption failed: {str(e)}")
+                import traceback
+                traceback.print_exc()
+                return False
+                
         except Exception as e:
-            print(f"[IDENTITY ERROR] Response processing failed for {client_name}: {str(e)}")
+            print(f"[IDENTITY ERROR] Processing failed: {str(e)}")
             import traceback
             traceback.print_exc()
-            
-            # Fehlermeldung an Client senden
-            try:
-                error_msg = self.build_sip_message("401 Unauthorized", client_name, {
-                    "STATUS": "IDENTITY_FAILED",
-                    "ERROR": "Verification failed",
-                    "CHALLENGE_ID": response_challenge_id or "unknown",
-                    "TIMESTAMP": int(time.time())
-                })
-                
-                self._message_queue.append({
-                    'type': 'send_response',
-                    'response': error_msg,
-                    'client_socket': client_socket,
-                    'client_name': client_name
-                })
-            except Exception as send_error:
-                print(f"[IDENTITY ERROR] Could not send error message: {send_error}")
+            return False
     def _process_sip_message(self, queue_item):
         """Thread-safe SIP message processing"""
         message = queue_item['message']
