@@ -10,6 +10,7 @@ import sys
 import pyaudio
 import uuid
 import random
+import subprocess
 import customtkinter as ctk
 import binascii
 from datetime import datetime
