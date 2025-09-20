@@ -1085,7 +1085,11 @@ class PHONEBOOK(ctk.CTk):
         self.current_secret = None
         self.active_call = False
         self.server_ip = "127.0.0.1"
-        
+        self._message_queue = []
+        self._processing_queue = False
+        self._queue_size_limit = 120
+        self._last_minute_check = time.time()
+        self._messages_this_minute = 0
         # WireGuard Integration
         self.wg_manager = WireGuardManager()
         self.wg_interface_name = "wg-phonebook"
