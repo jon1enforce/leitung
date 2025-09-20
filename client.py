@@ -1866,12 +1866,16 @@ class PHONEBOOK(ctk.CTk):
         print("\n=== HANDLING SERVER MESSAGE ===")
         print(f"[DEBUG] Raw data: {raw_data[:100]}...")
         
-        # Queue-Initialisierung mit DoS-Schutz
+        # Queue-Initialisierung mit DoS-Schutz - KORRIGIERTE VERSION
         if not hasattr(self, '_message_queue'):
             self._message_queue = []
+        if not hasattr(self, '_processing_queue'):
             self._processing_queue = False
+        if not hasattr(self, '_queue_size_limit'):
             self._queue_size_limit = 120
+        if not hasattr(self, '_last_minute_check'):
             self._last_minute_check = time.time()
+        if not hasattr(self, '_messages_this_minute'):
             self._messages_this_minute = 0
         
         # DoS-Schutz: Nachrichten pro Minute limitieren
