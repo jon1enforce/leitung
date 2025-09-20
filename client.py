@@ -3159,13 +3159,20 @@ class PHONEBOOK(ctk.CTk):
         
         print("[CLEANUP] All call resources cleaned up successfully")
 
-    def update_call_ui(self, active, caller_name=None):
+    def update_call_ui(self, active, status=None, caller_name=None):
         """Aktualisiert die UI für den Anrufstatus mit verbesserter Fehlerbehandlung"""
         try:
             self.active_call = active
             
+            # Status-Text basierend auf aktivem Status und zusätzlichem Status-Parameter
             if active:
-                status_text = f"Aktiver Anruf mit: {caller_name}" if caller_name else "Aktiver Anruf"
+                if status == "requesting":
+                    status_text = f"Anfrage an {caller_name}..." if caller_name else "Anrufanfrage wird gesendet..."
+                elif status == "connected":
+                    status_text = f"Verbunden mit: {caller_name}" if caller_name else "Aktiver Anruf"
+                else:
+                    status_text = f"Aktiver Anruf mit: {caller_name}" if caller_name else "Aktiver Anruf"
+                
                 call_button_text = "Beenden"
                 call_button_color = "red"
                 print(f"[CALL UI] {status_text}")
