@@ -1731,7 +1731,7 @@ class PHONEBOOK(ctk.CTk):
                 messagebox.showerror("Error", "Konnte Verbindungsdaten nicht verschlüsseln")
                 return
             
-            # 3. Sende CALL_REQUEST mit verschlüsseltem WG Public Key
+            # 3. Sende CALL_REQUEST mit verschlüsseltem WG Public Key - MIT FRAMING!
             request_msg = build_sip_message("MESSAGE", "server", {
                 "MESSAGE_TYPE": "CALL_REQUEST",
                 "TARGET_CLIENT_ID": self.selected_entry['id'],
@@ -1741,6 +1741,7 @@ class PHONEBOOK(ctk.CTk):
             })
             
             try:
+                # WICHTIG: send_frame verwenden, nicht direkt senden!
                 send_frame(self.client_socket, request_msg.encode('utf-8'))
                 print(f"[CALL] Call request sent to server for client {self.selected_entry['id']}")
             except Exception as e:
@@ -2141,21 +2142,63 @@ class PHONEBOOK(ctk.CTk):
                 messagebox.showinfo("Call Failed", "Keine Antwort vom Empfänger")
                 break
             time.sleep(1)    
-                   
-    def _handle_call_response(self, msg):
-        """Verarbeitet Antwort auf Anrufanfrage"""
+    def _handle_incoming_call_notification(self, msg):
+        """Handles incoming call notifications with proper UI prompting"""
         try:
             custom_data = msg.get('custom_data', {})
-            response = custom_data.get('RESPONSE')
-            caller_client_id = custom_data.get('CALLER_CLIENT_ID')
+            caller_name = custom_data.get('CALLER_NAME')
+            caller_id = custom_data.get('CALLER_CLIENT_ID')
             
-            if not hasattr(self, 'pending_call'):
-                print("[CALL WARNING] Received response but no pending call")
+            if not caller_name or not caller_id:
+                print("[CALL ERROR] Missing caller information")
                 return
             
-            if response == "accepted":
-                print("[CALL] Call accepted by recipient")
+            # Show incoming call dialog in main thread
+            def show_incoming_call_dialog():
+                response = messagebox.askyesno(
+                    "Eingehender Anruf", 
+                    f"Eingehender Anruf von {caller_name}.\nAnnehmen?",
+                    icon='question',
+                    detail="Sie haben 120 Sekunden Zeit zu antworten"
+                )
                 
+                if response:
+                    # Accept call
+                    accept_msg = build_sip_message("MESSAGE", "server", {
+                        "MESSAGE_TYPE": "CALL_RESPONSE",
+                        "RESPONSE": "accepted",
+                        "CALLER_CLIENT_ID": caller_id,
+                        "TIMESTAMP": int(time.time())
+                    })
+                    send_frame(self.client_socket, accept_msg.encode('utf-8'))
+                    
+                    # Prepare for call
+                    self.prepare_for_incoming_call(caller_name, caller_id)
+                else:
+                    # Reject call
+                    reject_msg = build_sip_message("MESSAGE", "server", {
+                        "MESSAGE_TYPE": "CALL_RESPONSE",
+                        "RESPONSE": "rejected",
+                        "CALLER_CLIENT_ID": caller_id,
+                        "TIMESTAMP": int(time.time())
+                    })
+                    send_frame(self.client_socket, reject_msg.encode('utf-8'))
+            
+            # Run in main thread
+            self.after(0, show_incoming_call_dialog)
+            
+        except Exception as e:
+            print(f"[INCOMING CALL ERROR] {str(e)}")            
+    def _setup_wireguard_with_timeout(self):
+        """WireGuard setup with extended 120-second timeout"""
+        timeout = 120  # 120 seconds timeout
+        start_time = time.time()
+        
+        while (hasattr(self, 'pending_call') and 
+               self.pending_call.get('status') == 'accepted' and
+               time.time() - start_time < timeout):
+            
+            try:
                 # Setup WireGuard
                 public_ip = self._get_public_ip()
                 wg_config = self.wg_manager.create_interface_config(
@@ -2172,7 +2215,7 @@ class PHONEBOOK(ctk.CTk):
                     self.update_call_ui(active=True, status="connected", 
                                       caller_name=self.pending_call['recipient']['name'])
                     
-                    # Bestätigung an Server senden
+                    # Send confirmation to server
                     ack_msg = build_sip_message("MESSAGE", "server", {
                         "MESSAGE_TYPE": "WG_CONNECTED",
                         "CLIENT_ID": self._find_my_client_id(),
@@ -2180,12 +2223,45 @@ class PHONEBOOK(ctk.CTk):
                     })
                     send_frame(self.client_socket, ack_msg.encode('utf-8'))
                     
-                    # Starte Audio wenn Session Key bereits da
+                    # Start audio if session key is available
                     if hasattr(self, 'current_secret') and self.current_secret:
                         self._start_audio_streams()
-                else:
-                    print("[CALL ERROR] WireGuard setup failed")
-                    self.end_current_call()
+                    return
+                    
+            except Exception as e:
+                print(f"[WG SETUP ERROR] {str(e)}")
+                time.sleep(2)  # Wait before retry
+        
+        # Timeout reached
+        if hasattr(self, 'pending_call'):
+            print("[CALL] WireGuard setup timeout")
+            self.end_current_call()
+            messagebox.showinfo("Call Failed", "Verbindungsaufbau fehlgeschlagen (Timeout)")                   
+    def _handle_call_response(self, msg):
+        """Verarbeitet Antwort auf Anrufanfrage"""
+        try:
+            custom_data = msg.get('custom_data', {})
+            response = custom_data.get('RESPONSE')
+            caller_client_id = custom_data.get('CALLER_CLIENT_ID')
+            
+            if not hasattr(self, 'pending_call'):
+                print("[CALL WARNING] Received response but no pending call")
+                return
+            
+            # EXTENDED TIMEOUT: 120 seconds instead of 30
+            if response == "accepted":
+                print("[CALL] Call accepted by recipient")
+                
+                # Store acceptance and extend timeout
+                self.pending_call['status'] = 'accepted'
+                self.pending_call['response_time'] = time.time()
+                
+                # Update UI to show acceptance
+                self.update_call_ui(active=True, status="accepted", 
+                                  caller_name=self.pending_call['recipient']['name'])
+                
+                # Start WireGuard setup in separate thread with extended timeout
+                threading.Thread(target=self._setup_wireguard_with_timeout, daemon=True).start()
                     
             elif response == "rejected":
                 print("[CALL] Call rejected by recipient")
@@ -2226,9 +2302,8 @@ class PHONEBOOK(ctk.CTk):
                         # INCOMING_CALL Handling (Für angerufenen Client)
                         if custom_data.get('MESSAGE_TYPE') == 'INCOMING_CALL':
                             print("[CALL] Incoming call received")
-                            self._handle_incoming_call(msg)
+                            self._handle_incoming_call_notification(msg)  # Nur die NEUE Methode verwenden
                             continue
-                        
                         # SESSION_KEY Handling (Für beide Clients)
                         if custom_data.get('MESSAGE_TYPE') == 'SESSION_KEY':
                             print("[CALL] Received session key from server")

@@ -1,6 +1,0 @@
-# client.py requirements. server.py need maybe additional.
-M2Crypto==0.38.0          # Für RSA, BIO, EVP, Rand
-customtkinter==5.2.1       # Für ctk (GUI)
-Pillow==10.0.0             # Für PIL.ImageFont
-pyaudio==0.2.13            # Für Audio-Unterstützung
-pystun3==0.1.0             # Für stun (NAT-Traversal)
