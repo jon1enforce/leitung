@@ -53,7 +53,7 @@ def send_frame(sock, data):
     sock.sendall(header + data)
 
 def recv_frame(sock, timeout=30):
-    """Improved frame receiver with binary support"""
+    """Frame receiver with increased size limit for RSA keys"""
     sock.settimeout(timeout)
     try:
         # Read header
@@ -62,8 +62,10 @@ def recv_frame(sock, timeout=30):
             return None
             
         length = struct.unpack('!I', header)[0]
-        if length > 10 * 1024 * 1024:  # 10MB max
-            raise ValueError("Frame too large")
+        # ✅ ERHÖHT auf 64KB für RSA Public Keys (4096-bit Keys sind ~800 bytes)
+        if length > 65536:  # 64KB max (statt 10MB)
+            print(f"[FRAME ERROR] Frame too large: {length} bytes")
+            raise ValueError(f"Frame too large: {length} bytes")
         
         # Read body
         received = bytearray()
@@ -73,14 +75,13 @@ def recv_frame(sock, timeout=30):
                 raise ConnectionError("Connection closed prematurely")
             received.extend(chunk)
         
-        print(f"\n[FRAME DEBUG] Received {length} bytes")
-        print(f"First 32 bytes (hex): {' '.join(f'{b:02x}' for b in received[:32])}")
+        print(f"[FRAME DEBUG] Received {length} bytes frame")
         
         # Try UTF-8 decode for SIP messages
         try:
             return received.decode('utf-8')
         except UnicodeDecodeError:
-            return bytes(received)  # Return binary data if not UTF-8
+            return bytes(received)
             
     except socket.timeout:
         raise TimeoutError("Timeout waiting for frame")
@@ -1098,224 +1099,174 @@ class Server:
         
         with self.key_lock:
             self.all_public_keys = all_public_keys            
-    def handle_client(self, client_socket):
-        """Vollständige Client-Behandlung - Jede Session isoliert"""
-        client_address = client_socket.getpeername()
-        print(f"\n[Server] Neue Verbindung von {client_address}")
-        client_id = None
-        client_name = None
-
-        # Thread-lokale Queue für diesen Client
-        client_message_queue = []
-        processing_client_queue = False
-
+    def handle_client(self, client_socket, client_address):
+        """Behandelt Client-Verbindungen mit framed SIP"""
+        client_name = "unknown"
+        
         try:
-            # 1. Registration empfangen (mit Timeout)
-            client_socket.settimeout(30.0)
-            print(f"[SERVER] Warte auf Registration von {client_address}")
+            print(f"\n[Server] Neue Verbindung von {client_address}")
             
+            # Setze Timeout für Registration
+            client_socket.settimeout(15.0)
+            
+            # ✅ WICHTIG: Verwende NUR framed communication
             register_data = recv_frame(client_socket)
             if not register_data:
-                print("[SERVER] Keine Registrierungsdaten empfangen")
+                print("[SERVER] Keine Framed-Daten empfangen")
                 return
-
-            print(f"[SERVER] Empfangene Daten: {len(register_data)} bytes")
             
-            # 2. SIP-Nachricht parsen
             if isinstance(register_data, bytes):
                 try:
                     register_data = register_data.decode('utf-8')
-                    print("[SERVER] Daten als UTF-8 decodiert")
                 except UnicodeDecodeError:
-                    print("[SERVER] Konnte Daten nicht als UTF-8 decodieren")
+                    print("[SERVER] Konnte Framed-Daten nicht dekodieren")
                     return
-
-            # 3. SIP-Nachricht parsen
-            sip_msg = self.parse_sip_message(register_data)
-            if not sip_msg:
+            
+            print(f"[SERVER] Empfangene Registration: {register_data[:200]}...")
+            
+            # Parse SIP Nachricht
+            sip_data = parse_sip_message(register_data)
+            if not sip_data:
                 print("[SERVER] Ungültige SIP-Nachricht")
                 return
-
-            # 4. Client-Identifikation
-            from_header = sip_msg['headers'].get('From', sip_msg['headers'].get('FROM', ''))
-            client_name_match = re.search(r'<sip:(.*?)@', from_header)
-            if not client_name_match:
-                print(f"[SERVER] Kein Client-Name in FROM-Header: {from_header}")
+            
+            # Überprüfe REGISTER Method
+            method = sip_data.get('method', '')
+            if method != 'REGISTER':
+                print(f"[SERVER] Erwartete REGISTER, bekam: {method}")
                 return
-                
-            client_name = client_name_match.group(1)
-            print(f"[SERVER] Client-Name: {client_name}")
-
-            # 5. Public Key extrahieren
-            client_pubkey = None
             
-            if 'content' in sip_msg and sip_msg['content']:
-                client_pubkey = sip_msg['content'].strip()
+            # Extrahiere Client-Namen
+            headers = sip_data.get('headers', {})
+            from_header = headers.get('FROM', '')
+            client_name_match = re.search(r'<sip:([^@]+)@', from_header)
+            if client_name_match:
+                client_name = client_name_match.group(1)
+            else:
+                client_name = f"client_{random.randint(1000, 9999)}"
             
-            if not client_pubkey:
-                key_match = re.search(r'-----BEGIN PUBLIC KEY-----.*?-----END PUBLIC KEY-----', 
-                                     register_data, re.DOTALL)
-                if key_match:
-                    client_pubkey = key_match.group(0).strip()
-
-            if not client_pubkey or '-----BEGIN PUBLIC KEY-----' not in client_pubkey:
-                print("[SERVER] Kein gültiger Public Key gefunden")
+            # Extrahiere Public Key aus Body
+            public_key = sip_data.get('body', '').strip()
+            if not public_key or not public_key.startswith('-----BEGIN PUBLIC KEY-----'):
+                print("[SERVER] Ungültiger Public Key im Body")
+                error_msg = self.build_sip_response(sip_data, 400, "Invalid Public Key")
+                send_frame(client_socket, error_msg.encode('utf-8'))
                 return
-
-            # 6. ✅ Client ATOMIC registrieren (THREAD-SAFE)
-            client_data = {
-                'name': client_name,
-                'public_key': client_pubkey,
-                'socket': client_socket,
-                'ip': client_address[0],
-                'port': client_address[1],
-                'login_time': time.time(),
-                'last_update': time.time()
-            }
             
-            # ✅ ATOMIC Registration unter clients_lock
+            print(f"[SERVER] Client {client_name} registriert sich")
+            
+            # Speichere Client-Daten
             with self.clients_lock:
-                client_id = self._generate_client_id_locked()
-                self.clients[client_id] = client_data
-                print(f"[SERVER] Client {client_name} registriert mit ID: {client_id}")
+                self.clients[client_name] = {
+                    'socket': client_socket,
+                    'address': client_address,
+                    'public_key': public_key,
+                    'last_seen': time.time(),
+                    'status': 'connected'
+                }
             
-            # ✅ Gespeicherte Clients aktualisieren
-            self.save_active_clients()
-
-            # ✅ ALLE Public Keys sammeln (THREAD-SAFE)
-            with self.clients_lock:
-                clients_copy = self.clients.copy()
+            # Sende Bestätigung MIT FRAMING
+            success_msg = self.build_sip_response(sip_data, 200, "OK")
+            send_frame(client_socket, success_msg.encode('utf-8'))
+            print(f"[SERVER] Client {client_name} erfolgreich registriert")
             
-            all_public_keys = [self.server_public_key]  # Server Key zuerst
-            for cid, client_info in clients_copy.items():
-                if 'public_key' in client_info:
-                    all_public_keys.append(client_info['public_key'])
+            # Setze Timeout zurück für normale Kommunikation
+            client_socket.settimeout(30.0)
             
-            # ✅ Keys unter key_lock speichern
-            with self.key_lock:
-                self.all_public_keys = all_public_keys
+            # Hauptkommunikationsschleife MIT FRAMING
+            self.communication_loop(client_socket, client_name, client_address)
             
-            clients_count = len(clients_copy)
-            print(f"[SERVER] Gesamte Keys: {len(all_public_keys)} (Server + {clients_count} Clients)")
-
-            # 7. Merkle Root berechnen
-            merkle_root = build_merkle_tree_from_keys(all_public_keys)
-            print(f"[SERVER] Merkle Root: {merkle_root[:20]}...")
-
-            # 8. ERSTE ANTWORT: Server Public Key und Client ID
-            first_response_data = {
-                "SERVER_PUBLIC_KEY": self.server_public_key,
-                "CLIENT_ID": client_id
-            }
-            
-            first_response_msg = self.build_sip_message("200 OK", client_name, first_response_data)
-            print(f"[SERVER] Sende erste Antwort: {len(first_response_msg)} bytes")
-            
-            send_frame(client_socket, first_response_msg.encode('utf-8'))
-            print("[SERVER] Erste Antwort erfolgreich gesendet")
-
-            # Kurze Pause für Client-Verarbeitung
-            time.sleep(0.1)
-
-            # 9. ZWEITE ANTWORT: Merkle Root und alle Keys
-            second_response_data = {
-                "MERKLE_ROOT": merkle_root,
-                "ALL_KEYS": all_public_keys  # ✅ Lokale Variable verwenden
-            }            
-            
-            second_response_msg = self.build_sip_message("200 OK", client_name, second_response_data)
-            print(f"[SERVER] Sende zweite Antwort: {len(second_response_msg)} bytes")
-            
-            send_frame(client_socket, second_response_msg.encode('utf-8'))
-            print("[SERVER] Zweite Antwort erfolgreich gesendet")
-            
-            # 10. Hauptkommunikationsschleife mit eigener Queue
-            print(f"[SERVER] Starte Hauptloop für {client_name}")
-            client_socket.settimeout(1.0)
-            last_activity = time.time()
-            buffer = b''
-            
-            while True:
+        except ValueError as e:
+            if "Frame too large" in str(e):
+                print(f"[SERVER] Client {client_address} sendet zu große Frames")
+                # Sende Fehlermeldung an Client
                 try:
-                    # RAW Socket lesen (ohne Framing)
-                    try:
-                        data = client_socket.recv(4096)
-                        if not data:
-                            print(f"[SERVER] {client_name} hat Verbindung getrennt")
-                            break
-                        
-                        last_activity = time.time()
-                        buffer += data
-                        
-                        # Versuche, komplette Nachrichten aus dem Buffer zu parsen
-                        while buffer:
-                            # Prüfe auf Framing-Header (4 Bytes Länge)
-                            if len(buffer) >= 4:
-                                # Extrahiere Länge aus Header
-                                length = struct.unpack('!I', buffer[:4])[0]
-                                
-                                # Sicherheitscheck
-                                if length > 10 * 1024 * 1024:  # 10MB max
-                                    print(f"[SECURITY] Frame zu groß: {length} bytes, verwerfe")
-                                    buffer = b''  # Buffer leeren
-                                    break
-                                    
-                                if len(buffer) >= 4 + length:
-                                    # Vollständige Nachricht empfangen
-                                    frame_data = buffer[4:4+length]
-                                    buffer = buffer[4+length:]
-                                    
-                                    # Zur Client-eigenen Queue hinzufügen
-                                    client_message_queue.append({
-                                        'type': 'frame_data',
-                                        'data': frame_data,
-                                        'client_socket': client_socket,
-                                        'client_name': client_name
-                                    })
-                                    
-                                    # Client-Queue verarbeiten
-                                    if not processing_client_queue:
-                                        processing_client_queue = True
-                                        self._process_client_queue(client_message_queue, client_socket, client_name)
-                                        processing_client_queue = False
-                                    
-                                else:
-                                    # Noch nicht genug Daten für vollständigen Frame
-                                    break
-                            else:
-                                # Noch nicht genug Daten für Header
-                                break
-                                
-                    except socket.timeout:
-                        # Timeout ist normal, prüfe auf Inaktivität
-                        if time.time() - last_activity > 60:
-                            print(f"[SERVER] {client_name} inaktiv, trenne Verbindung")
-                            break
-                        continue
-
-                except Exception as e:
-                    print(f"[SERVER] Fehler bei {client_name}: {str(e)}")
-                    break
-
-        except socket.timeout:
-            print(f"[SERVER] Timeout bei Registrierung von {client_address}")
-            
+                    error_msg = build_sip_message("MESSAGE", "client", {
+                        "ERROR": "FRAME_TOO_LARGE",
+                        "MAX_SIZE": "65536",
+                        "TIMESTAMP": int(time.time())
+                    })
+                    send_frame(client_socket, error_msg.encode('utf-8'))
+                except:
+                    pass
+            else:
+                print(f"[SERVER] Wertfehler: {e}")
         except Exception as e:
-            print(f"[SERVER] Kritischer Fehler: {str(e)}")
+            print(f"[SERVER] Kritischer Fehler: {e}")
             import traceback
             traceback.print_exc()
-            
         finally:
-            # ✅ Cleanup (THREAD-SAFE)
-            print(f"[SERVER] Cleanup für {client_name if client_name else 'unknown'}")
-            
-            if client_id:
-                self._safe_remove_client(client_id)
-            
+            print(f"[SERVER] Cleanup für {client_name}")
+            with self.clients_lock:
+                if client_name in self.clients:
+                    del self.clients[client_name]
             try:
                 client_socket.close()
             except:
                 pass
+
+    def _receive_registration(self, client_socket):
+        """Empfängt Registrierungsdaten mit mehreren Fallbacks"""
+        try:
+            # Versuche framed Nachricht
+            try:
+                return recv_frame(client_socket)
+            except (ValueError, ConnectionError):
+                pass
+            
+            # Fallback: Direkter Empfang
+            data = client_socket.recv(4096)
+            if data:
+                print(f"[SERVER] Unframed Daten empfangen: {len(data)} bytes")
+                return data.decode('utf-8') if isinstance(data, bytes) else data
+            
+            return None
+            
+        except socket.timeout:
+            print("[SERVER] Timeout beim Empfang der Registration")
+            raise
+        except Exception as e:
+            print(f"[SERVER] Fehler beim Empfang: {e}")
+            raise
+
+    def _extract_client_name(self, sip_data):
+        """Extrahiert Client-Namen aus SIP Daten"""
+        headers = sip_data.get('headers', {})
+        from_header = headers.get('FROM', '')
+        
+        # Versuche Name aus From-Header zu extrahieren
+        client_name_match = re.search(r'<sip:([^@]+)@', from_header)
+        if client_name_match:
+            return client_name_match.group(1)
+        
+        # Fallback: Aus Body oder generieren
+        body = sip_data.get('body', '')
+        if body and len(body) < 50:  # Kurzer Body könnte Name sein
+            return body.strip()
+        
+        return f"client_{random.randint(1000, 9999)}"
+
+    def _extract_public_key(self, sip_data):
+        """Extrahiert Public Key aus SIP Daten"""
+        body = sip_data.get('body', '')
+        headers = sip_data.get('headers', {})
+        
+        # Primär: Suche im Body
+        if body and '-----BEGIN PUBLIC KEY-----' in body:
+            return body.strip()
+        
+        # Sekundär: Suche in Headern
+        for key, value in headers.items():
+            if '-----BEGIN PUBLIC KEY-----' in value:
+                return value.strip()
+        
+        # Tertiär: Durchsuche alle Header nach Key-Informationen
+        for key, value in headers.items():
+            if 'PUBLIC' in key or 'KEY' in key:
+                if 'BEGIN' in value and 'KEY' in value:
+                    return value.strip()
+        
+        return None
     def _get_client_public_key(self, client_name):
         """Ermittelt den Public Key eines Clients"""
         with self.clients_lock:
@@ -1422,7 +1373,7 @@ class Server:
             print(f"[CALL ERROR] WG connected handling failed: {str(e)}")
             return False                
     def handle_call_request(self, sip_data, client_socket, client_name):
-        """Verarbeitet eingehende Anrufanfragen - KORRIGIERT FÜR HEADER-DATEN"""
+        """Verarbeitet eingehende Anrufanfragen - KORRIGIERT FÜR ENCRYPTED_CALL_DATA"""
         try:
             print(f"\n=== CALL_REQUEST HANDLING START ===")
             print(f"[DEBUG] Received from: {client_name}")
@@ -1441,7 +1392,7 @@ class Server:
             
             # Zuerst alle relevanten Header extrahieren
             for key, value in headers.items():
-                if key in ['MESSAGE_TYPE', 'TARGET_CLIENT_ID', 'CALLER_NAME', 'ENCRYPTED_WG_KEY', 'TIMESTAMP']:
+                if key in ['MESSAGE_TYPE', 'TARGET_CLIENT_ID', 'CALLER_NAME', 'ENCRYPTED_CALL_DATA', 'TIMESTAMP']:  # ✅ ENCRYPTED_CALL_DATA statt ENCRYPTED_WG_KEY
                     call_data[key] = value
                     print(f"[DEBUG] Found in headers: {key} = {value}")
             
@@ -1473,19 +1424,19 @@ class Server:
                 
             # Extrahiere Call-Daten AUS DEN HEADERN
             target_client_id = call_data.get('TARGET_CLIENT_ID')
-            encrypted_wg_key = call_data.get('ENCRYPTED_WG_KEY')
+            encrypted_call_data = call_data.get('ENCRYPTED_CALL_DATA')  # ✅ ENCRYPTED_CALL_DATA statt ENCRYPTED_WG_KEY
             caller_name = call_data.get('CALLER_NAME')
             
             print(f"[DEBUG] Call details from HEADERS:")
             print(f"  Caller: {caller_name}")
             print(f"  Target ID: {target_client_id}")
-            print(f"  WG Key present: {bool(encrypted_wg_key)}")
-            print(f"  WG Key length: {len(encrypted_wg_key) if encrypted_wg_key else 0}")
+            print(f"  Call Data present: {bool(encrypted_call_data)}")
+            print(f"  Call Data length: {len(encrypted_call_data) if encrypted_call_data else 0}")
             
-            if not all([target_client_id, encrypted_wg_key, caller_name]):
+            if not all([target_client_id, encrypted_call_data, caller_name]):
                 print("[ERROR] Missing required call data in HEADERS")
                 print(f"  Target ID: {target_client_id}")
-                print(f"  WG Key: {bool(encrypted_wg_key)}")
+                print(f"  Call Data: {bool(encrypted_call_data)}")
                 print(f"  Caller Name: {caller_name}")
                 return False
             
@@ -1575,13 +1526,13 @@ class Server:
                 traceback.print_exc()
                 return False
             
-            # 3. Leite verschlüsselte WG Key an Ziel-Client weiter
-            print("[DEBUG] Forwarding WireGuard key to target...")
+            # 3. Leite verschlüsselte Call-Daten an Ziel-Client weiter
+            print("[DEBUG] Forwarding encrypted call data to target...")
             forward_msg = self.build_sip_message("MESSAGE", target_client_name, {
                 "MESSAGE_TYPE": "INCOMING_CALL",
                 "CALLER_NAME": caller_name,
                 "CALLER_CLIENT_ID": self._find_client_id_by_name(client_name),
-                "ENCRYPTED_WG_KEY": encrypted_wg_key,  # Original WG Key vom Anrufer
+                "ENCRYPTED_CALL_DATA": encrypted_call_data,  # ✅ ENCRYPTED_CALL_DATA statt ENCRYPTED_WG_KEY
                 "TIMESTAMP": int(time.time())
             })
             
