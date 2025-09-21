@@ -1691,7 +1691,7 @@ class PHONEBOOK(ctk.CTk):
         print("[CALL] Call ended successfully")
 
     def on_call_click(self):
-        """Handler für den Call-Button mit korrigiertem Protokoll"""
+        """Handler für den Call-Button mit korrigiertem Protokoll und 120-Sekunden Timeout"""
         try:
             if self.active_call:
                 self.end_current_call()
@@ -1701,76 +1701,164 @@ class PHONEBOOK(ctk.CTk):
                 messagebox.showerror("Error", "Bitte wählen Sie zuerst einen Kontakt aus")
                 return
 
+            # Prüfe ob der Kontakt anrufbar ist
+            if not self.selected_entry.get('callable', True):
+                messagebox.showerror("Error", "Dieser Kontakt kann nicht angerufen werden")
+                return
+
+            print(f"[CALL] Initiating call to {self.selected_entry['name']} (ID: {self.selected_entry['id']})")
+
             # 1. Generiere WireGuard Schlüsselpaar
-            wg_private_key, wg_public_key = self.wg_manager.generate_keypair()
-            
+            try:
+                wg_private_key, wg_public_key = self.wg_manager.generate_keypair()
+                print(f"[CALL] WG keys generated - Public: {wg_public_key[:30]}...")
+            except Exception as e:
+                print(f"[CALL ERROR] WireGuard key generation failed: {str(e)}")
+                messagebox.showerror("Error", "Konnte WireGuard Schlüssel nicht generieren")
+                return
+
             # 2. Generiere AES Session Key (48 Bytes: 16 IV + 32 Key)
             session_secret = os.urandom(48)
             iv = session_secret[:16]
             aes_key = session_secret[16:48]
-            
-            # 3. Bereite Call-Daten vor
+            print(f"[CALL] AES session key generated - IV: {binascii.hexlify(iv).decode()[:16]}..., Key: {binascii.hexlify(aes_key).decode()[:16]}...")
+
+            # 3. Ermittle öffentliche IP
+            try:
+                public_ip = self._get_public_ip()
+                print(f"[CALL] Public IP: {public_ip}")
+            except Exception as e:
+                print(f"[CALL WARNING] Could not determine public IP: {str(e)}")
+                public_ip = "127.0.0.1"  # Fallback
+
+            # 4. Bereite Call-Daten vor
             call_data = {
                 "caller_name": self._client_name,
                 "caller_wg_public_key": wg_public_key,
                 "aes_iv": base64.b64encode(iv).decode('utf-8'),
                 "aes_key": base64.b64encode(aes_key).decode('utf-8'),
-                "caller_ip": self._get_public_ip(),
+                "caller_ip": public_ip,
                 "caller_wg_port": 51820,
                 "timestamp": time.time(),
-                "call_type": "wireguard_audio"
+                "call_type": "wireguard_audio",
+                "protocol_version": "1.0"
             }
             
             call_data_json = json.dumps(call_data, separators=(',', ':'))
-            
-            # 4. Verschlüssele mit öffentlichem Schlüssel des Empfängers
+            print(f"[CALL] Call data prepared: {len(call_data_json)} bytes")
+
+            # 5. Verschlüssele mit öffentlichem Schlüssel des Empfängers
             try:
+                # Validiere und bereinige den öffentlichen Schlüssel
+                recipient_pubkey_str = self.selected_entry['public_key']
+                if '\\n' in recipient_pubkey_str:
+                    recipient_pubkey_str = recipient_pubkey_str.replace('\\n', '\n')
+                
                 recipient_pubkey = RSA.load_pub_key_bio(
-                    BIO.MemoryBuffer(self.selected_entry['public_key'].encode()))
+                    BIO.MemoryBuffer(recipient_pubkey_str.encode()))
                 
                 encrypted_data = recipient_pubkey.public_encrypt(
                     call_data_json.encode('utf-8'), 
                     RSA.pkcs1_padding
                 )
+                print(f"[CALL] Data encrypted with recipient key: {len(encrypted_data)} bytes")
+                
             except Exception as e:
                 print(f"[CALL ERROR] Failed to encrypt with recipient key: {str(e)}")
                 messagebox.showerror("Error", "Konnte nicht mit Empfänger-Schlüssel verschlüsseln")
                 return
             
-            # 5. Sende CALL_REQUEST an Server
+            # 6. Sende CALL_REQUEST an Server
             request_msg = build_sip_message("MESSAGE", "server", {
                 "MESSAGE_TYPE": "CALL_REQUEST",
                 "TARGET_CLIENT_ID": self.selected_entry['id'],
                 "ENCRYPTED_CALL_DATA": base64.b64encode(encrypted_data).decode('utf-8'),
                 "CALLER_NAME": self._client_name,
-                "TIMESTAMP": int(time.time())
+                "CALLER_CLIENT_ID": self._find_my_client_id(),
+                "TIMESTAMP": int(time.time()),
+                "TIMEOUT": 120  # 120 Sekunden Timeout
             })
             
-            send_frame(self.client_socket, request_msg.encode('utf-8'))
-            print(f"[CALL] Call request sent to server for client {self.selected_entry['id']}")
-            
-            # Speichere Session-Daten
+            try:
+                send_frame(self.client_socket, request_msg.encode('utf-8'))
+                print(f"[CALL] Call request sent to server for client {self.selected_entry['id']}")
+                
+            except Exception as e:
+                print(f"[CALL ERROR] Failed to send call request: {str(e)}")
+                messagebox.showerror("Error", "Konnte Anrufanfrage nicht senden")
+                return
+
+            # 7. Speichere Session-Daten mit 120-Sekunden Timeout
             self.pending_call = {
-                'recipient': self.selected_entry,
+                'recipient': self.selected_entry.copy(),
                 'wg_private_key': wg_private_key,
                 'wg_public_key': wg_public_key,
                 'aes_iv': iv,
                 'aes_key': aes_key,
                 'status': 'request_sent',
-                'start_time': time.time()
+                'start_time': time.time(),
+                'timeout': 120,  # 120 Sekunden
+                'call_id': f"{self._client_name}_{self.selected_entry['id']}_{int(time.time())}"
             }
             
-            # UI aktualisieren
+            # 8. UI aktualisieren
             self.update_call_ui(active=True, status="requesting", caller_name=self.selected_entry['name'])
             
-            # Starte Timeout-Überwachung
-            threading.Thread(target=self._call_timeout_watchdog, daemon=True).start()
+            # 9. Starte 120-Sekunden Timeout-Überwachung
+            threading.Thread(
+                target=self._call_timeout_watchdog, 
+                daemon=True,
+                name=f"CallTimeout-{self.selected_entry['id']}"
+            ).start()
+            
+            print(f"[CALL] Call initiation complete - waiting for response (120s timeout)")
                 
         except Exception as e:
             print(f"[CALL CLICK ERROR] {e}")
+            import traceback
+            traceback.print_exc()
             messagebox.showerror("Error", f"Unerwarteter Fehler: {str(e)}")
+            
+            # Cleanup bei Fehler
             if hasattr(self, 'pending_call'):
                 del self.pending_call
+
+    def _call_timeout_watchdog(self):
+        """Überwacht Call-Timeout von 120 Sekunden"""
+        if not hasattr(self, 'pending_call'):
+            return
+            
+        timeout = self.pending_call.get('timeout', 120)
+        start_time = self.pending_call.get('start_time', time.time())
+        call_id = self.pending_call.get('call_id', 'unknown')
+        
+        print(f"[CALL TIMEOUT] Starting watchdog for call {call_id}, timeout: {timeout}s")
+        
+        while (hasattr(self, 'pending_call') and 
+               self.pending_call.get('status') == 'request_sent'):
+            
+            elapsed = time.time() - start_time
+            if elapsed >= timeout:
+                print(f"[CALL TIMEOUT] Timeout reached after {elapsed:.1f}s for call {call_id}")
+                
+                # Sende Timeout-Benachrichtigung an UI
+                self.after(0, lambda: messagebox.showinfo(
+                    "Call Failed", 
+                    f"Keine Antwort vom Empfänger nach {timeout} Sekunden"
+                ))
+                
+                # Beende den Anruf
+                self.end_current_call()
+                break
+                
+            # Update UI mit verbleibender Zeit
+            remaining = timeout - elapsed
+            if remaining % 10 == 0:  # Alle 10 Sekunden loggen
+                print(f"[CALL TIMEOUT] {remaining:.0f} seconds remaining for call {call_id}")
+            
+            time.sleep(1)
+        
+        print(f"[CALL TIMEOUT] Watchdog finished for call {call_id}")
 
     def _call_timeout_watchdog(self):
         """Überwacht Call-Timeout"""
@@ -2145,106 +2233,147 @@ class PHONEBOOK(ctk.CTk):
                 break
             time.sleep(1)    
     def _handle_incoming_call_notification(self, msg):
-        """Handles incoming call notifications with proper decryption"""
+        """Handles incoming call notifications with 120-second timeout"""
         try:
-            custom_data = msg.get('custom_data', {})
-            encrypted_call_data = custom_data.get('ENCRYPTED_CALL_DATA')
-            caller_name = custom_data.get('CALLER_NAME')
-            caller_id = custom_data.get('CALLER_CLIENT_ID')
+            print("\n=== INCOMING CALL NOTIFICATION ===")
             
-            if not all([encrypted_call_data, caller_name, caller_id]):
-                print("[CALL ERROR] Missing call information")
+            # Extract from headers (not body)
+            headers = msg.get('headers', {})
+            caller_name = headers.get('CALLER_NAME')
+            caller_id = headers.get('CALLER_CLIENT_ID')
+            encrypted_call_data = headers.get('ENCRYPTED_CALL_DATA')
+            
+            if not all([caller_name, caller_id, encrypted_call_data]):
+                print("[ERROR] Missing call information in headers")
                 return
             
-            # Entschlüssele die Call-Daten mit eigenem privaten Schlüssel
-            try:
-                private_key = load_privatekey()
-                priv_key = RSA.load_key_string(private_key.encode())
-                decrypted_data = priv_key.private_decrypt(
-                    base64.b64decode(encrypted_call_data), 
-                    RSA.pkcs1_padding
-                )
-                call_data = json.loads(decrypted_data.decode('utf-8'))
-            except Exception as e:
-                print(f"[CALL ERROR] Failed to decrypt call data: {str(e)}")
-                return
+            print(f"[CALL] Incoming call from {caller_name} (ID: {caller_id})")
             
-            # Frage Benutzer ob Anruf angenommen werden soll
-            def show_incoming_call_dialog():
+            # Store call context
+            self.incoming_call = {
+                'caller_name': caller_name,
+                'caller_id': caller_id,
+                'encrypted_data': encrypted_call_data,
+                'received_time': time.time(),
+                'status': 'pending'
+            }
+            
+            # Show dialog with 120-second timeout
+            def show_call_dialog():
                 response = messagebox.askyesno(
                     "Eingehender Anruf", 
                     f"Eingehender Anruf von {caller_name}.\nAnnehmen?",
                     icon='question',
-                    detail="Sie haben 30 Sekunden Zeit zu antworten"
+                    detail="Sie haben 120 Sekunden Zeit zu antworten",
+                    timeout=120000  # 120 seconds in milliseconds
                 )
                 
                 if response:
-                    # Akzeptiere Anruf und setup WireGuard
-                    self._accept_incoming_call(call_data, caller_name, caller_id)
+                    self._accept_incoming_call()
                 else:
-                    # Lehne Anruf ab
-                    self._reject_incoming_call(caller_id)
+                    self._reject_incoming_call()
             
             # Run in main thread
-            self.after(0, show_incoming_call_dialog)
+            self.after(0, show_call_dialog)
             
         except Exception as e:
             print(f"[INCOMING CALL ERROR] {str(e)}")
+            traceback.print_exc()
 
-    def _accept_incoming_call(self, call_data, caller_name, caller_id):
-        """Akzeptiert einen eingehenden Anruf und richtet WireGuard ein"""
+    def _accept_incoming_call(self):
+        """Accept incoming call and setup WireGuard"""
         try:
-            # 1. Generiere eigenes WG Schlüsselpaar
+            if not hasattr(self, 'incoming_call'):
+                print("[ERROR] No incoming call to accept")
+                return
+            
+            call_data = self.incoming_call
+            
+            # 1. Decrypt the call data with our private key
+            private_key = load_privatekey()
+            priv_key = RSA.load_key_string(private_key.encode())
+            
+            encrypted_data = base64.b64decode(call_data['encrypted_data'])
+            decrypted_data = priv_key.private_decrypt(encrypted_data, RSA.pkcs1_padding)
+            call_info = json.loads(decrypted_data.decode('utf-8'))
+            
+            print(f"[CALL] Decrypted call info: {call_info}")
+            
+            # 2. Generate WireGuard keypair
             wg_private_key, wg_public_key = self.wg_manager.generate_keypair()
             
-            # 2. WireGuard Konfiguration
+            # 3. Setup WireGuard
             wg_config = self.wg_manager.create_interface_config(
                 wg_private_key,
-                call_data['caller_wg_public_key'],
-                f"{call_data['caller_ip']}:{call_data['caller_wg_port']}",
-                "10.8.0.2"  # Eigene IP im VPN
+                call_info['caller_wg_public_key'],
+                f"{call_info['caller_ip']}:{call_info['caller_wg_port']}",
+                "10.8.0.2"  #Our IP in VPN
             )
             
-            # 3. WireGuard Interface starten
             success = self.wg_manager.setup_wireguard_tunnel(wg_config)
             
             if success:
-                # 4. Speichere Call-Daten
+                # 4. Store call data
                 self.pending_call = {
-                    'caller_name': caller_name,
-                    'caller_id': caller_id,
+                    'caller_name': call_data['caller_name'],
+                    'caller_id': call_data['caller_id'],
                     'wg_private_key': wg_private_key,
-                    'wg_peer_key': call_data['caller_wg_public_key'],
-                    'aes_iv': base64.b64decode(call_data['aes_iv']),
-                    'aes_key': base64.b64decode(call_data['aes_key']),
+                    'wg_peer_key': call_info['caller_wg_public_key'],
+                    'aes_iv': base64.b64decode(call_info['aes_iv']),
+                    'aes_key': base64.b64decode(call_info['aes_key']),
                     'status': 'accepted'
                 }
                 
-                # 5. Sende Akzeptanz an Server
-                response_msg = build_sip_message("MESSAGE", "server", {
+                # 5. Send acceptance to server
+                response_msg = self.build_sip_message("MESSAGE", "server", {
                     "MESSAGE_TYPE": "CALL_RESPONSE",
                     "RESPONSE": "accepted",
-                    "CALLER_CLIENT_ID": caller_id,
+                    "CALLER_CLIENT_ID": call_data['caller_id'],
                     "CALLEE_WG_PUBLIC_KEY": wg_public_key,
                     "TIMESTAMP": int(time.time())
                 })
                 
                 send_frame(self.client_socket, response_msg.encode('utf-8'))
                 
-                # 6. Starte Audio
+                # 6. Start audio
                 self.current_secret = self.pending_call['aes_iv'] + self.pending_call['aes_key']
                 self._start_audio_streams()
                 
-                # 7. UI aktualisieren
-                self.update_call_ui(active=True, status="connected", caller_name=caller_name)
+                # 7. Update UI
+                self.update_call_ui(active=True, status="connected", caller_name=call_data['caller_name'])
+                
+                print("[CALL] Call accepted successfully")
                 
             else:
                 print("[CALL ERROR] WireGuard setup failed")
-                self._reject_incoming_call(caller_id)
+                self._reject_incoming_call()
                 
         except Exception as e:
             print(f"[ACCEPT CALL ERROR] {str(e)}")
-            self._reject_incoming_call(caller_id)   
+            self._reject_incoming_call()
+
+    def _reject_incoming_call(self):
+        """Reject incoming call"""
+        try:
+            if hasattr(self, 'incoming_call'):
+                call_data = self.incoming_call
+                
+                reject_msg = self.build_sip_message("MESSAGE", "server", {
+                    "MESSAGE_TYPE": "CALL_RESPONSE",
+                    "RESPONSE": "rejected",
+                    "CALLER_CLIENT_ID": call_data['caller_id'],
+                    "TIMESTAMP": int(time.time())
+                })
+                
+                send_frame(self.client_socket, reject_msg.encode('utf-8'))
+                print("[CALL] Call rejected")
+                
+                # Cleanup
+                if hasattr(self, 'incoming_call'):
+                    del self.incoming_call
+                    
+        except Exception as e:
+            print(f"[REJECT CALL ERROR] {str(e)}")
     def _setup_wireguard_with_timeout(self):
         """WireGuard setup with extended 120-second timeout"""
         timeout = 120  # 120 seconds timeout
@@ -2359,31 +2488,71 @@ class PHONEBOOK(ctk.CTk):
                         if not msg:
                             continue
                             
+                        # Prüfe sowohl headers als auch custom_data für Nachrichtentypen
+                        headers = msg.get('headers', {})
                         custom_data = msg.get('custom_data', {})
                         
+                        # Extrahiere MESSAGE_TYPE aus Headers (höhere Priorität) oder custom_data
+                        message_type = headers.get('MESSAGE_TYPE') or custom_data.get('MESSAGE_TYPE')
+                        
                         # INCOMING_CALL Handling (Für angerufenen Client)
-                        if custom_data.get('MESSAGE_TYPE') == 'INCOMING_CALL':
+                        if message_type == 'INCOMING_CALL':
                             print("[CALL] Incoming call received")
-                            self._handle_incoming_call_notification(msg)  # Nur die NEUE Methode verwenden
+                            self._handle_incoming_call_notification(msg)
                             continue
+                        
                         # SESSION_KEY Handling (Für beide Clients)
-                        if custom_data.get('MESSAGE_TYPE') == 'SESSION_KEY':
+                        elif message_type == 'SESSION_KEY':
                             print("[CALL] Received session key from server")
                             self._handle_session_key(msg)
                             continue
                         
                         # CALL_RESPONSE Handling (Für anrufenden Client)
-                        if custom_data.get('MESSAGE_TYPE') == 'CALL_RESPONSE':
+                        elif message_type == 'CALL_RESPONSE':
                             print("[CALL] Received call response")
                             self._handle_call_response(msg)
                             continue
+                        
+                        # CALL_TIMEOUT Handling
+                        elif message_type == 'CALL_TIMEOUT':
+                            print("[CALL] Call timeout received from server")
+                            if hasattr(self, 'pending_call'):
+                                self.end_current_call()
+                                messagebox.showinfo("Call Failed", "Der Empfänger hat nicht innerhalb von 120 Sekunden geantwortet")
+                            continue
+                        
+                        # IDENTITY_CHALLENGE aus Headers
+                        elif message_type == 'IDENTITY_CHALLENGE':
+                            print("[IDENTITY] Challenge vom Server empfangen")
+                            self._handle_identity_challenge(msg)
+                            continue
+                            
+                        # IDENTITY_VERIFIED aus Headers
+                        elif message_type == 'IDENTITY_VERIFIED':
+                            print("[IDENTITY] Verifizierung bestätigt")
+                            self._handle_identity_verified(msg)
+                            continue
+                            
+                        # PHONEBOOK_UPDATE
+                        elif message_type == 'PHONEBOOK_UPDATE':
+                            print("[UPDATE] Phonebook update received")
+                            self._process_phonebook_update(msg)
+                            continue
                             
                     except UnicodeDecodeError:
+                        # Versuche es als binäre Daten zu verarbeiten
+                        if len(frame_data) > 512:
+                            print("[DEBUG] Trying to process as encrypted phonebook data")
+                            result = self._process_encrypted_phonebook(frame_data)
+                            if result:
+                                continue
+                        print("[DEBUG] Could not decode frame as UTF-8")
                         continue
                         
                 elif isinstance(queue_item, str):
                     print(f"[CLIENT] Verarbeite String aus Queue: {queue_item[:100]}...")
                     
+                    # Legacy-String-Verarbeitung (für Abwärtskompatibilität)
                     if 'IDENTITY_CHALLENGE' in queue_item:
                         print("[IDENTITY] Challenge vom Server (String-Format) empfangen")
                         self._handle_identity_challenge(queue_item)
@@ -2392,6 +2561,11 @@ class PHONEBOOK(ctk.CTk):
                     elif 'IDENTITY_VERIFIED' in queue_item:
                         print("[IDENTITY] Verifizierung bestätigt (String-Format)")
                         self._handle_identity_verified(queue_item)
+                        continue
+                        
+                    elif 'INCOMING_CALL' in queue_item:
+                        print("[CALL] Incoming call (String-Format) empfangen")
+                        self._handle_incoming_call_notification(queue_item)
                         continue
                         
                     try:
