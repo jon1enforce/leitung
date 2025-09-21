@@ -653,7 +653,7 @@ class Server:
                         
                         client_thread = threading.Thread(
                             target=self.handle_client,
-                            args=(client_socket,),
+                            args=(client_socket, addr),  # ✅ addr hinzugefügt
                             daemon=True
                         )
                         client_thread.start()
@@ -1100,106 +1100,218 @@ class Server:
         with self.key_lock:
             self.all_public_keys = all_public_keys            
     def handle_client(self, client_socket, client_address):
-        """Behandelt Client-Verbindungen mit framed SIP"""
-        client_name = "unknown"
-        
+        """Vollständige Client-Behandlung - Jede Session isoliert"""
+        print(f"\n[Server] Neue Verbindung von {client_address}")
+        client_id = None
+        client_name = None
+
+        # Thread-lokale Queue für diesen Client
+        client_message_queue = []
+        processing_client_queue = False
+
         try:
-            print(f"\n[Server] Neue Verbindung von {client_address}")
+            # 1. Registration empfangen (mit Timeout)
+            client_socket.settimeout(30.0)
+            print(f"[SERVER] Warte auf Registration von {client_address}")
             
-            # Setze Timeout für Registration
-            client_socket.settimeout(15.0)
-            
-            # ✅ WICHTIG: Verwende NUR framed communication
             register_data = recv_frame(client_socket)
             if not register_data:
-                print("[SERVER] Keine Framed-Daten empfangen")
+                print("[SERVER] Keine Registrierungsdaten empfangen")
                 return
+
+            print(f"[SERVER] Empfangene Daten: {len(register_data)} bytes")
             
+            # 2. SIP-Nachricht parsen
             if isinstance(register_data, bytes):
                 try:
                     register_data = register_data.decode('utf-8')
+                    print("[SERVER] Daten als UTF-8 decodiert")
                 except UnicodeDecodeError:
-                    print("[SERVER] Konnte Framed-Daten nicht dekodieren")
+                    print("[SERVER] Konnte Daten nicht als UTF-8 decodieren")
                     return
-            
-            print(f"[SERVER] Empfangene Registration: {register_data[:200]}...")
-            
-            # Parse SIP Nachricht
-            sip_data = parse_sip_message(register_data)
-            if not sip_data:
+
+            # 3. SIP-Nachricht parsen
+            sip_msg = self.parse_sip_message(register_data)
+            if not sip_msg:
                 print("[SERVER] Ungültige SIP-Nachricht")
                 return
-            
-            # Überprüfe REGISTER Method
-            method = sip_data.get('method', '')
-            if method != 'REGISTER':
-                print(f"[SERVER] Erwartete REGISTER, bekam: {method}")
+
+            # 4. Client-Identifikation
+            from_header = sip_msg['headers'].get('From', sip_msg['headers'].get('FROM', ''))
+            client_name_match = re.search(r'<sip:(.*?)@', from_header)
+            if not client_name_match:
+                print(f"[SERVER] Kein Client-Name in FROM-Header: {from_header}")
                 return
+                
+            client_name = client_name_match.group(1)
+            print(f"[SERVER] Client-Name: {client_name}")
+
+            # 5. Public Key extrahieren
+            client_pubkey = None
             
-            # Extrahiere Client-Namen
-            headers = sip_data.get('headers', {})
-            from_header = headers.get('FROM', '')
-            client_name_match = re.search(r'<sip:([^@]+)@', from_header)
-            if client_name_match:
-                client_name = client_name_match.group(1)
-            else:
-                client_name = f"client_{random.randint(1000, 9999)}"
+            if 'content' in sip_msg and sip_msg['content']:
+                client_pubkey = sip_msg['content'].strip()
             
-            # Extrahiere Public Key aus Body
-            public_key = sip_data.get('body', '').strip()
-            if not public_key or not public_key.startswith('-----BEGIN PUBLIC KEY-----'):
-                print("[SERVER] Ungültiger Public Key im Body")
-                error_msg = self.build_sip_response(sip_data, 400, "Invalid Public Key")
-                send_frame(client_socket, error_msg.encode('utf-8'))
+            if not client_pubkey:
+                key_match = re.search(r'-----BEGIN PUBLIC KEY-----.*?-----END PUBLIC KEY-----', 
+                                     register_data, re.DOTALL)
+                if key_match:
+                    client_pubkey = key_match.group(0).strip()
+
+            if not client_pubkey or '-----BEGIN PUBLIC KEY-----' not in client_pubkey:
+                print("[SERVER] Kein gültiger Public Key gefunden")
                 return
+
+            # 6. ✅ Client ATOMIC registrieren (THREAD-SAFE)
+            client_data = {
+                'name': client_name,
+                'public_key': client_pubkey,
+                'socket': client_socket,
+                'ip': client_address[0],
+                'port': client_address[1],
+                'login_time': time.time(),
+                'last_update': time.time()
+            }
             
-            print(f"[SERVER] Client {client_name} registriert sich")
-            
-            # Speichere Client-Daten
+            # ✅ ATOMIC Registration unter clients_lock
             with self.clients_lock:
-                self.clients[client_name] = {
-                    'socket': client_socket,
-                    'address': client_address,
-                    'public_key': public_key,
-                    'last_seen': time.time(),
-                    'status': 'connected'
-                }
+                client_id = self._generate_client_id_locked()
+                self.clients[client_id] = client_data
+                print(f"[SERVER] Client {client_name} registriert mit ID: {client_id}")
             
-            # Sende Bestätigung MIT FRAMING
-            success_msg = self.build_sip_response(sip_data, 200, "OK")
-            send_frame(client_socket, success_msg.encode('utf-8'))
-            print(f"[SERVER] Client {client_name} erfolgreich registriert")
+            # ✅ Gespeicherte Clients aktualisieren
+            self.save_active_clients()
+
+            # ✅ ALLE Public Keys sammeln (THREAD-SAFE)
+            with self.clients_lock:
+                clients_copy = self.clients.copy()
             
-            # Setze Timeout zurück für normale Kommunikation
-            client_socket.settimeout(30.0)
+            all_public_keys = [self.server_public_key]  # Server Key zuerst
+            for cid, client_info in clients_copy.items():
+                if 'public_key' in client_info:
+                    all_public_keys.append(client_info['public_key'])
             
-            # Hauptkommunikationsschleife MIT FRAMING
-            self.communication_loop(client_socket, client_name, client_address)
+            # ✅ Keys unter key_lock speichern
+            with self.key_lock:
+                self.all_public_keys = all_public_keys
             
-        except ValueError as e:
-            if "Frame too large" in str(e):
-                print(f"[SERVER] Client {client_address} sendet zu große Frames")
-                # Sende Fehlermeldung an Client
+            clients_count = len(clients_copy)
+            print(f"[SERVER] Gesamte Keys: {len(all_public_keys)} (Server + {clients_count} Clients)")
+
+            # 7. Merkle Root berechnen
+            merkle_root = build_merkle_tree_from_keys(all_public_keys)
+            print(f"[SERVER] Merkle Root: {merkle_root[:20]}...")
+
+            # 8. ERSTE ANTWORT: Server Public Key und Client ID
+            first_response_data = {
+                "SERVER_PUBLIC_KEY": self.server_public_key,
+                "CLIENT_ID": client_id
+            }
+            
+            first_response_msg = self.build_sip_message("200 OK", client_name, first_response_data)
+            print(f"[SERVER] Sende erste Antwort: {len(first_response_msg)} bytes")
+            
+            send_frame(client_socket, first_response_msg.encode('utf-8'))
+            print("[SERVER] Erste Antwort erfolgreich gesendet")
+
+            # Kurze Pause für Client-Verarbeitung
+            time.sleep(0.1)
+
+            # 9. ZWEITE ANTWORT: Merkle Root und alle Keys
+            second_response_data = {
+                "MERKLE_ROOT": merkle_root,
+                "ALL_KEYS": all_public_keys  # ✅ Lokale Variable verwenden
+            }            
+            
+            second_response_msg = self.build_sip_message("200 OK", client_name, second_response_data)
+            print(f"[SERVER] Sende zweite Antwort: {len(second_response_msg)} bytes")
+            
+            send_frame(client_socket, second_response_msg.encode('utf-8'))
+            print("[SERVER] Zweite Antwort erfolgreich gesendet")
+            
+            # 10. Hauptkommunikationsschleife mit eigener Queue
+            print(f"[SERVER] Starte Hauptloop für {client_name}")
+            client_socket.settimeout(1.0)
+            last_activity = time.time()
+            buffer = b''
+            
+            while True:
                 try:
-                    error_msg = build_sip_message("MESSAGE", "client", {
-                        "ERROR": "FRAME_TOO_LARGE",
-                        "MAX_SIZE": "65536",
-                        "TIMESTAMP": int(time.time())
-                    })
-                    send_frame(client_socket, error_msg.encode('utf-8'))
-                except:
-                    pass
-            else:
-                print(f"[SERVER] Wertfehler: {e}")
+                    # RAW Socket lesen (ohne Framing)
+                    try:
+                        data = client_socket.recv(4096)
+                        if not data:
+                            print(f"[SERVER] {client_name} hat Verbindung getrennt")
+                            break
+                        
+                        last_activity = time.time()
+                        buffer += data
+                        
+                        # Versuche, komplette Nachrichten aus dem Buffer zu parsen
+                        while buffer:
+                            # Prüfe auf Framing-Header (4 Bytes Länge)
+                            if len(buffer) >= 4:
+                                # Extrahiere Länge aus Header
+                                length = struct.unpack('!I', buffer[:4])[0]
+                                
+                                # Sicherheitscheck
+                                if length > 10 * 1024 * 1024:  # 10MB max
+                                    print(f"[SECURITY] Frame zu groß: {length} bytes, verwerfe")
+                                    buffer = b''  # Buffer leeren
+                                    break
+                                    
+                                if len(buffer) >= 4 + length:
+                                    # Vollständige Nachricht empfangen
+                                    frame_data = buffer[4:4+length]
+                                    buffer = buffer[4+length:]
+                                    
+                                    # Zur Client-eigenen Queue hinzufügen
+                                    client_message_queue.append({
+                                        'type': 'frame_data',
+                                        'data': frame_data,
+                                        'client_socket': client_socket,
+                                        'client_name': client_name
+                                    })
+                                    
+                                    # Client-Queue verarbeiten
+                                    if not processing_client_queue:
+                                        processing_client_queue = True
+                                        self._process_client_queue(client_message_queue, client_socket, client_name)
+                                        processing_client_queue = False
+                                    
+                                else:
+                                    # Noch nicht genug Daten für vollständigen Frame
+                                    break
+                            else:
+                                # Noch nicht genug Daten für Header
+                                break
+                                
+                    except socket.timeout:
+                        # Timeout ist normal, prüfe auf Inaktivität
+                        if time.time() - last_activity > 60:
+                            print(f"[SERVER] {client_name} inaktiv, trenne Verbindung")
+                            break
+                        continue
+
+                except Exception as e:
+                    print(f"[SERVER] Fehler bei {client_name}: {str(e)}")
+                    break
+
+        except socket.timeout:
+            print(f"[SERVER] Timeout bei Registrierung von {client_address}")
+            
         except Exception as e:
-            print(f"[SERVER] Kritischer Fehler: {e}")
+            print(f"[SERVER] Kritischer Fehler: {str(e)}")
             import traceback
             traceback.print_exc()
+            
         finally:
-            print(f"[SERVER] Cleanup für {client_name}")
-            with self.clients_lock:
-                if client_name in self.clients:
-                    del self.clients[client_name]
+            # ✅ Cleanup (THREAD-SAFE)
+            print(f"[SERVER] Cleanup für {client_name if client_name else 'unknown'}")
+            
+            if client_id:
+                self._safe_remove_client(client_id)
+            
             try:
                 client_socket.close()
             except:

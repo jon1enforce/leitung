@@ -127,7 +127,7 @@ def send_frame(sock, data):
     except socket.timeout:
         raise TimeoutError("Send operation timed out")
 
-def recv_frame(sock, timeout=30):
+def recv_frame(sock, timeout=60):
     """Improved frame receiver with binary support"""
     sock.settimeout(timeout)
     try:
