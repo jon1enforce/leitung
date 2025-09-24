@@ -1484,141 +1484,254 @@ class Server:
         except Exception as e:
             print(f"[CALL ERROR] WG connected handling failed: {str(e)}")
             return False                
+
+
     def handle_call_request(self, sip_data, client_socket, client_address):
-        """Handle incoming call requests and forward to target"""
+        """Korrigierte Call-Request-Verarbeitung - kompatibel mit Client-Protokoll"""
         try:
             print("\n=== CALL_REQUEST HANDLING START ===")
             
-            # Extract call data from headers (not body)
-            headers = sip_data.get('headers', {})
-            message_type = headers.get('MESSAGE_TYPE')
-            target_id = headers.get('TARGET_CLIENT_ID')
-            encrypted_data = headers.get('ENCRYPTED_CALL_DATA')
-            caller_name = headers.get('CALLER_NAME')
+            # ✅ KONSISTENT: Daten aus custom_data (Body) extrahieren - wie Client es sendet
+            custom_data = sip_data.get('custom_data', {})
+            message_type = custom_data.get('MESSAGE_TYPE')
+            target_id = custom_data.get('TARGET_CLIENT_ID')
+            encrypted_call_data_b64 = custom_data.get('ENCRYPTED_CALL_DATA')
+            caller_name = custom_data.get('CALLER_NAME')
+            caller_client_id = custom_data.get('CALLER_CLIENT_ID')
             
-            if not all([message_type, target_id, encrypted_data, caller_name]):
-                print("[ERROR] Missing required call headers")
+            print(f"[DEBUG] Call request data from custom_data:")
+            print(f"  MESSAGE_TYPE: {message_type}")
+            print(f"  TARGET_CLIENT_ID: {target_id}")
+            print(f"  ENCRYPTED_CALL_DATA: {encrypted_call_data_b64[:50] if encrypted_call_data_b64 else 'None'}...")
+            print(f"  CALLER_NAME: {caller_name}")
+            print(f"  CALLER_CLIENT_ID: {caller_client_id}")
+            
+            # ✅ VALIDIERUNG: Prüfe ob alle erforderlichen Felder vorhanden sind
+            if not all([message_type, target_id, encrypted_call_data_b64, caller_name, caller_client_id]):
+                print("[ERROR] Missing required call data in custom_data")
+                print("[DEBUG] Falling back to header extraction...")
+                
+                # Fallback: Prüfe Header falls custom_data unvollständig
+                headers = sip_data.get('headers', {})
+                message_type = headers.get('MESSAGE_TYPE', message_type)
+                target_id = headers.get('TARGET_CLIENT_ID', target_id)
+                encrypted_call_data_b64 = headers.get('ENCRYPTED_CALL_DATA', encrypted_call_data_b64)
+                caller_name = headers.get('CALLER_NAME', caller_name)
+                caller_client_id = headers.get('CALLER_CLIENT_ID', caller_client_id)
+                
+                if not all([message_type, target_id, encrypted_call_data_b64, caller_name, caller_client_id]):
+                    print("[ERROR] Missing required call data in headers too")
+                    error_msg = self.build_sip_message("MESSAGE", caller_name, {
+                        "MESSAGE_TYPE": "CALL_ERROR",
+                        "ERROR": "MISSING_REQUIRED_FIELDS",
+                        "MISSING_FIELDS": ["MESSAGE_TYPE", "TARGET_CLIENT_ID", "ENCRYPTED_CALL_DATA", "CALLER_NAME", "CALLER_CLIENT_ID"],
+                        "TIMESTAMP": int(time.time())
+                    })
+                    send_frame(client_socket, error_msg.encode('utf-8'))
+                    return False
+            
+            if message_type != "CALL_REQUEST":
+                print(f"[ERROR] Expected CALL_REQUEST, got: {message_type}")
                 return False
             
-            print(f"[DEBUG] Call request from: {caller_name}")
-            print(f"[DEBUG] Target client ID: {target_id}")
+            print(f"[CALL] Call request from: {caller_name} (ID: {caller_client_id}) to target: {target_id}")
             
-            # Find target client
+            # ✅ ZIEL-CLIENT FINDEN (thread-safe)
             target_client = None
-            for client_id, client_info in self.clients.items():
-                if str(client_id) == target_id:
-                    target_client = client_info
-                    break
+            with self.clients_lock:
+                for client_id, client_info in self.clients.items():
+                    if str(client_id) == str(target_id):  # String-Vergleich für Konsistenz
+                        target_client = client_info
+                        break
             
             if not target_client:
                 print(f"[ERROR] Target client {target_id} not found")
+                # ✅ FEHLERMELDUNG KONSISTENT: Verwende gleiches Format wie Client erwartet
+                error_msg = self.build_sip_message("MESSAGE", caller_name, {
+                    "MESSAGE_TYPE": "CALL_ERROR",
+                    "ERROR": "TARGET_NOT_FOUND",
+                    "TARGET_ID": target_id,
+                    "TIMESTAMP": int(time.time())
+                })
+                send_frame(client_socket, error_msg.encode('utf-8'))
                 return False
             
-            print(f"[SUCCESS] Target client found: {target_client['name']}")
+            # ✅ CALLER VALIDIEREN (optional, aber konsistent)
+            caller_client = None
+            with self.clients_lock:
+                for client_id, client_info in self.clients.items():
+                    if str(client_id) == str(caller_client_id):
+                        caller_client = client_info
+                        break
             
-            # Generate session key for both parties
+            print(f"[SUCCESS] Target client found: {target_client.get('name', 'Unknown')}")
+            
+            # ✅ SESSION KEY GENERIEREN (48 Bytes: 16 IV + 32 Key) - KONSISTENT MIT CLIENT
             session_secret = os.urandom(48)
             iv = session_secret[:16]
             aes_key = session_secret[16:48]
             
-            # Encrypt session key for both caller and callee
-            caller_pubkey = RSA.load_pub_key_bio(BIO.MemoryBuffer(
-                self.clients[caller_name]['public_key'].encode()))
-            callee_pubkey = RSA.load_pub_key_bio(BIO.MemoryBuffer(
-                target_client['public_key'].encode()))
+            print(f"[SESSION] Generated session key: {len(session_secret)} bytes")
             
-            # Encrypt for caller
-            caller_session_data = b"+++session_key+++" + session_secret
-            encrypted_caller_session = caller_pubkey.public_encrypt(
-                caller_session_data, RSA.pkcs1_padding)
+            # ✅ SESSION KEY FÜR BEIDE PARTEIEN VERSCHLÜSSELN
+            try:
+                # Für Angerufenen (Target)
+                callee_pubkey = RSA.load_pub_key_bio(BIO.MemoryBuffer(
+                    target_client['public_key'].encode()))
+                callee_session_data = b"+++session_key+++" + session_secret
+                encrypted_callee_session = callee_pubkey.public_encrypt(
+                    callee_session_data, RSA.pkcs1_padding)
+                
+                # Für Anrufer (Caller) - falls registriert
+                if caller_client and 'public_key' in caller_client:
+                    caller_pubkey = RSA.load_pub_key_bio(BIO.MemoryBuffer(
+                        caller_client['public_key'].encode()))
+                    caller_session_data = b"+++session_key+++" + session_secret
+                    encrypted_caller_session = caller_pubkey.public_encrypt(
+                        caller_session_data, RSA.pkcs1_padding)
+                else:
+                    # Fallback: Verwende gleiche Session für Caller
+                    encrypted_caller_session = encrypted_callee_session
+                    print("[WARNING] Using fallback session encryption for caller")
+                    
+            except Exception as e:
+                print(f"[ERROR] Session key encryption failed: {str(e)}")
+                error_msg = self.build_sip_message("MESSAGE", caller_name, {
+                    "MESSAGE_TYPE": "CALL_ERROR",
+                    "ERROR": "ENCRYPTION_FAILED",
+                    "DETAILS": "Session key encryption error",
+                    "TIMESTAMP": int(time.time())
+                })
+                send_frame(client_socket, error_msg.encode('utf-8'))
+                return False
             
-            # Encrypt for callee  
-            callee_session_data = b"+++session_key+++" + session_secret
-            encrypted_callee_session = callee_pubkey.public_encrypt(
-                callee_session_data, RSA.pkcs1_padding)
-            
-            # Send INCOMING_CALL notification to target (Godzilla)
+            # ✅ INCOMING_CALL AN ZIEL SENDEN (KONSISTENT MIT CLIENT-ERWARTUNGEN)
             incoming_call_msg = self.build_sip_message("MESSAGE", target_client['name'], {
                 "MESSAGE_TYPE": "INCOMING_CALL",
                 "CALLER_NAME": caller_name,
-                "CALLER_CLIENT_ID": self.get_client_id(caller_name),
-                "ENCRYPTED_CALL_DATA": encrypted_data,  # Original encrypted call data
-                "TIMESTAMP": int(time.time())
-            }, from_server=True)
+                "CALLER_CLIENT_ID": caller_client_id,
+                "CALLER_IP": caller_client.get('ip', client_address[0]) if caller_client else client_address[0],
+                "CALLER_WG_PORT": "51820",  # Standard WireGuard Port
+                "ENCRYPTED_CALL_DATA": encrypted_call_data_b64,  # Original vom Anrufer
+                "TIMESTAMP": int(time.time()),
+                "TIMEOUT": 120  # 120 Sekunden Timeout - konsistent mit Client
+            })
             
-            # Send to target client
-            target_socket = target_client['socket']
+            # ✅ SENDEN AN ZIEL-CLIENT
+            target_socket = target_client.get('socket')
+            if not target_socket:
+                print(f"[ERROR] Target client {target_id} has no active socket")
+                error_msg = self.build_sip_message("MESSAGE", caller_name, {
+                    "MESSAGE_TYPE": "CALL_ERROR", 
+                    "ERROR": "TARGET_OFFLINE",
+                    "TARGET_ID": target_id,
+                    "TIMESTAMP": int(time.time())
+                })
+                send_frame(client_socket, error_msg.encode('utf-8'))
+                return False
+                
             send_frame(target_socket, incoming_call_msg.encode('utf-8'))
-            print(f"[DEBUG] INCOMING_CALL sent to {target_client['name']}")
+            print(f"[CALL] INCOMING_CALL sent to {target_client.get('name', 'Unknown')}")
             
-            # Send session key to caller (KingKong)
+            # ✅ SESSION KEY AN ANRUFER SENDEN (KONSISTENT)
             caller_session_msg = self.build_sip_message("MESSAGE", caller_name, {
                 "MESSAGE_TYPE": "SESSION_KEY",
                 "ENCRYPTED_SESSION": base64.b64encode(encrypted_caller_session).decode('utf-8'),
                 "TARGET_CLIENT_ID": target_id,
+                "TARGET_NAME": target_client.get('name', 'Unknown'),
                 "TIMESTAMP": int(time.time())
-            }, from_server=True)
+            })
             
             send_frame(client_socket, caller_session_msg.encode('utf-8'))
-            print(f"[DEBUG] Session key sent to caller {caller_name}")
+            print(f"[CALL] Session key sent to caller {caller_name}")
             
-            # Store call context for timeout handling
-            call_id = f"{caller_name}_{target_client['name']}_{int(time.time())}"
+            # ✅ CALL-CONTEXT FÜR TIMEOUT SPEICHERN
+            call_id = f"{caller_client_id}_{target_id}_{int(time.time())}"
             self.active_calls[call_id] = {
+                'caller_id': caller_client_id,
+                'callee_id': target_id,
                 'caller': caller_name,
-                'callee': target_client['name'],
+                'callee': target_client.get('name', 'Unknown'),
+                'caller_socket': client_socket,
+                'callee_socket': target_socket,
                 'start_time': time.time(),
                 'status': 'pending',
-                'session_secret': session_secret
+                'session_secret': session_secret,
+                'timeout': 120  # Konsistent mit Client-Timeout
             }
             
-            # Start timeout thread
+            # ✅ TIMEOUT WATCHDOG STARTEN (120 Sekunden - KONSISTENT)
             threading.Thread(
                 target=self._call_timeout_watchdog,
                 args=(call_id,),
                 daemon=True
             ).start()
             
-            print("[SUCCESS] Call setup complete")
+            print(f"[SUCCESS] Call setup complete - ID: {call_id}")
             return True
             
         except Exception as e:
-            print(f"[CALL ERROR] {str(e)}")
+            print(f"[CALL ERROR] Critical error: {str(e)}")
             traceback.print_exc()
+            
+            # ✅ FEHLERMELDUNG AN ANRUFER SENDEN (KONSISTENTES FORMAT)
+            try:
+                error_msg = self.build_sip_message("MESSAGE", caller_name, {
+                    "MESSAGE_TYPE": "CALL_ERROR",
+                    "ERROR": "SERVER_ERROR",
+                    "REASON": str(e)[:100],  # Begrenzte Länge für Stabilität
+                    "TIMESTAMP": int(time.time())
+                })
+                send_frame(client_socket, error_msg.encode('utf-8'))
+            except Exception as send_error:
+                print(f"[ERROR] Failed to send error message: {send_error}")
+                
             return False
 
-    def _call_timeout_watchdog(self, call_id, timeout=120):
-        """Monitor call timeout (120 seconds)"""
+    def _call_timeout_watchdog(self, call_id):
+        """Überwacht Call-Timeout (120 Sekunden) - KONSISTENT MIT CLIENT"""
+        timeout = 120  # ✅ Gleicher Timeout wie Client
         start_time = time.time()
+        
+        print(f"[CALL TIMEOUT] Starting watchdog for call {call_id}, timeout: {timeout}s")
         
         while time.time() - start_time < timeout:
             if call_id not in self.active_calls:
-                return  # Call was completed
-            
+                print(f"[CALL TIMEOUT] Call {call_id} ended normally")
+                return
+                
             call_data = self.active_calls[call_id]
-            if call_data['status'] != 'pending':
-                return  # Call was answered/rejected
-            
+            if call_data['status'] != 'pending':  # Call wurde beantwortet
+                print(f"[CALL TIMEOUT] Call {call_id} answered with status: {call_data['status']}")
+                return
+                
             time.sleep(1)
         
-        # Timeout reached
+        # ✅ TIMEOUT ERREICHT - KONSISTENTE BENACHRICHTIGUNG
         if call_id in self.active_calls:
             print(f"[CALL TIMEOUT] Call {call_id} timed out after {timeout} seconds")
             
-            # Notify caller
-            caller_name = self.active_calls[call_id]['caller']
-            if caller_name in self.clients:
-                timeout_msg = self.build_sip_message("MESSAGE", caller_name, {
-                    "MESSAGE_TYPE": "CALL_RESPONSE",
-                    "RESPONSE": "timeout",
-                    "CALL_ID": call_id,
-                    "TIMESTAMP": int(time.time())
-                }, from_server=True)
-                
-                caller_socket = self.clients[caller_name]['socket']
-                send_frame(caller_socket, timeout_msg.encode('utf-8'))
+            call_data = self.active_calls[call_id]
             
+            # Benachrichtige Anrufer über Timeout
+            timeout_msg = self.build_sip_message("MESSAGE", call_data['caller'], {
+                "MESSAGE_TYPE": "CALL_RESPONSE",
+                "RESPONSE": "timeout",
+                "CALL_ID": call_id,
+                "TARGET_ID": call_data['callee_id'],
+                "TIMESTAMP": int(time.time())
+            })
+            
+            try:
+                if call_data.get('caller_socket'):
+                    send_frame(call_data['caller_socket'], timeout_msg.encode('utf-8'))
+            except Exception as e:
+                print(f"[CALL TIMEOUT ERROR] Failed to notify caller: {e}")
+            
+            # Lösche Call-Kontext
             del self.active_calls[call_id]
+
+
     def _send_to_client_safe(self, client_name, message):
         """Sicherer Versand an Client"""
         try:
