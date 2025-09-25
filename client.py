@@ -893,57 +893,57 @@ class CALL:
         self.CHUNK = 1024
         self.PORT = 51821  # Audio port
 
-def on_call_click(self, selected_entry=None):
-    """Hauptmethode für Call-Initiation - wird von UI aufgerufen"""
-    try:
-        # VERBESSERT: Explizite Prüfung auf Rekursion vermeiden
-        if hasattr(self, '_in_call_click') and self._in_call_click:
-            return
-        self._in_call_click = True
-        
-        # Verwende übergebenen Eintrag oder falls None, versuche self.client.selected_entry
-        if selected_entry is None and hasattr(self.client, 'selected_entry'):
-            selected_entry = self.client.selected_entry
-            
-        if not selected_entry:
-            messagebox.showerror("Error", "Bitte Kontakt auswählen")
-            self._in_call_click = False
-            return
-
-        print(f"[CALL] Starte Anruf zu {selected_entry.get('name', 'Unknown')}")
-
-        # Prüfe ob bereits ein aktiver Call läuft
-        if self.active_call or self.pending_call:
-            messagebox.showwarning("Warning", "Bereits in einem Anruf aktiv")
-            self._in_call_click = False
-            return
-
-        # Validiere dass required fields vorhanden sind
-        if 'id' not in selected_entry:
-            messagebox.showerror("Error", "Ungültiger Kontakt (fehlende ID)")
-            self._in_call_click = False
-            return
-
-        # Schritt 1: Anruf initiieren
-        self.initiate_call(selected_entry)
-        
-        # UI auf "Warten" setzen - VERBESSERT: Direkter Aufruf ohne Wrapper
+    def on_call_click(self, selected_entry=None):
+        """Hauptmethode für Call-Initiation - wird von UI aufgerufen"""
         try:
-            if hasattr(self.client, 'update_call_ui'):
-                self.client.update_call_ui(True, "requesting", selected_entry.get('name', 'Unknown'))
-        except Exception as e:
-            print(f"[UI WARNING] Failed to update UI: {str(e)}")
-        
-        print(f"[CALL] Anruf initiiert zu {selected_entry.get('name', 'Unknown')}")
+            # VERBESSERT: Explizite Prüfung auf Rekursion vermeiden
+            if hasattr(self, '_in_call_click') and self._in_call_click:
+                return
+            self._in_call_click = True
+            
+            # Verwende übergebenen Eintrag oder falls None, versuche self.client.selected_entry
+            if selected_entry is None and hasattr(self.client, 'selected_entry'):
+                selected_entry = self.client.selected_entry
+                
+            if not selected_entry:
+                messagebox.showerror("Error", "Bitte Kontakt auswählen")
+                self._in_call_click = False
+                return
 
-    except Exception as e:
-        print(f"[CALL ERROR] on_call_click failed: {str(e)}")
-        messagebox.showerror("Error", f"Anruf fehlgeschlagen: {str(e)}")
-        self.cleanup_call_resources()
-    finally:
-        # Sicherstellen dass Flag zurückgesetzt wird
-        if hasattr(self, '_in_call_click'):
-            self._in_call_click = False
+            print(f"[CALL] Starte Anruf zu {selected_entry.get('name', 'Unknown')}")
+
+            # Prüfe ob bereits ein aktiver Call läuft
+            if self.active_call or self.pending_call:
+                messagebox.showwarning("Warning", "Bereits in einem Anruf aktiv")
+                self._in_call_click = False
+                return
+
+            # Validiere dass required fields vorhanden sind
+            if 'id' not in selected_entry:
+                messagebox.showerror("Error", "Ungültiger Kontakt (fehlende ID)")
+                self._in_call_click = False
+                return
+
+            # Schritt 1: Anruf initiieren
+            self.initiate_call(selected_entry)
+            
+            # UI auf "Warten" setzen - VERBESSERT: Direkter Aufruf ohne Wrapper
+            try:
+                if hasattr(self.client, 'update_call_ui'):
+                    self.client.update_call_ui(True, "requesting", selected_entry.get('name', 'Unknown'))
+            except Exception as e:
+                print(f"[UI WARNING] Failed to update UI: {str(e)}")
+            
+            print(f"[CALL] Anruf initiiert zu {selected_entry.get('name', 'Unknown')}")
+
+        except Exception as e:
+            print(f"[CALL ERROR] on_call_click failed: {str(e)}")
+            messagebox.showerror("Error", f"Anruf fehlgeschlagen: {str(e)}")
+            self.cleanup_call_resources()
+        finally:
+            # Sicherstellen dass Flag zurückgesetzt wird
+            if hasattr(self, '_in_call_click'):
+                self._in_call_click = False
     def _generate_wireguard_keypair(self):
         """Generiert ein WireGuard Schlüsselpaar"""
         try:
@@ -1069,24 +1069,43 @@ def on_call_click(self, selected_entry=None):
             print(f"[CALL MSG ERROR] Failed to handle {message_type}: {str(e)}")
 
     def initiate_call(self, recipient):
-        """Initiiert einen Anruf - Schritt 1: Public Key anfordern"""
+        """Initiiert einen Anruf - Schritt 1: Public Key anfordern - VOLLSTÄNDIG KORRIGIERT"""
         try:
             if not recipient or 'id' not in recipient:
                 raise Exception("Ungültiger Empfänger")
                 
             print(f"[CALL] Initiating call to {recipient.get('name', 'Unknown')}")
-            
-            # Public Key des Empfängers anfordern
-            key_request = self.client.build_sip_message("MESSAGE", "server", {
+
+            # Prüfe ob bereits ein aktiver Call läuft
+            if self.active_call or self.pending_call:
+                messagebox.showwarning("Warning", "Bereits in einem Anruf aktiv")
+                return
+
+            # Validiere dass required fields vorhanden sind
+            if 'id' not in recipient:
+                messagebox.showerror("Error", "Ungültiger Kontakt (fehlende ID)")
+                return
+
+            # Public Key des Empfängers anfordern - MIT DEBUG
+            key_request_data = {
                 "MESSAGE_TYPE": "GET_PUBLIC_KEY",
                 "TARGET_CLIENT_ID": recipient['id'],
                 "CALLER_NAME": self.client._client_name,
                 "CALLER_CLIENT_ID": self.client._find_my_client_id(),
                 "TIMESTAMP": int(time.time())
-            })
+            }
             
-            self.client._send_message(key_request)
-            print("[CALL] Public key request sent")
+            print(f"[CALL DEBUG] Key request data: {key_request_data}")
+            
+            key_request = self.client.build_sip_message("MESSAGE", "server", key_request_data)
+            
+            # ✅ DEBUG: Überprüfe was wirklich gesendet wird
+            print(f"[CALL DEBUG] Key request message:\n{key_request}")
+            
+            if self.client._send_message(key_request):
+                print("[CALL] Public key request sent")
+            else:
+                raise Exception("Konnte Public Key Request nicht senden")
             
             # Call-Kontext speichern
             self.pending_call = {
@@ -1096,11 +1115,21 @@ def on_call_click(self, selected_entry=None):
                 'timeout': 120
             }
             
+            # UI auf "Warten" setzen
+            try:
+                if hasattr(self.client, 'update_call_ui'):
+                    self.client.update_call_ui(True, "requesting", recipient.get('name', 'Unknown'))
+            except Exception as e:
+                print(f"[UI WARNING] Failed to update UI: {str(e)}")
+            
             # Timeout-Überwachung starten
             threading.Thread(target=self._call_timeout_watchdog, daemon=True).start()
             
+            print(f"[CALL] Anruf initiiert zu {recipient.get('name', 'Unknown')}")
+
         except Exception as e:
             print(f"[CALL ERROR] Initiation failed: {str(e)}")
+            messagebox.showerror("Error", f"Anruf fehlgeschlagen: {str(e)}")
             self.cleanup_call_resources()
             raise
 
@@ -1922,115 +1951,157 @@ class PHONEBOOK(ctk.CTk):
             print(f"[SEND ERROR] Failed to queue message: {str(e)}")
             return False
 
-    def build_sip_message(self, method, recipient, custom_data={}, from_server=False, host=None):
-        """Erweitere SIP-Nachrichtenerstellung mit JSON-Unterstützung"""
-        # Entscheide ob Body JSON oder Key-Value sein soll
-        if any(isinstance(v, (dict, list)) for v in custom_data.values()):
-            body = json.dumps(custom_data, separators=(',', ':'))
-            content_type = "application/json"
-        else:
-            body = "\r\n".join("{}: {}".format(k, v) for k, v in custom_data.items())
-            content_type = "text/plain"
+    def build_sip_message(self, method, recipient, custom_data={}):
+        """Robuste SIP-Nachrichtenerstellung mit korrekter Schlüsselverarbeitung"""
+        # Erstelle eine Kopie der custom_data um das Original nicht zu modifizieren
+        processed_data = custom_data.copy()
         
-        # Absenderadresse bestimmen
-        if from_server:
-            from_header = "<sip:server@{}>".format(host) if host else "<sip:server>"
-            client_ip = host if host else "127.0.0.1"
-        else:
-            client_name = self._client_name
-            # Use a more reliable method to get local IP
-            try:
-                # Method 1: Connect to a known external service
-                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                s.connect(("8.8.8.8", 80))  # Google DNS
-                client_ip = s.getsockname()[0]
-                s.close()
-            except:
-                try:
-                    # Method 2: Use hostname lookup
-                    client_ip = socket.gethostbyname(socket.gethostname())
-                except:
-                    # Method 3: Fallback to localhost
-                    client_ip = "127.0.0.1"
+        # ALL_KEYS speziell behandeln - nur wenn es eine Liste von Schlüsseln ist
+        if 'ALL_KEYS' in processed_data:
+            keys = processed_data['ALL_KEYS']
             
-            from_header = "<sip:{}@{}>".format(client_name, client_ip)
+            # Sicherstellen dass es eine Liste ist
+            if not isinstance(keys, list):
+                print(f"[WARNING] ALL_KEYS is not a list: {type(keys)}")
+                # Versuche es in eine Liste zu konvertieren oder entferne es
+                if isinstance(keys, str) and keys == 'ALL_KEYS':
+                    # Das ist der Fehlerfall - entferne das falsche ALL_KEYS
+                    del processed_data['ALL_KEYS']
+                    print("[WARNING] Removed malformed ALL_KEYS entry")
+                else:
+                    try:
+                        keys = [keys]  # Versuche es in eine Ein-Element-Liste zu konvertieren
+                    except:
+                        del processed_data['ALL_KEYS']
+                        print("[WARNING] Could not process ALL_KEYS - removed")
+            
+            if isinstance(keys, list):
+                formatted_keys = []
+                for key in keys:
+                    try:
+                        # Sicherstellen dass es ein String ist
+                        if not isinstance(key, str):
+                            key_str = str(key)
+                        else:
+                            key_str = key
+                        
+                        # Nur gültige öffentliche Schlüssel formatieren
+                        if (key_str and 
+                            not key_str.strip() == 'ALL_KEYS' and  # ❌ Falsche ALL_KEYS Einträge filtern
+                            'BEGIN PUBLIC KEY' not in key_str):    # Bereits formatierte Schlüssel überspringen
+                            
+                            # Als PEM formatieren
+                            formatted_key = f"-----BEGIN PUBLIC KEY-----\n{key_str}\n-----END PUBLIC KEY-----"
+                            formatted_keys.append(formatted_key)
+                        else:
+                            # Bereits formatierte oder ungültige Schlüssel direkt übernehmen
+                            formatted_keys.append(key_str)
+                            
+                    except Exception as e:
+                        print(f"[ERROR] Failed to format key: {str(e)}")
+                        formatted_keys.append(key)  # Original behalten falls Fehler
+                
+                processed_data['ALL_KEYS'] = formatted_keys
         
-        return (
-            "{method} sip:{recipient} SIP/2.0\r\n"
-            "From: {from_header}\r\n"
-            "To: <sip:{recipient}>\r\n"
-            "Content-Type: {content_type}\r\n"
-            "Content-Length: {content_length}\r\n\r\n"
-            "{body}"
-        ).format(
-            method=method,
-            recipient=recipient,
-            from_header=from_header,
-            content_type=content_type,
-            content_length=len(body),
-            body=body
-        )
+        # Body-Erstellung basierend auf Inhaltstyp
+        try:
+            # Prüfen ob JSON benötigt wird (bei komplexen Datenstrukturen)
+            requires_json = any(isinstance(v, (dict, list)) for v in processed_data.values())
+            
+            if requires_json:
+                body = json.dumps(processed_data, separators=(',', ':'))
+                content_type = "application/json"
+            else:
+                # Key-Value Format für einfache Daten
+                body_lines = []
+                for k, v in processed_data.items():
+                    if isinstance(v, (list, dict)):
+                        # Komplexe Werte als JSON stringifyen
+                        body_lines.append(f"{k}: {json.dumps(v)}")
+                    else:
+                        body_lines.append(f"{k}: {v}")
+                body = "\r\n".join(body_lines)
+                content_type = "text/plain"
+            
+            # SIP-Nachricht erstellen
+            return (
+                f"{method} sip:{recipient} SIP/2.0\r\n"
+                f"From: <sip:server@{self.host}>\r\n"
+                f"To: <sip:{recipient}>\r\n"
+                f"Content-Type: {content_type}\r\n"
+                f"Content-Length: {len(body)}\r\n\r\n"
+                f"{body}"
+            )
+            
+        except Exception as e:
+            print(f"[CRITICAL] Failed to build SIP message: {str(e)}")
+            # Fallback: Einfache Text-Nachricht
+            return (
+                f"{method} sip:{recipient} SIP/2.0\r\n"
+                f"From: <sip:server@{self.host}>\r\n"
+                f"To: <sip:{recipient}>\r\n"
+                f"Content-Type: text/plain\r\n"
+                f"Content-Length: {len(str(processed_data))}\r\n\r\n"
+                f"{processed_data}"
+            )
 
     def parse_sip_message(self, message):
-        """Robust SIP message parser that handles both raw and parsed messages"""
-        # If message is already parsed, return it directly
-        if isinstance(message, dict):
-            return message
-            
-        # Handle bytes input
+        """Parse SIP-Nachrichten mit Header und Body"""
         if isinstance(message, bytes):
             try:
                 message = message.decode('utf-8')
             except UnicodeDecodeError:
                 return None
 
-        # Handle string input
-        if isinstance(message, str):
-            message = message.strip()
-            if not message:
-                return None
+        message = message.strip()
+        if not message:
+            return None
 
-            # Rest of your existing parsing logic...
-            parts = message.split('\r\n\r\n', 1)
-            headers = parts[0].split('\r\n')
-            body = parts[1] if len(parts) > 1 else ''
+        lines = [line.strip() for line in message.replace('\r\n', '\n').split('\n') if line.strip()]
+        result = {'headers': {}, 'custom_data': {}}
 
-            result = {'headers': {}, 'body': body, 'custom_data': {}}
+        # Parse first line
+        first_line = lines[0]
+        if first_line.startswith('SIP/2.0'):
+            parts = first_line.split(maxsplit=2)
+            if len(parts) >= 2:
+                result['status_code'] = parts[1]
+                if len(parts) > 2:
+                    result['status_message'] = parts[2]
+        else:
+            result['method'] = first_line.split()[0]
 
-            # Parse first line
-            first_line = headers[0]
-            if first_line.startswith('SIP/2.0'):
-                parts = first_line.split(' ', 2)
-                result['status_code'] = parts[1] if len(parts) > 1 else ''
-                result['status_message'] = parts[2] if len(parts) > 2 else ''
-            else:
-                parts = first_line.split(' ', 2)
-                result['method'] = parts[0] if len(parts) > 0 else ''
-                result['uri'] = parts[1] if len(parts) > 1 else ''
-                result['protocol'] = parts[2] if len(parts) > 2 else ''
+        # Parse headers
+        for line in lines[1:]:
+            if ': ' in line:
+                key, val = line.split(': ', 1)
+                key = key.strip().upper()
+                val = val.strip()
+                
+                if key == "CONTENT-LENGTH":
+                    try:
+                        result['content_length'] = int(val)
+                    except ValueError:
+                        pass
+                elif key not in result['headers']:
+                    result['headers'][key] = val
 
-            # Parse headers
-            for header in headers[1:]:
-                if ': ' in header:
-                    key, val = header.split(': ', 1)
-                    result['headers'][key.strip().upper()] = val.strip()
-
-            # Parse body
-            if body:
-                try:
-                    # Try JSON first
-                    result['custom_data'] = json.loads(body)
-                except json.JSONDecodeError:
-                    # Fallback to key-value
-                    result['custom_data'] = dict(
-                        line.split(': ', 1)
-                        for line in body.splitlines()
-                        if ': ' in line
-                    )
-
-            return result
+        # Parse body
+        if 'content_length' in result and result['content_length'] > 0:
+            body_lines = lines[len(result['headers']) + 1:]
+            body = '\n'.join(body_lines)
             
-        return None
+            try:
+                result['custom_data'] = dict(
+                    line.split(': ', 1)
+                    for line in body.splitlines()
+                    if ': ' in line
+                )
+            except Exception:
+                result['body'] = body
+
+        return result if ('method' in result or 'status_code' in result) else None
+
 
     def _process_queue(self):
         """Verarbeitet Nachrichten aus der Queue - kompatibel mit existing SIP methods"""

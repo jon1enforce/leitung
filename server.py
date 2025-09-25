@@ -372,27 +372,49 @@ class CONVEY:
 
 
     def handle_get_public_key(self, msg, client_socket, client_name):
-        """Verbesserte Public-Key-Handling - FEHLER BEHOBEN"""
+        """Verbesserte Public-Key-Handling - VOLLSTÄNDIG KORRIGIERT"""
         try:
             custom_data = msg.get('custom_data', {})
             body = msg.get('body', '')
             
-            # ✅ VERBESSERT: Robustere Datenextraktion
-            target_id = custom_data.get('TARGET_CLIENT_ID', '')
-            caller_name = custom_data.get('CALLER_NAME', '')
+            print(f"[CONVEY DEBUG] Custom data: {custom_data}")
+            print(f"[CONVEY DEBUG] Body: '{body}'")
             
-            # Falls Daten fehlen, versuche sie aus Body zu extrahieren
-            if not target_id:
-                for line in body.split('\n'):
-                    if 'TARGET_CLIENT_ID:' in line:
-                        target_id = line.split('TARGET_CLIENT_ID:')[1].strip()
-                        break
-                        
-            if not caller_name:
-                caller_name = client_name  # Fallback
+            # ✅ VERBESSERT: Zuerst Body als JSON parsen
+            target_id = None
+            caller_name = None
+            body_data = {}
             
+            if body and body.strip():
+                try:
+                    body_data = json.loads(body)
+                    print(f"[CONVEY DEBUG] Body parsed as JSON: {body_data}")
+                except json.JSONDecodeError:
+                    print("[CONVEY DEBUG] Body is not JSON, trying key-value")
+                    # Fallback: Key-Value Parsing
+                    for line in body.split('\n'):
+                        line = line.strip()
+                        if line and ': ' in line:
+                            key, value = line.split(': ', 1)
+                            body_data[key.strip()] = value.strip()
+            
+            # ✅ Daten aus allen Quellen sammeln (Body hat Priorität)
+            target_id = body_data.get('TARGET_CLIENT_ID') or custom_data.get('TARGET_CLIENT_ID')
+            caller_name = body_data.get('CALLER_NAME') or custom_data.get('CALLER_NAME') or client_name
+                
             if not target_id:
-                print(f"[CONVEY ERROR] Missing target client ID: {custom_data}")
+                print(f"[CONVEY ERROR] Missing target client ID after parsing")
+                print(f"[CONVEY DEBUG] Body data: {body_data}")
+                print(f"[CONVEY DEBUG] Custom data: {custom_data}")
+                
+                error_msg = self.server.build_sip_message("MESSAGE", client_name, {
+                    "MESSAGE_TYPE": "CALL_ERROR",
+                    "ERROR": "TARGET_NOT_FOUND",
+                    "TARGET_ID": "unknown",
+                    "TIMESTAMP": int(time.time())
+                })
+                
+                send_frame(client_socket, error_msg.encode('utf-8'))
                 return False
                 
             print(f"[CONVEY] Public key request from {caller_name} for client {target_id}")
@@ -406,7 +428,16 @@ class CONVEY:
                         break
             
             if not target_client or 'public_key' not in target_client:
-                print(f"[CONVEY ERROR] Target client {target_id} not found")
+                print(f"[CONVEY ERROR] Target client {target_id} not found or no public key")
+                
+                error_msg = self.server.build_sip_message("MESSAGE", caller_name, {
+                    "MESSAGE_TYPE": "CALL_ERROR",
+                    "ERROR": "TARGET_NOT_FOUND",
+                    "TARGET_ID": target_id,
+                    "TIMESTAMP": int(time.time())
+                })
+                
+                send_frame(client_socket, error_msg.encode('utf-8'))
                 return False
             
             # Public Key senden
@@ -414,6 +445,7 @@ class CONVEY:
                 "MESSAGE_TYPE": "PUBLIC_KEY_RESPONSE", 
                 "TARGET_CLIENT_ID": target_id,
                 "PUBLIC_KEY": target_client['public_key'],
+                "CALLER_NAME": caller_name,
                 "TIMESTAMP": int(time.time())
             })
             
@@ -423,6 +455,21 @@ class CONVEY:
             
         except Exception as e:
             print(f"[CONVEY ERROR] Public key handling failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            
+            # Fehlermeldung senden
+            try:
+                error_msg = self.server.build_sip_message("MESSAGE", client_name, {
+                    "MESSAGE_TYPE": "CALL_ERROR",
+                    "ERROR": "INTERNAL_ERROR",
+                    "REASON": str(e)[:100],
+                    "TIMESTAMP": int(time.time())
+                })
+                send_frame(client_socket, error_msg.encode('utf-8'))
+            except:
+                pass
+                
             return False
     def handle_call_request(self, msg, client_socket, client_name):
         """Vermittelt Call-Requests zwischen Clients"""
@@ -1118,11 +1165,14 @@ class Server:
                                 if body and message_type == 'GET_PUBLIC_KEY':
                                     body_data = {}
                                     for line in body.split('\n'):
-                                        if ': ' in line:
+                                        line = line.strip()
+                                        if line and ': ' in line:  # ✅ VERBESSERT: Leerzeilen ignorieren
                                             key, value = line.split(': ', 1)
                                             body_data[key.strip()] = value.strip()
-                                    # Füge Body-Daten zu custom_data hinzu
-                                    custom_data.update(body_data)
+                                    # Füge Body-Daten zu custom_data hinzu (nur falls nicht vorhanden)
+                                    for key, value in body_data.items():
+                                        if key not in custom_data:  # ✅ VERBESSERT: Nur hinzufügen falls nicht schon da
+                                            custom_data[key] = value
                                     msg['custom_data'] = custom_data
                                 
                                 if message_type == 'GET_PUBLIC_KEY':
