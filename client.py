@@ -893,41 +893,57 @@ class CALL:
         self.CHUNK = 1024
         self.PORT = 51821  # Audio port
 
-    def on_call_click(self, selected_entry=None):
-        """Hauptmethode für Call-Initiation - wird von UI aufgerufen"""
+def on_call_click(self, selected_entry=None):
+    """Hauptmethode für Call-Initiation - wird von UI aufgerufen"""
+    try:
+        # VERBESSERT: Explizite Prüfung auf Rekursion vermeiden
+        if hasattr(self, '_in_call_click') and self._in_call_click:
+            return
+        self._in_call_click = True
+        
+        # Verwende übergebenen Eintrag oder falls None, versuche self.client.selected_entry
+        if selected_entry is None and hasattr(self.client, 'selected_entry'):
+            selected_entry = self.client.selected_entry
+            
+        if not selected_entry:
+            messagebox.showerror("Error", "Bitte Kontakt auswählen")
+            self._in_call_click = False
+            return
+
+        print(f"[CALL] Starte Anruf zu {selected_entry.get('name', 'Unknown')}")
+
+        # Prüfe ob bereits ein aktiver Call läuft
+        if self.active_call or self.pending_call:
+            messagebox.showwarning("Warning", "Bereits in einem Anruf aktiv")
+            self._in_call_click = False
+            return
+
+        # Validiere dass required fields vorhanden sind
+        if 'id' not in selected_entry:
+            messagebox.showerror("Error", "Ungültiger Kontakt (fehlende ID)")
+            self._in_call_click = False
+            return
+
+        # Schritt 1: Anruf initiieren
+        self.initiate_call(selected_entry)
+        
+        # UI auf "Warten" setzen - VERBESSERT: Direkter Aufruf ohne Wrapper
         try:
-            # Verwende übergebenen Eintrag oder falls None, versuche self.client.selected_entry
-            if selected_entry is None and hasattr(self.client, 'selected_entry'):
-                selected_entry = self.client.selected_entry
-                
-            if not selected_entry:
-                messagebox.showerror("Error", "Bitte Kontakt auswählen")
-                return
-
-            print(f"[CALL] Starte Anruf zu {selected_entry.get('name', 'Unknown')}")
-
-            # Prüfe ob bereits ein aktiver Call läuft
-            if self.active_call or self.pending_call:
-                messagebox.showwarning("Warning", "Bereits in einem Anruf aktiv")
-                return
-
-            # Validiere dass required fields vorhanden sind
-            if 'id' not in selected_entry:
-                messagebox.showerror("Error", "Ungültiger Kontakt (fehlende ID)")
-                return
-
-            # Schritt 1: Anruf initiieren
-            self.initiate_call(selected_entry)
-            
-            # UI auf "Warten" setzen
-            self._update_ui_wrapper(active=True, status="requesting", caller_name=selected_entry.get('name', 'Unknown'))
-            
-            print(f"[CALL] Anruf initiiert zu {selected_entry.get('name', 'Unknown')}")
-
+            if hasattr(self.client, 'update_call_ui'):
+                self.client.update_call_ui(True, "requesting", selected_entry.get('name', 'Unknown'))
         except Exception as e:
-            print(f"[CALL ERROR] on_call_click failed: {str(e)}")
-            messagebox.showerror("Error", f"Anruf fehlgeschlagen: {str(e)}")
-            self.cleanup_call_resources()
+            print(f"[UI WARNING] Failed to update UI: {str(e)}")
+        
+        print(f"[CALL] Anruf initiiert zu {selected_entry.get('name', 'Unknown')}")
+
+    except Exception as e:
+        print(f"[CALL ERROR] on_call_click failed: {str(e)}")
+        messagebox.showerror("Error", f"Anruf fehlgeschlagen: {str(e)}")
+        self.cleanup_call_resources()
+    finally:
+        # Sicherstellen dass Flag zurückgesetzt wird
+        if hasattr(self, '_in_call_click'):
+            self._in_call_click = False
     def _generate_wireguard_keypair(self):
         """Generiert ein WireGuard Schlüsselpaar"""
         try:
@@ -969,16 +985,21 @@ class CALL:
             print(f"[WIREGUARD ERROR] Tunnel setup failed: {str(e)}")
             return False
     def _update_ui_wrapper(self, active, status=None, caller_name=None):
-        """Wrapper für UI-Updates mit Fallback"""
+        """Wrapper für UI-Updates mit Fallback - VERBESSERT: Vereinfacht"""
         try:
-            # Versuche zuerst die Client-UI zu updaten
-            if hasattr(self.client, 'update_call_ui'):
-                self.client.update_call_ui(active, status, caller_name)
-            else:
-                # Fallback: Direkte UI-Änderungen
-                self._update_ui_direct(active, status, caller_name)
+            # VERBESSERT: Direkter Aufruf ohne Rekursion
+            self.update_call_ui(active, status, caller_name)
         except Exception as e:
-            print(f"[UI WARNING] Failed to update UI: {str(e)}")
+            print(f"[UI WRAPPER WARNING] Failed to update UI: {str(e)}")
+            # Fallback: Einfache Status-Änderung
+            try:
+                if hasattr(self.client, 'status_label') and self.client.status_label.winfo_exists():
+                    if active:
+                        self.client.status_label.configure(text="Aktiver Anruf")
+                    else:
+                        self.client.status_label.configure(text="Bereit")
+            except:
+                pass
     
     def _update_ui_direct(self, active, status=None, caller_name=None):
         """Direkte UI-Änderungen als Fallback"""
@@ -1872,81 +1893,7 @@ class PHONEBOOK(ctk.CTk):
         except Exception as e:
             print(f"[PHONEBOOK ERROR] Entry click failed: {str(e)}")
 
-    def on_call_click(self):
-        """Delegate call initiation to CALL class"""
-        try:
-            if not self.selected_entry:
-                messagebox.showerror("Error", "Bitte zuerst einen Kontakt auswählen")
-                return
-                
-            if hasattr(self, 'call_manager'):
-                self.call_manager.on_call_click(self.selected_entry)
-            else:
-                messagebox.showerror("Error", "Call system not initialized")
-        except Exception as e:
-            print(f"[PHONEBOOK ERROR] Call click failed: {str(e)}")
-            messagebox.showerror("Error", f"Anruf fehlgeschlagen: {str(e)}")
 
-    def on_hangup_click(self):
-        """Delegate hangup to CALL class"""
-        try:
-            if hasattr(self, 'call_manager'):
-                self.call_manager.hangup_call()
-            else:
-                print("[PHONEBOOK] No call manager available")
-        except Exception as e:
-            print(f"[PHONEBOOK ERROR] Hangup failed: {str(e)}")
-
-    def update_call_ui(self, active, status=None, caller_name=None):
-        """Update UI for call status changes"""
-        try:
-            if active:
-                if status == "requesting":
-                    status_text = f"Anfrage an {caller_name}..." if caller_name else "Anrufanfrage..."
-                elif status == "connected":
-                    status_text = f"Verbunden mit: {caller_name}" if caller_name else "Aktiver Anruf"
-                else:
-                    status_text = f"Aktiver Anruf mit: {caller_name}" if caller_name else "Aktiver Anruf"
-                    
-                # Deaktiviere andere Buttons während eines Anrufs
-                self._disable_other_buttons(True)
-            else:
-                status_text = "Bereit für Anrufe"
-                # Reaktiviere Buttons nach Anrufende
-                self._disable_other_buttons(False)
-            
-            # Status-Label aktualisieren falls vorhanden
-            if hasattr(self, 'status_label') and self.status_label.winfo_exists():
-                self.status_label.configure(text=status_text)
-                
-        except Exception as e:
-            print(f"[UI UPDATE ERROR] {str(e)}")
-
-    def _disable_other_buttons(self, disable):
-        """Hilfsfunktion zum Deaktivieren/Reaktivieren anderer Buttons während Anrufen"""
-        try:
-            buttons_to_disable = ['update_button', 'setup_button', 'call_button']
-            
-            for btn_name in buttons_to_disable:
-                if hasattr(self, btn_name):
-                    button = getattr(self, btn_name)
-                    try:
-                        if disable:
-                            button.configure(state="disabled", fg_color="gray")
-                        else:
-                            button.configure(state="normal", fg_color="#006400")
-                    except Exception as e:
-                        print(f"[UI WARNING] Could not update button {btn_name}: {str(e)}")
-                        
-            # Hangup-Button umgekehrt behandeln
-            if hasattr(self, 'hangup_button'):
-                if disable:
-                    self.hangup_button.configure(state="normal", fg_color="#8B0000")  # Dunkelrot
-                else:
-                    self.hangup_button.configure(state="disabled", fg_color="gray")
-                    
-        except Exception as e:
-            print(f"[BUTTON DISABLE ERROR] {str(e)}")
 
     def _send_message(self, message):
         """Sendet Nachricht an Server - Thread-sichere Version"""
@@ -3826,21 +3773,34 @@ class PHONEBOOK(ctk.CTk):
 
 
     def _disable_other_buttons(self, disable):
-        """Hilfsfunktion zum Deaktivieren/Reaktivieren anderer Buttons"""
-        buttons_to_disable = ['update_button', 'setup_button', 'hangup_button']
-        
-        for btn_name in buttons_to_disable:
-            if hasattr(self, btn_name):
-                button = getattr(self, btn_name)
+        """Hilfsfunktion zum Deaktivieren/Reaktivieren anderer Buttons während Anrufen"""
+        try:
+            # VERBESSERT: Vereinfachte Implementierung ohne komplexe Logik
+            buttons_to_disable = ['update_button', 'setup_button', 'call_button']
+            
+            for btn_name in buttons_to_disable:
+                if hasattr(self.client, btn_name):
+                    button = getattr(self.client, btn_name)
+                    try:
+                        if disable:
+                            button.configure(state="disabled")
+                        else:
+                            button.configure(state="normal")
+                    except Exception as e:
+                        print(f"[UI WARNING] Could not update button {btn_name}: {str(e)}")
+                        
+            # Hangup-Button umgekehrt behandeln
+            if hasattr(self.client, 'hangup_button'):
                 try:
                     if disable:
-                        button.configure(state="disabled", fg_color="gray")
+                        self.client.hangup_button.configure(state="normal")
                     else:
-                        button.configure(state="normal", fg_color="#006400")
+                        self.client.hangup_button.configure(state="disabled")
                 except Exception as e:
-                    print(f"[UI WARNING] Could not update button {btn_name}: {str(e)}")
-        if hasattr(self, 'callStatusChanged'):
-            self.callStatusChanged.emit(status_text)    
+                    print(f"[UI WARNING] Could not update hangup button: {str(e)}")
+                        
+        except Exception as e:
+            print(f"[BUTTON DISABLE ERROR] {str(e)}")   
     # === DELEGIERTE CALL-METHODEN ===
     def on_call_click(self):
         """Delegate call initiation to CALL class"""
@@ -3857,21 +3817,36 @@ class PHONEBOOK(ctk.CTk):
             print("[HANGUP] No call manager available")
 
     def update_call_ui(self, active, status=None, caller_name=None):
-        """Delegate UI update to CALL class"""
-        if hasattr(self, 'call_manager'):
-            self.call_manager._update_ui_wrapper(active, status, caller_name)
-        else:
-            # Fallback UI update
-            try:
-                if active:
-                    status_text = f"Aktiver Anruf: {caller_name}" if caller_name else "Aktiver Anruf"
+        """Update UI for call status changes - VERBESSERT: Keine Rekursion"""
+        try:
+            # VERBESSERT: Rekursionsschutz
+            if hasattr(self, '_updating_ui') and self._updating_ui:
+                return
+            self._updating_ui = True
+            
+            if active:
+                if status == "requesting":
+                    status_text = f"Anfrage an {caller_name}..." if caller_name else "Anrufanfrage..."
+                elif status == "connected":
+                    status_text = f"Verbunden mit: {caller_name}" if caller_name else "Aktiver Anruf"
                 else:
-                    status_text = "Bereit"
-                
+                    status_text = f"Aktiver Anruf mit: {caller_name}" if caller_name else "Aktiver Anruf"
+            else:
+                status_text = "Bereit für Anrufe"
+            
+            # VERBESSERT: Direkte UI-Änderungen ohne Wrapper
+            try:
                 if hasattr(self, 'status_label') and self.status_label.winfo_exists():
                     self.status_label.configure(text=status_text)
-            except:
-                pass
+            except Exception as e:
+                print(f"[STATUS LABEL ERROR] {str(e)}")
+                
+        except Exception as e:
+            print(f"[UI UPDATE ERROR] {str(e)}")
+        finally:
+            # Flag immer zurücksetzen
+            if hasattr(self, '_updating_ui'):
+                self._updating_ui = False
 
 def is_linux():
     return sys.platform.startswith("linux")
