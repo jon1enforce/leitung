@@ -372,49 +372,44 @@ class CONVEY:
 
 
     def handle_get_public_key(self, msg, client_socket, client_name):
-        """Verbesserte Public-Key-Handling - VOLLSTÄNDIG KORRIGIERT"""
+        """Public-Key-Handling - KORRIGIERT FÜR HEADER-DATEN"""
         try:
+            headers = msg.get('headers', {})
             custom_data = msg.get('custom_data', {})
             body = msg.get('body', '')
             
+            print(f"[CONVEY DEBUG] All headers: {headers}")
             print(f"[CONVEY DEBUG] Custom data: {custom_data}")
-            print(f"[CONVEY DEBUG] Body: '{body}'")
+            print(f"[CONVEY DEBUG] Body length: {len(body)}")
             
-            # ✅ VERBESSERT: Zuerst Body als JSON parsen
+            # ✅ KORREKTUR: Daten aus HEADERS extrahieren (nicht aus Body!)
             target_id = None
             caller_name = None
-            body_data = {}
             
-            if body and body.strip():
-                try:
-                    body_data = json.loads(body)
-                    print(f"[CONVEY DEBUG] Body parsed as JSON: {body_data}")
-                except json.JSONDecodeError:
-                    print("[CONVEY DEBUG] Body is not JSON, trying key-value")
-                    # Fallback: Key-Value Parsing
-                    for line in body.split('\n'):
-                        line = line.strip()
-                        if line and ': ' in line:
-                            key, value = line.split(': ', 1)
-                            body_data[key.strip()] = value.strip()
+            # Durchsuche alle Header nach den benötigten Daten
+            for header_name, header_value in headers.items():
+                print(f"[CONVEY DEBUG] Checking header: {header_name} = {header_value}")
+                
+                if 'TARGET_CLIENT_ID' in header_name:
+                    target_id = header_value
+                    print(f"[CONVEY DEBUG] Found TARGET_CLIENT_ID: {target_id}")
+                elif 'CALLER_NAME' in header_name:
+                    caller_name = header_value
+                    print(f"[CONVEY DEBUG] Found CALLER_NAME: {caller_name}")
+                elif 'CALLER_CLIENT_ID' in header_name:
+                    print(f"[CONVEY DEBUG] Found CALLER_CLIENT_ID: {header_value}")
+                elif 'MESSAGE_TYPE' in header_name:
+                    print(f"[CONVEY DEBUG] Found MESSAGE_TYPE: {header_value}")
             
-            # ✅ Daten aus allen Quellen sammeln (Body hat Priorität)
-            target_id = body_data.get('TARGET_CLIENT_ID') or custom_data.get('TARGET_CLIENT_ID')
-            caller_name = body_data.get('CALLER_NAME') or custom_data.get('CALLER_NAME') or client_name
+            # Falls nicht in Headers, aus custom_data nehmen
+            if not target_id:
+                target_id = custom_data.get('TARGET_CLIENT_ID')
+            if not caller_name:
+                caller_name = custom_data.get('CALLER_NAME', client_name)
                 
             if not target_id:
-                print(f"[CONVEY ERROR] Missing target client ID after parsing")
-                print(f"[CONVEY DEBUG] Body data: {body_data}")
-                print(f"[CONVEY DEBUG] Custom data: {custom_data}")
-                
-                error_msg = self.server.build_sip_message("MESSAGE", client_name, {
-                    "MESSAGE_TYPE": "CALL_ERROR",
-                    "ERROR": "TARGET_NOT_FOUND",
-                    "TARGET_ID": "unknown",
-                    "TIMESTAMP": int(time.time())
-                })
-                
-                send_frame(client_socket, error_msg.encode('utf-8'))
+                print(f"[CONVEY ERROR] Missing target client ID after header parsing")
+                print(f"[CONVEY DEBUG] Available headers: {list(headers.keys())}")
                 return False
                 
             print(f"[CONVEY] Public key request from {caller_name} for client {target_id}")
@@ -457,19 +452,6 @@ class CONVEY:
             print(f"[CONVEY ERROR] Public key handling failed: {str(e)}")
             import traceback
             traceback.print_exc()
-            
-            # Fehlermeldung senden
-            try:
-                error_msg = self.server.build_sip_message("MESSAGE", client_name, {
-                    "MESSAGE_TYPE": "CALL_ERROR",
-                    "ERROR": "INTERNAL_ERROR",
-                    "REASON": str(e)[:100],
-                    "TIMESTAMP": int(time.time())
-                })
-                send_frame(client_socket, error_msg.encode('utf-8'))
-            except:
-                pass
-                
             return False
     def handle_call_request(self, msg, client_socket, client_name):
         """Vermittelt Call-Requests zwischen Clients"""

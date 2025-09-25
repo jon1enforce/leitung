@@ -1951,8 +1951,8 @@ class PHONEBOOK(ctk.CTk):
             print(f"[SEND ERROR] Failed to queue message: {str(e)}")
             return False
 
-    def build_sip_message(self, method, recipient, custom_data={}):
-        """Robuste SIP-Nachrichtenerstellung mit korrekter Schlüsselverarbeitung"""
+    def build_sip_message(self, method, recipient, custom_data={}, from_server=False, host=None):
+        """Robuste SIP-Nachrichtenerstellung - ANGEPASST FÜR CLIENT"""
         # Erstelle eine Kopie der custom_data um das Original nicht zu modifizieren
         processed_data = custom_data.copy()
         
@@ -1963,14 +1963,12 @@ class PHONEBOOK(ctk.CTk):
             # Sicherstellen dass es eine Liste ist
             if not isinstance(keys, list):
                 print(f"[WARNING] ALL_KEYS is not a list: {type(keys)}")
-                # Versuche es in eine Liste zu konvertieren oder entferne es
                 if isinstance(keys, str) and keys == 'ALL_KEYS':
-                    # Das ist der Fehlerfall - entferne das falsche ALL_KEYS
                     del processed_data['ALL_KEYS']
                     print("[WARNING] Removed malformed ALL_KEYS entry")
                 else:
                     try:
-                        keys = [keys]  # Versuche es in eine Ein-Element-Liste zu konvertieren
+                        keys = [keys]
                     except:
                         del processed_data['ALL_KEYS']
                         print("[WARNING] Could not process ALL_KEYS - removed")
@@ -1979,33 +1977,27 @@ class PHONEBOOK(ctk.CTk):
                 formatted_keys = []
                 for key in keys:
                     try:
-                        # Sicherstellen dass es ein String ist
                         if not isinstance(key, str):
                             key_str = str(key)
                         else:
                             key_str = key
                         
-                        # Nur gültige öffentliche Schlüssel formatieren
                         if (key_str and 
-                            not key_str.strip() == 'ALL_KEYS' and  # ❌ Falsche ALL_KEYS Einträge filtern
-                            'BEGIN PUBLIC KEY' not in key_str):    # Bereits formatierte Schlüssel überspringen
-                            
-                            # Als PEM formatieren
+                            not key_str.strip() == 'ALL_KEYS' and
+                            'BEGIN PUBLIC KEY' not in key_str):
                             formatted_key = f"-----BEGIN PUBLIC KEY-----\n{key_str}\n-----END PUBLIC KEY-----"
                             formatted_keys.append(formatted_key)
                         else:
-                            # Bereits formatierte oder ungültige Schlüssel direkt übernehmen
                             formatted_keys.append(key_str)
-                            
                     except Exception as e:
                         print(f"[ERROR] Failed to format key: {str(e)}")
-                        formatted_keys.append(key)  # Original behalten falls Fehler
+                        formatted_keys.append(key)
                 
                 processed_data['ALL_KEYS'] = formatted_keys
         
         # Body-Erstellung basierend auf Inhaltstyp
         try:
-            # Prüfen ob JSON benötigt wird (bei komplexen Datenstrukturen)
+            # Prüfen ob JSON benötigt wird
             requires_json = any(isinstance(v, (dict, list)) for v in processed_data.values())
             
             if requires_json:
@@ -2016,18 +2008,32 @@ class PHONEBOOK(ctk.CTk):
                 body_lines = []
                 for k, v in processed_data.items():
                     if isinstance(v, (list, dict)):
-                        # Komplexe Werte als JSON stringifyen
                         body_lines.append(f"{k}: {json.dumps(v)}")
                     else:
                         body_lines.append(f"{k}: {v}")
                 body = "\r\n".join(body_lines)
                 content_type = "text/plain"
             
-            # SIP-Nachricht erstellen
+            # Absenderadresse bestimmen - KORRIGIERT FÜR CLIENT
+            if from_server:
+                from_header = "<sip:server@{}>".format(host) if host else "<sip:server>"
+            else:
+                client_name = self._client_name
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.connect(("8.8.8.8", 80))
+                    client_ip = s.getsockname()[0]
+                    s.close()
+                except:
+                    client_ip = "127.0.0.1"
+                
+                from_header = "<sip:{}@{}>".format(client_name, client_ip)
+            
+            # SIP-Nachricht erstellen - KORRIGIERT: Kein self.host
             return (
                 f"{method} sip:{recipient} SIP/2.0\r\n"
-                f"From: <sip:server@{self.host}>\r\n"
-                f"To: <sip:{recipient}>\r\n"
+                f"From: {from_header}\r\n"
+                f"To: <sip:{recipient}>\r\n"  # ✅ Nur recipient
                 f"Content-Type: {content_type}\r\n"
                 f"Content-Length: {len(body)}\r\n\r\n"
                 f"{body}"
@@ -2035,10 +2041,10 @@ class PHONEBOOK(ctk.CTk):
             
         except Exception as e:
             print(f"[CRITICAL] Failed to build SIP message: {str(e)}")
-            # Fallback: Einfache Text-Nachricht
+            # Fallback
             return (
                 f"{method} sip:{recipient} SIP/2.0\r\n"
-                f"From: <sip:server@{self.host}>\r\n"
+                f"From: <sip:{self._client_name}@client>\r\n"
                 f"To: <sip:{recipient}>\r\n"
                 f"Content-Type: text/plain\r\n"
                 f"Content-Length: {len(str(processed_data))}\r\n\r\n"
