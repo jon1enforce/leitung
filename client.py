@@ -115,27 +115,52 @@ def load_client_name():
             return None
 # === EINHEITLICHER FRAMING STANDARD ===
 def send_frame(sock, data):
-    """Einheitlicher Frame-Sender für ALLE Nachrichten - KORRIGIERT"""
+    """EINHEITLICHER Frame-Sender für ALLE Nachrichten - KOMPATIBEL FÜR CLIENT UND SERVER"""
+    if sock is None or sock.fileno() == -1:
+        print("[FRAME ERROR] Socket is closed or invalid")
+        return False
+    
+    # Daten vorbereiten
     if isinstance(data, str):
         data = data.encode('utf-8')
+    elif not isinstance(data, bytes):
+        print("[FRAME ERROR] Data must be string or bytes")
+        return False
     
-    # 4-Byte Längenheader (Network Byte Order)
+    # Header erstellen (4 Bytes Network Byte Order)
     header = struct.pack('!I', len(data))
+    full_message = header + data
+    
     try:
-        sock.sendall(header + data)
-        print(f"[FRAME] Sent {len(data)} bytes")
+        # Gesamte Nachricht senden
+        total_sent = 0
+        while total_sent < len(full_message):
+            sent = sock.send(full_message[total_sent:])
+            if sent == 0:
+                print("[FRAME ERROR] Socket connection broken")
+                return False
+            total_sent += sent
+        
+        print(f"[FRAME] Successfully sent {len(data)} bytes (total with header: {len(full_message)} bytes)")
         return True
-    except (BrokenPipeError, socket.error, OSError) as e:
-        print(f"[FRAME ERROR] Send failed: {e}")
+        
+    except (BrokenPipeError, ConnectionResetError, socket.error) as e:
+        print(f"[FRAME ERROR] Send failed - connection issue: {e}")
+        return False
+    except OSError as e:
+        print(f"[FRAME ERROR] Send failed - OS error: {e}")
+        return False
+    except Exception as e:
+        print(f"[FRAME ERROR] Send failed - unexpected error: {e}")
         return False
 
 def recv_frame(sock, timeout=30):
-    """Einheitlicher Frame-Empfänger für ALLE Nachrichten - KORRIGIERT"""
+    """EINHEITLICHER Frame-Empfänger für ALLE Nachrichten - KOMPATIBEL FÜR CLIENT UND SERVER"""
     original_timeout = sock.gettimeout()
     sock.settimeout(timeout)
     
     try:
-        # Header lesen (4 Bytes)
+        # 1. Header lesen (4 Bytes Network Byte Order)
         header = b''
         start_time = time.time()
         
@@ -147,41 +172,76 @@ def recv_frame(sock, timeout=30):
             sock.settimeout(remaining_time)
             chunk = sock.recv(4 - len(header))
             if not chunk:
+                print("[FRAME] Connection closed during header reception")
                 return None
             header += chunk
         
+        # 2. Länge decodieren
         length = struct.unpack('!I', header)[0]
         
-        # Sicherheitscheck
-        if length > 65536:  # 64KB max
-            raise ValueError(f"Frame too large: {length} bytes")
+        # 3. SICHERHEITSCHECKS (identisch auf beiden Seiten)
+        if length == 0:
+            print("[FRAME] Empty frame received")
+            return b''  # Leerer Frame ist erlaubt
+            
+        if length > 10 * 1024 * 1024:  # 10MB Maximum (konservativ)
+            print(f"[FRAME SECURITY] Frame size suspicious: {length} bytes")
+            # Versuche Daten zu lesen und zu verwerfen um Verbindung zu resetten
+            try:
+                discard_timeout = min(5.0, timeout)  # Max 5 Sekunden zum Verwerfen
+                sock.settimeout(discard_timeout)
+                bytes_discarded = 0
+                while bytes_discarded < length:
+                    chunk_size = min(4096, length - bytes_discarded)
+                    chunk = sock.recv(chunk_size)
+                    if not chunk:
+                        break
+                    bytes_discarded += len(chunk)
+                print(f"[FRAME SECURITY] Discarded {bytes_discarded} bytes")
+            except:
+                pass
+            raise ValueError(f"Frame too large: {length} bytes (max: 10MB)")
         
-        # Body lesen
+        # 4. Body lesen
         received = b''
         while len(received) < length:
             remaining_time = timeout - (time.time() - start_time)
             if remaining_time <= 0:
-                raise TimeoutError("Body receive timeout")
+                raise TimeoutError(f"Body receive timeout after {timeout}s")
                 
             sock.settimeout(remaining_time)
             chunk_size = min(4096, length - len(received))
             chunk = sock.recv(chunk_size)
             if not chunk:
-                raise ConnectionError("Incomplete frame")
+                raise ConnectionError(f"Incomplete frame: received {len(received)} of {length} bytes")
             received += chunk
         
-        print(f"[FRAME] Received {length} bytes")
+        # 5. Erfolgslogging (konsistent)
+        if len(received) == length:
+            print(f"[FRAME] Successfully received {length} bytes")
+        else:
+            print(f"[FRAME WARNING] Length mismatch: expected {length}, got {len(received)}")
+        
         return received
         
     except socket.timeout:
-        raise TimeoutError("Frame receive timeout")
+        print(f"[FRAME TIMEOUT] Timeout after {timeout} seconds")
+        raise TimeoutError(f"Frame receive timeout after {timeout}s")
+    except ConnectionError as e:
+        print(f"[FRAME CONNECTION] Connection error: {e}")
+        raise
+    except ValueError as e:
+        print(f"[FRAME VALIDATION] Validation error: {e}")
+        raise
     except Exception as e:
-        print(f"[FRAME ERROR] Receive failed: {e}")
+        print(f"[FRAME ERROR] Unexpected error: {e}")
         return None
     finally:
-        sock.settimeout(original_timeout)
-
-
+        # 6. Original Timeout immer zurücksetzen
+        try:
+            sock.settimeout(original_timeout)
+        except:
+            pass  # Socket könnte bereits geschlossen sein
 
 def get_public_ip():
     nat_type, public_ip, public_port = stun.get_ip_info()
@@ -604,14 +664,27 @@ class CALL:
         self.incoming_call = None
         self.current_secret = None
         self.audio_threads = []
-        
         # Audio settings
         self.FORMAT = pyaudio.paInt16
         self.CHANNELS = 1
         self.RATE = 16000
         self.CHUNK = 1024
         self.PORT = 51821  # Audio port
-
+        self.connection_state = "disconnected"  # disconnected, connecting, connected
+        self.connection_lock = threading.Lock()
+    def set_connection_state(self, state):
+        """Thread-safe connection state management"""
+        with self.connection_lock:
+            old_state = self.connection_state
+            self.connection_state = state
+            print(f"[CONNECTION] State changed: {old_state} -> {state}")        
+    def update_call_ui(self, active, status=None, caller_name=None):
+        """Delegate UI updates to the main client instance"""
+        try:
+            if hasattr(self.client, 'update_call_ui'):
+                self.client.update_call_ui(active, status, caller_name)
+        except Exception as e:
+            print(f"[UI UPDATE ERROR] {str(e)}")
     def on_call_click(self, selected_entry=None):
         """Hauptmethode für Call-Initiation - wird von UI aufgerufen"""
         try:
@@ -2051,8 +2124,8 @@ class PHONEBOOK(ctk.CTk):
             from_header = f"<sip:server@{server_host}>" if server_host else "<sip:server>"
         else:
             # Client-Absender
-            if not client_name:
-                client_name = "unknown"
+            if not client_name or client_name == "unknown":
+                client_name = getattr(self, '_client_name', 'unknown')
             
             try:
                 s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
