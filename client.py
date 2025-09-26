@@ -480,44 +480,64 @@ def extract_secret(decrypted_data):
 
 
 def load_privatekey():
-    """Lädt den privaten Schlüssel - konsistent mit generate_keys()"""
-    if not os.path.exists("client_private_key.pem"):
-        # Generiere neuen RSA-Schlüssel
-        bits = 4096
-        new_key = RSA.gen_key(bits, 65537)
+    """Lädt den privaten Schlüssel - konsistent mit generate_keys() - KORRIGIERT"""
+    try:
+        if not os.path.exists("client_private_key.pem"):
+            print("[KEY] Generating new RSA key pair...")
+            # Generiere neuen RSA-Schlüssel
+            bits = 4096
+            new_key = RSA.gen_key(bits, 65537)
 
-        # Speichere den privaten Schlüssel im PKCS#8 Format (konsistent mit generate_keys)
-        from M2Crypto import EVP
-        pkey = EVP.PKey()
-        pkey.assign_rsa(new_key)
-        
-        priv_memory = BIO.MemoryBuffer()
-        pkey.save_key_bio(priv_memory, cipher=None)
-        
-        with open("client_private_key.pem", "wb") as privHandle:
-            privHandle.write(priv_memory.getvalue())
-        
-        # Speichere auch den öffentlichen Schlüssel
-        pub_memory = BIO.MemoryBuffer()
-        new_key.save_pub_key_bio(pub_memory)
-        public_key_pem = pub_memory.getvalue().decode('utf-8')
-
-        with open("client_public_key.pem", "w") as pubHandle:
-            pubHandle.write(public_key_pem)
+            # Speichere den privaten Schlüssel im PKCS#8 Format
+            from M2Crypto import EVP
+            pkey = EVP.PKey()
+            pkey.assign_rsa(new_key)
             
-        return public_key_pem
-        
-    else:
-        # Lade den privaten Schlüssel
-        with open("client_private_key.pem", "rb") as f:
-            private_key_data = f.read()
-        
-        # Validiere dass es ein privater Schlüssel ist (akzeptiere beide Formate)
-        private_key_str = private_key_data.decode('utf-8')
-        if not ('-----BEGIN PRIVATE KEY-----' in private_key_str):
-            raise ValueError("Invalid private key format in file")
-        
-        return private_key_data.decode('utf-8')
+            priv_memory = BIO.MemoryBuffer()
+            pkey.save_key_bio(priv_memory, cipher=None)
+            
+            with open("client_private_key.pem", "wb") as privHandle:
+                privHandle.write(priv_memory.getvalue())
+            
+            # Speichere auch den öffentlichen Schlüssel
+            pub_memory = BIO.MemoryBuffer()
+            new_key.save_pub_key_bio(pub_memory)
+            public_key_pem = pub_memory.getvalue().decode('utf-8')
+
+            with open("client_public_key.pem", "w") as pubHandle:
+                pubHandle.write(public_key_pem)
+            
+            print("[KEY] New key pair generated successfully")
+            return public_key_pem  # Rückgabe als String
+            
+        else:
+            # Lade den privaten Schlüssel - KORREKTUR: Immer private key zurückgeben
+            print("[KEY] Loading existing private key...")
+            with open("client_private_key.pem", "rb") as f:
+                private_key_data = f.read()
+            
+            # Validiere dass es ein privater Schlüssel ist
+            private_key_str = private_key_data.decode('utf-8')
+            if not ('-----BEGIN PRIVATE KEY-----' in private_key_str or 
+                   '-----BEGIN RSA PRIVATE KEY-----' in private_key_str):
+                raise ValueError("Invalid private key format in file")
+            
+            print("[KEY] Private key loaded successfully")
+            return private_key_str  # WICHTIG: Private key als String zurückgeben
+            
+    except Exception as e:
+        print(f"[KEY ERROR] Failed to load private key: {str(e)}")
+        # Fallback: Versuche Schlüssel neu zu generieren
+        try:
+            print("[KEY] Attempting to regenerate keys...")
+            if os.path.exists("client_private_key.pem"):
+                os.remove("client_private_key.pem")
+            if os.path.exists("client_public_key.pem"):
+                os.remove("client_public_key.pem")
+            return load_privatekey()  # Rekursiver Aufruf
+        except:
+            print("[KEY CRITICAL] Key generation failed")
+            return None
 def load_server_publickey():
     """Lädt und normalisiert den öffentlichen Server-Schlüssel"""
     if not os.path.exists("server_public_key.pem"):
@@ -1556,20 +1576,7 @@ class CALL:
             print(f"[CALL ERROR] Hangup failed: {str(e)}")
             self.cleanup_call_resources()
 
-    # === HELPER METHODS ===
-    def _load_privatekey(self):
-        """Lädt den privaten Schlüssel - muss in client_instance definiert sein"""
-        if hasattr(self.client, 'private_key'):
-            return self.client.private_key
-        else:
-            # Fallback: Versuche aus Datei zu laden
-            try:
-                if os.path.exists("client_private_key.pem"):
-                    with open("client_private_key.pem", "r") as f:
-                        return f.read()
-            except:
-                pass
-            raise Exception("Private key not available")
+
 
     def _get_public_ip(self):
         """Ermittelt die öffentliche IP"""
