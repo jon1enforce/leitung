@@ -113,52 +113,73 @@ def load_client_name():
         else:
             messagebox.showerror("Fehler", "Kein Name eingegeben. Abbruch.")
             return None
+# === EINHEITLICHER FRAMING STANDARD ===
 def send_frame(sock, data):
-    """Compatible frame sender matching server implementation"""
+    """Einheitlicher Frame-Sender für ALLE Nachrichten - KORRIGIERT"""
     if isinstance(data, str):
         data = data.encode('utf-8')
     
-    # Prepend length header (4 bytes network byte order)
+    # 4-Byte Längenheader (Network Byte Order)
     header = struct.pack('!I', len(data))
     try:
         sock.sendall(header + data)
-    except BrokenPipeError:
-        raise ConnectionError("Connection broken during send")
-    except socket.timeout:
-        raise TimeoutError("Send operation timed out")
+        print(f"[FRAME] Sent {len(data)} bytes")
+        return True
+    except (BrokenPipeError, socket.error, OSError) as e:
+        print(f"[FRAME ERROR] Send failed: {e}")
+        return False
 
-def recv_frame(sock, timeout=60):
-    """Improved frame receiver with binary support"""
+def recv_frame(sock, timeout=30):
+    """Einheitlicher Frame-Empfänger für ALLE Nachrichten - KORRIGIERT"""
+    original_timeout = sock.gettimeout()
     sock.settimeout(timeout)
+    
     try:
-        # Read header
-        header = sock.recv(4)
-        if len(header) != 4:
-            return None
-            
-        length = struct.unpack('!I', header)[0]
-        if length > 10 * 1024 * 1024:  # 10MB max
-            raise ValueError("Frame too large")
+        # Header lesen (4 Bytes)
+        header = b''
+        start_time = time.time()
         
-        # Read body
-        received = bytearray()
-        while len(received) < length:
-            chunk = sock.recv(min(length - len(received), 4096))
+        while len(header) < 4:
+            remaining_time = timeout - (time.time() - start_time)
+            if remaining_time <= 0:
+                raise TimeoutError("Header receive timeout")
+                
+            sock.settimeout(remaining_time)
+            chunk = sock.recv(4 - len(header))
             if not chunk:
-                raise ConnectionError("Connection closed prematurely")
-            received.extend(chunk)
+                return None
+            header += chunk
         
-        print(f"\n[FRAME DEBUG] Received {length} bytes")
-        print(f"First 32 bytes (hex): {' '.join(f'{b:02x}' for b in received[:32])}")
+        length = struct.unpack('!I', header)[0]
         
-        # Try UTF-8 decode for SIP messages
-        try:
-            return received.decode('utf-8')
-        except UnicodeDecodeError:
-            return bytes(received)  # Return binary data if not UTF-8
-            
+        # Sicherheitscheck
+        if length > 65536:  # 64KB max
+            raise ValueError(f"Frame too large: {length} bytes")
+        
+        # Body lesen
+        received = b''
+        while len(received) < length:
+            remaining_time = timeout - (time.time() - start_time)
+            if remaining_time <= 0:
+                raise TimeoutError("Body receive timeout")
+                
+            sock.settimeout(remaining_time)
+            chunk_size = min(4096, length - len(received))
+            chunk = sock.recv(chunk_size)
+            if not chunk:
+                raise ConnectionError("Incomplete frame")
+            received += chunk
+        
+        print(f"[FRAME] Received {length} bytes")
+        return received
+        
     except socket.timeout:
-        raise TimeoutError("Timeout waiting for frame")
+        raise TimeoutError("Frame receive timeout")
+    except Exception as e:
+        print(f"[FRAME ERROR] Receive failed: {e}")
+        return None
+    finally:
+        sock.settimeout(original_timeout)
 
 
 
@@ -200,16 +221,25 @@ def normalize_key(key):
 
 
 def is_valid_public_key(key):
-    """Strict validation for PEM format public keys"""
+    """Strict validation for PEM format public keys with improved formatting"""
     if not isinstance(key, str):
         return False
-    key = key.strip()
-    return (
-        key.startswith('-----BEGIN PUBLIC KEY-----') and 
-        key.endswith('-----END PUBLIC KEY-----') and
-        "MII" in key and  # ASN.1 header
-        len(key) > 100    # Minimum reasonable length
-    )
+    
+    # Bereinige den Key: Ersetze doppelte Backslashes
+    key = key.strip().replace('\\\\n', '\n').replace('\\n', '\n')
+    
+    # Überprüfe das PEM-Format
+    has_valid_start = key.startswith('-----BEGIN PUBLIC KEY-----')
+    has_valid_end = key.endswith('-----END PUBLIC KEY-----')
+    has_rsa_header = "MII" in key
+    has_valid_length = len(key) > 100
+    
+    print(f"[KEY VALIDATION] Start valid: {has_valid_start}")
+    print(f"[KEY VALIDATION] End valid: {has_valid_end}")
+    print(f"[KEY VALIDATION] Has RSA header: {has_rsa_header}")
+    print(f"[KEY VALIDATION] Length valid: {has_valid_length} ({len(key)} chars)")
+    
+    return has_valid_start and has_valid_end and has_rsa_header and has_valid_length
 def verify_merkle_integrity(all_keys, received_root_hash):
     """Überprüft die Integrität aller Schlüssel mittels Merkle Tree mit erweitertem Logging"""
     print("\n=== CLIENT VERIFICATION ===")
@@ -429,390 +459,79 @@ def load_privatekey():
         
         return private_key_data.decode('utf-8')
 def load_server_publickey():
-    """Lädt den öffentlichen Server-Schlüssel aus der Datei"""
+    """Lädt und normalisiert den öffentlichen Server-Schlüssel"""
     if not os.path.exists("server_public_key.pem"):
         raise FileNotFoundError("Server public key file not found")
     
-    with open("server_public_key.pem", "rb") as f:
-        return f.read().decode('utf-8')
-
-
-
-
-
-
-@staticmethod
-def build_sip_request(method, recipient, client_name, server_ip, server_port):
-    """Generiert standardkonforme SIP-Nachrichten mit korrekten Port-Handlings"""
     try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect((server_ip, 80))
-        local_ip = s.getsockname()[0]
-        s.close()
-    except:
-        local_ip = "127.0.0.1"  # Fallback
-    
-    # Wichtige Änderungen:
-    local_port = random.randint(32768, 60999)  # IANA empfohlener ephemeral port range
-    call_id = f"{uuid.uuid4()}@{server_ip}"
-    branch_id = f"z9hG4bK{random.randint(1000,9999)}"
-    tag = random.randint(1000,9999)
-
-    return (
-        f"{method} sip:{recipient}@{server_ip}:{server_port} SIP/2.0\r\n"
-        f"Via: SIP/2.0/UDP {local_ip}:{local_port};rport;branch={branch_id}\r\n"
-        f"Max-Forwards: 70\r\n"
-        f"From: <sip:{client_name}@{server_ip}>;tag={tag}\r\n"
-        f"To: <sip:{recipient}@{server_ip}>\r\n"
-        f"Call-ID: {call_id}\r\n"
-        f"CSeq: 1 {method}\r\n"
-        f"Contact: <sip:{client_name}@{local_ip}:{local_port}>\r\n"
-        f"Content-Length: 0\r\n\r\n"
-    )
-
-def build_sip_message(method, recipient, custom_data={}, from_server=False, host=None):
-    """Erweitere SIP-Nachrichtenerstellung mit JSON-Unterstützung (standalone Version)"""
-    # Entscheide ob Body JSON oder Key-Value sein soll
-    if any(isinstance(v, (dict, list)) for v in custom_data.values()):
-        body = json.dumps(custom_data, separators=(',', ':'))
-        content_type = "application/json"
-    else:
-        body = "\r\n".join("{}: {}".format(k, v) for k, v in custom_data.items())
-        content_type = "text/plain"
-    
-    # Absenderadresse bestimmen - FIXED VERSION
-    if from_server:
-        from_header = "<sip:server@{}>".format(host) if host else "<sip:server>"
-        client_ip = host if host else "127.0.0.1"
-    else:
-        client_name = load_client_name()
-        # Use a more reliable method to get local IP
-        try:
-            # Method 1: Connect to a known external service
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))  # Google DNS
-            client_ip = s.getsockname()[0]
-            s.close()
-        except:
-            try:
-                # Method 2: Use hostname lookup
-                client_ip = socket.gethostbyname(socket.gethostname())
-            except:
-                # Method 3: Fallback to localhost
-                client_ip = "127.0.0.1"
+        with open("server_public_key.pem", "rb") as f:
+            key_data = f.read().decode('utf-8')
         
-        from_header = "<sip:{}@{}>".format(client_name, client_ip)
-    
-    return (
-        "{method} sip:{recipient} SIP/2.0\r\n"
-        "From: {from_header}\r\n"
-        "To: <sip:{recipient}>\r\n"
-        "Content-Type: {content_type}\r\n"
-        "Content-Length: {content_length}\r\n\r\n"
-        "{body}"
-    ).format(
-        method=method,
-        recipient=recipient,
-        from_header=from_header,
-        content_type=content_type,
-        content_length=len(body),
-        body=body
-    )
-def parse_sip_message(message):
-    """Robust SIP message parser that handles both raw and parsed messages"""
-    # If message is already parsed, return it directly
-    if isinstance(message, dict):
-        return message
+        # ✅ KRITISCHE KORREKTUR: PEM-Format sicherstellen
+        key_data = key_data.strip()
         
-    # Handle bytes input
-    if isinstance(message, bytes):
-        try:
-            message = message.decode('utf-8')
-        except UnicodeDecodeError:
-            return None
-
-    # Handle string input
-    if isinstance(message, str):
-        message = message.strip()
-        if not message:
-            return None
-
-        # Rest of your existing parsing logic...
-        parts = message.split('\r\n\r\n', 1)
-        headers = parts[0].split('\r\n')
-        body = parts[1] if len(parts) > 1 else ''
-
-        result = {'headers': {}, 'body': body, 'custom_data': {}}
-
-        # Parse first line
-        first_line = headers[0]
-        if first_line.startswith('SIP/2.0'):
-            parts = first_line.split(' ', 2)
-            result['status_code'] = parts[1] if len(parts) > 1 else ''
-            result['status_message'] = parts[2] if len(parts) > 2 else ''
-        else:
-            parts = first_line.split(' ', 2)
-            result['method'] = parts[0] if len(parts) > 0 else ''
-            result['uri'] = parts[1] if len(parts) > 1 else ''
-            result['protocol'] = parts[2] if len(parts) > 2 else ''
-
-        # Parse headers
-        for header in headers[1:]:
-            if ': ' in header:
-                key, val = header.split(': ', 1)
-                result['headers'][key.strip().upper()] = val.strip()
-
-        # Parse body
-        if body:
-            try:
-                # Try JSON first
-                result['custom_data'] = json.loads(body)
-            except json.JSONDecodeError:
-                # Fallback to key-value
-                result['custom_data'] = dict(
-                    line.split(': ', 1)
-                    for line in body.splitlines()
-                    if ': ' in line
-                )
-
-        return result
+        # Falls Key bereits korrektes PEM hat
+        if key_data.startswith('-----BEGIN PUBLIC KEY-----') and key_data.endswith('-----END PUBLIC KEY-----'):
+            print("[SERVER KEY] Key is in valid PEM format")
+            return key_data
         
-    return None
-
-def connection_loop(client_socket, server_ip, message_handler=None):
-    """Improved connection loop with proper SIP ping/pong and FRAMING support"""
-    # FRAMING IS REQUIRED - no fallback!
-    global connected
-    connected = True
-    print("[SETUP] connected = True")
-    
-    # Lokale IP ermitteln (korrigierte Version für OpenBSD)
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect((server_ip, 80))
-        local_ip = s.getsockname()[0]
-        s.close()
-        print(f"[DEBUG] Local IP for ping: {local_ip}")
-    except Exception as ip_error:
-        print(f"[WARNING] Could not determine local IP for ping: {ip_error}")
-        local_ip = "127.0.0.1"  # Fallback
-    
-    client_name = load_client_name()
-    
-    while True:
+        # Reparatur: PEM-Header hinzufügen falls fehlend
+        if 'BEGIN PUBLIC KEY' not in key_data:
+            print("[SERVER KEY] Adding missing PEM headers")
+            # Base64-Inhalt extrahieren und neu wrappen
+            key_content = key_data.replace('\n', '').replace(' ', '')
+            key_data = f"-----BEGIN PUBLIC KEY-----\n{key_content}\n-----END PUBLIC KEY-----"
+        
+        # Validierung: Versuche Key zu laden
         try:
-            # Build ping message with corrected local IP
-            ping_msg = (
-                f"MESSAGE sip:{server_ip} SIP/2.0\r\n"
-                f"From: <sip:{client_name}@{local_ip}>\r\n"  # KORRIGIERT
-                f"To: <sip:{server_ip}>\r\n"
-                f"Content-Type: text/plain\r\n"
-                f"Content-Length: 10\r\n\r\n"
-                f"PING: true"
-            )
-            
-            # Send ping MIT FRAMING (KEIN FALLBACK!)
-            send_frame(client_socket, ping_msg.encode('utf-8'))
-            print("DEBUG:ping gesendet+++")
-
-            # Wait for pong MIT FRAMING (KEIN FALLBACK!)
-            response = recv_frame(client_socket)
-            if response and isinstance(response, bytes):
-                response = response.decode('utf-8')
-            
-            if not response:
-                print("Server disconnected")
-                break
-                
-            if message_handler:
-                message_handler(response)
-            else:
-                # Default pong handling
-                sip_data = parse_sip_message(response)
-                if sip_data and sip_data.get('custom_data', {}).get('PONG') == 'true':
-                    print("Pong received")
-                else:
-                    print(f"Unexpected response: {response[:100]}...")
-
-            time.sleep(30)  # Ping interval
-            
-        except socket.timeout:
-            print("Connection timeout")
-            break
+            test_bio = BIO.MemoryBuffer(key_data.encode())
+            test_key = RSA.load_pub_key_bio(test_bio)
+            print("[SERVER KEY] Key validation successful")
+            return key_data
         except Exception as e:
-            print(f"Connection error: {str(e)}")
-            break
+            print(f"[SERVER KEY] Key validation failed: {e}")
+            raise ValueError("Invalid server public key format")
+            
+    except Exception as e:
+        print(f"[SERVER KEY ERROR] {str(e)}")
+        raise
+
+            
 def extract_server_public_key(sip_data, raw_response=None):
     """
-    Extrahiert den Server-Public-Key aus SIP-Daten mit mehreren Fallbacks
-    Gibt den vollständigen PEM-formatierten Key oder None zurück
+    Extrahiert den Server-Public-Key aus SIP-Daten mit Format-Bereinigung
     """
-    # Variante 1: Aus custom_data
-    if isinstance(sip_data, dict) and sip_data.get('custom_data'):
-        custom_data = sip_data['custom_data']
-        if 'SERVER_PUBLIC_KEY' in custom_data:
-            key = custom_data['SERVER_PUBLIC_KEY']
-            # Remove any prefix like "SERVER_PUBLIC_KEY: "
-            if ':' in key:
-                key = key.split(':', 1)[1].strip()
-            if '-----BEGIN PUBLIC KEY-----' in key:
-                return key
-    
-    # Variante 2: Aus dem Body der rohen Response
-    if raw_response:
-        # Suche nach dem Key mit flexibler Position
-        key_start = raw_response.find('-----BEGIN PUBLIC KEY-----')
-        if key_start != -1:
-            key_end = raw_response.find('-----END PUBLIC KEY-----', key_start)
-            if key_end != -1:
-                key_end += len('-----END PUBLIC KEY-----')
-                key = raw_response[key_start:key_end]
-                # Remove any prefix if present
-                if 'SERVER_PUBLIC_KEY:' in key:
-                    key = key.replace('SERVER_PUBLIC_KEY:', '').strip()
-                return key
-    
-    # Variante 3: Aus Header-Zeilen
-    if isinstance(sip_data, dict) and sip_data.get('headers'):
-        for header in sip_data['headers'].values():
-            if '-----BEGIN PUBLIC KEY-----' in header:
-                key_start = header.find('-----BEGIN PUBLIC KEY-----')
-                key_end = header.find('-----END PUBLIC KEY-----', key_start)
+    try:
+        # Variante 1: Aus custom_data
+        if isinstance(sip_data, dict) and sip_data.get('custom_data'):
+            custom_data = sip_data['custom_data']
+            if 'SERVER_PUBLIC_KEY' in custom_data:
+                key = custom_data['SERVER_PUBLIC_KEY']
+                # Bereinige das Format
+                key = key.replace('\\\\n', '\n').replace('\\n', '\n')
+                
+                if '-----BEGIN PUBLIC KEY-----' in key:
+                    return key
+        
+        # Variante 2: Aus dem Body der rohen Response
+        if raw_response:
+            # Bereinige zuerst das Format
+            cleaned_response = raw_response.replace('\\\\n', '\n').replace('\\n', '\n')
+            key_start = cleaned_response.find('-----BEGIN PUBLIC KEY-----')
+            if key_start != -1:
+                key_end = cleaned_response.find('-----END PUBLIC KEY-----', key_start)
                 if key_end != -1:
                     key_end += len('-----END PUBLIC KEY-----')
-                    key = header[key_start:key_end]
+                    key = cleaned_response[key_start:key_end]
+                    # Remove any prefix if present
                     if 'SERVER_PUBLIC_KEY:' in key:
                         key = key.replace('SERVER_PUBLIC_KEY:', '').strip()
                     return key
-    
-    return None      
-def start_connection(server_ip, server_port, client_name, client_socket, message_handler=None):
-    """
-    Final corrected version with complete error handling
-    """
-    try:
-        # 1. Configure socket
-        client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-        client_socket.settimeout(15.0)
-
-        # 2. Load and validate client key
-        client_pubkey = load_publickey()
-        if not is_valid_public_key(client_pubkey):
-            raise ValueError("Invalid client public key format")
-
-        # 3. Build and send registration
-        try:
-            # Methode 1: Direkte Socket-Methode
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect((server_ip, 80))  # Verbindung zu einem beliebigen Port
-            local_ip = s.getsockname()[0]
-            s.close()
-        except:
-            try:
-                # Methode 2: Hostname-Lookup mit Fallback
-                local_ip = socket.gethostbyname(socket.gethostname())
-            except:
-                # Methode 3: Localhost als Fallback
-                local_ip = "127.0.0.1"
-        register_msg = (
-            f"REGISTER sip:{server_ip}:{server_port} SIP/2.0\r\n"
-            f"From: <sip:{client_name}@{local_ip}>\r\n"
-            f"To: <sip:{server_ip}:{server_port}>\r\n"
-            f"Content-Type: text/plain\r\n"
-            f"Content-Length: {len(client_pubkey)}\r\n\r\n"
-            f"{client_pubkey}"
-        )
         
-        print("\n[Client] Sending registration...")
-        send_frame(client_socket, register_msg.encode('utf-8'))
-
-        # 4. Receive and parse response
-        response = recv_frame(client_socket)
-        if not response:
-            raise ConnectionError("Empty response from server")
-
-        if isinstance(response, bytes):
-            response = response.decode('utf-8')
-
-        print(f"\n[Client] Server response:\n{response[:500]}...")
-
-        # 5. Extract and validate server key
-        server_public_key = None
-        if '-----BEGIN PUBLIC KEY-----' in response:
-            key_start = response.index('-----BEGIN PUBLIC KEY-----')
-            key_end = response.index('-----END PUBLIC KEY-----') + len('-----END PUBLIC KEY-----')
-            server_public_key = response[key_start:key_end]
-
-        if not is_valid_public_key(server_public_key):
-            raise ValueError("Invalid server public key")
-
-        with open("server_public_key.pem", "w") as f:
-            f.write(server_public_key)
-
-        # 6. Receive and verify Merkle data
-        merkle_response = recv_frame(client_socket)
-        if not merkle_response:
-            raise ConnectionError("No Merkle data received")
-
-        if isinstance(merkle_response, bytes):
-            merkle_response = merkle_response.decode('utf-8')
-
-        merkle_data = parse_sip_message(merkle_response)
-        if not merkle_data:
-            raise ValueError("Invalid Merkle response format")
-
-        # Extract keys and root hash
-        all_keys = []
-        if 'custom_data' in merkle_data and 'ALL_KEYS' in merkle_data['custom_data']:
-            keys_data = merkle_data['custom_data']['ALL_KEYS']
-            if isinstance(keys_data, str):
-                try:
-                    all_keys = json.loads(keys_data)
-                except json.JSONDecodeError:
-                    all_keys = [k.strip() for k in keys_data.split('|||') if k.strip()]
-            elif isinstance(keys_data, list):
-                all_keys = keys_data
-
-        merkle_root = merkle_data.get('custom_data', {}).get('MERKLE_ROOT', '')
-        if not merkle_root:
-            raise ValueError("No Merkle root in response")
-
-        print("\n=== CLIENT VERIFICATION ===")
-        if not verify_merkle_integrity(all_keys, merkle_root):
-            raise ValueError("Merkle verification failed")
-
-        # 7. Start main loop with proper handler
-        print("\n[Client] Starting communication loop...")
-        if message_handler:
-            # Wrap the handler if it's a QObject
-            if hasattr(message_handler, 'handle_server_message'):
-                handler = message_handler.handle_server_message
-            else:
-                handler = message_handler
-        else:
-            handler = None
-            
-        connection_loop(client_socket, server_ip, handler)
-        return True
-
+        return None
     except Exception as e:
-        error_msg = f"Connection failed: {str(e)}"
-        print(f"\n[Client ERROR] {error_msg}")
-        traceback.print_exc()
-        
-        if message_handler and hasattr(message_handler, 'show_error'):
-            try:
-                message_handler.show_error(error_msg)
-            except:
-                print("Could not display error message")
-        
-        return False
-    finally:
-        if 'client_socket' in locals():
-            try:
-                client_socket.close()
-            except:
-                pass
+        print(f"[KEY EXTRACT ERROR] {str(e)}")
+        return None
 
 def save_client_id(client_id):
     """Speichert die Client-ID in einer lokalen Datei."""
@@ -1001,25 +720,7 @@ class CALL:
             except:
                 pass
     
-    def _update_ui_direct(self, active, status=None, caller_name=None):
-        """Direkte UI-Änderungen als Fallback"""
-        try:
-            if active:
-                if status == "requesting":
-                    status_text = f"Anfrage an {caller_name}..." if caller_name else "Anrufanfrage..."
-                elif status == "connected":
-                    status_text = f"Verbunden mit: {caller_name}" if caller_name else "Aktiver Anruf"
-                else:
-                    status_text = f"Aktiver Anruf mit: {caller_name}" if caller_name else "Aktiver Anruf"
-            else:
-                status_text = "Bereit für Anrufe"
-            
-            # Status-Label aktualisieren falls vorhanden
-            if hasattr(self.client, 'status_label') and self.client.status_label.winfo_exists():
-                self.client.status_label.configure(text=status_text)
-                
-        except Exception as e:
-            print(f"[UI FALLBACK ERROR] {str(e)}")
+
 
     def _handle_session_key(self, msg):
         """Verarbeitet Session Key vom Server"""
@@ -1029,7 +730,7 @@ class CALL:
             
             if encrypted_session:
                 # Entschlüssele Session Key mit privatem Schlüssel
-                private_key = self._load_privatekey()
+                private_key = load_privatekey()
                 priv_key = RSA.load_key_string(private_key.encode())
                 
                 encrypted_bytes = base64.b64decode(encrypted_session)
@@ -1047,117 +748,166 @@ class CALL:
                         
         except Exception as e:
             print(f"[CALL ERROR] Session key handling failed: {str(e)}")
-
-    def handle_message(self, message_type, msg):
-        """Zentrale Message-Handling Methode"""
+    def handle_message(self, raw_message):
+        """Zentrale Message-Handling Methode - KORRIGIERT FÜR MESSAGE-TYPE ERKENNUNG"""
         try:
+            # ✅ Zuerst den Message-Type aus der Nachricht extrahieren
+            message_type = self._extract_message_type(raw_message)
+            print(f"[CALL] Handling message type: {message_type}")
+            
             if message_type == 'INCOMING_CALL':
-                self.handle_incoming_call(msg)
+                self.handle_incoming_call(raw_message)
             elif message_type == 'SESSION_KEY':
-                self._handle_session_key(msg)
+                self._handle_session_key(raw_message)
             elif message_type == 'CALL_RESPONSE':
-                self.handle_call_response(msg)
+                self.handle_call_response(raw_message)
             elif message_type == 'PUBLIC_KEY_RESPONSE':
-                self.handle_public_key_response(msg)
+                print("[CALL] Received PUBLIC_KEY_RESPONSE, processing...")
+                self.handle_public_key_response(raw_message)
             elif message_type == 'CALL_TIMEOUT':
                 self.cleanup_call_resources()
                 if hasattr(self.client, 'after'):
                     self.client.after(0, lambda: messagebox.showinfo("Call Failed", "Timeout - Keine Antwort vom Empfänger"))
             elif message_type == 'CALL_END':
                 self.cleanup_call_resources()
+            elif message_type == 'PONG':
+                print("[CALL] Pong received")  # Ignorieren
+            else:
+                print(f"[CALL WARNING] Unknown message type: {message_type}")
+                
         except Exception as e:
-            print(f"[CALL MSG ERROR] Failed to handle {message_type}: {str(e)}")
+            print(f"[CALL MSG ERROR] Failed to handle message: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+    def _extract_message_type(self, message):
+        """EINHEITLICHE MESSAGE-TYPE EXTRAKTION - NUR JSON"""
+        try:
+            # Bereits geparste Nachricht
+            if isinstance(message, dict):
+                parsed_msg = message
+            else:
+                # Rohdaten parsen
+                if isinstance(message, bytes):
+                    message = message.decode('utf-8', errors='ignore')
+                parsed_msg = self.parse_sip_message(message)
+            
+            if not parsed_msg:
+                return "UNKNOWN"
+            
+            # ✅ AUSSCHLIESSLICH JSON custom_data VERWENDEN
+            custom_data = parsed_msg.get('custom_data', {})
+            message_type = custom_data.get('MESSAGE_TYPE')
+            
+            if message_type:
+                return message_type
+            
+            # Fallback: Body als JSON parsen
+            body = parsed_msg.get('body', '')
+            if body.strip().startswith('{'):
+                try:
+                    body_data = json.loads(body)
+                    return body_data.get('MESSAGE_TYPE', 'UNKNOWN')
+                except json.JSONDecodeError:
+                    pass
+            
+            return "UNKNOWN"
+            
+        except Exception as e:
+            print(f"[EXTRACT ERROR] {str(e)}")
+            return "UNKNOWN"
 
     def initiate_call(self, recipient):
-        """Initiiert einen Anruf - Schritt 1: Public Key anfordern - VOLLSTÄNDIG KORRIGIERT"""
+        """Initiiert Anruf mit EINHEITLICHEM Format - KORRIGIERT"""
         try:
+            print(f"[CALL] Starting call to {recipient.get('name', 'Unknown')}")
+
+            # 1. Validiere Eingabe
             if not recipient or 'id' not in recipient:
-                raise Exception("Ungültiger Empfänger")
-                
-            print(f"[CALL] Initiating call to {recipient.get('name', 'Unknown')}")
+                raise ValueError("Ungültiger Empfänger (fehlende ID)")
 
-            # Prüfe ob bereits ein aktiver Call läuft
+            # 2. Prüfe aktive Calls
             if self.active_call or self.pending_call:
-                messagebox.showwarning("Warning", "Bereits in einem Anruf aktiv")
-                return
+                raise RuntimeError("Bereits in einem Anruf aktiv")
 
-            # Validiere dass required fields vorhanden sind
-            if 'id' not in recipient:
-                messagebox.showerror("Error", "Ungültiger Kontakt (fehlende ID)")
-                return
-
-            # Public Key des Empfängers anfordern - MIT DEBUG
+            # 3. EINHEITLICHE GET_PUBLIC_KEY Nachricht
             key_request_data = {
                 "MESSAGE_TYPE": "GET_PUBLIC_KEY",
                 "TARGET_CLIENT_ID": recipient['id'],
                 "CALLER_NAME": self.client._client_name,
-                "CALLER_CLIENT_ID": self.client._find_my_client_id(),
-                "TIMESTAMP": int(time.time())
+                "CALLER_CLIENT_ID": self.client._find_my_client_id()
             }
             
-            print(f"[CALL DEBUG] Key request data: {key_request_data}")
-            
-            key_request = self.client.build_sip_message("MESSAGE", "server", key_request_data)
-            
-            # ✅ DEBUG: Überprüfe was wirklich gesendet wird
-            print(f"[CALL DEBUG] Key request message:\n{key_request}")
-            
-            if self.client._send_message(key_request):
-                print("[CALL] Public key request sent")
-            else:
-                raise Exception("Konnte Public Key Request nicht senden")
-            
-            # Call-Kontext speichern
+            key_request_msg = self.client.build_sip_message(
+                "MESSAGE", 
+                "server", 
+                key_request_data
+            )
+
+            # 4. EINHEITLICHES Framing verwenden
+            if not self.client._send_message(key_request_msg):
+                raise ConnectionError("Konnte Key-Request nicht senden")
+
+            # 5. Call-Status setzen
             self.pending_call = {
                 'recipient': recipient,
                 'status': 'requesting_key',
                 'start_time': time.time(),
                 'timeout': 120
             }
-            
-            # UI auf "Warten" setzen
-            try:
-                if hasattr(self.client, 'update_call_ui'):
-                    self.client.update_call_ui(True, "requesting", recipient.get('name', 'Unknown'))
-            except Exception as e:
-                print(f"[UI WARNING] Failed to update UI: {str(e)}")
-            
-            # Timeout-Überwachung starten
+
+            # 6. UI aktualisieren
+            if hasattr(self.client, 'update_call_ui'):
+                self.client.update_call_ui(True, "requesting", recipient.get('name', 'Unknown'))
+
+            print(f"[CALL] Call initiated to {recipient.get('name', 'Unknown')}")
+
+            # 7. Timeout-Überwachung starten
             threading.Thread(target=self._call_timeout_watchdog, daemon=True).start()
-            
-            print(f"[CALL] Anruf initiiert zu {recipient.get('name', 'Unknown')}")
 
         except Exception as e:
             print(f"[CALL ERROR] Initiation failed: {str(e)}")
-            messagebox.showerror("Error", f"Anruf fehlgeschlagen: {str(e)}")
             self.cleanup_call_resources()
+            if hasattr(self.client, 'show_error'):
+                self.client.show_error(f"Anruf fehlgeschlagen: {str(e)}")
             raise
 
     def handle_public_key_response(self, msg):
-        """Verarbeitet Public-Key-Antwort - Schritt 2: Call-Daten verschlüsseln und senden"""
+        """Verarbeitet Public-Key-Antwort - KORRIGIERT"""
         try:
+            # ✅ VALIDIERE: Prüfe ob wir auf eine Key-Anfrage warten
             if not self.pending_call or self.pending_call.get('status') != 'requesting_key':
-                print("[CALL WARNING] Unexpected public key response")
-                return
+                print("[CALL WARNING] Unexpected public key response - no pending call or wrong status")
+                return False
                 
+            print(f"[CALL] Processing public key response...")
+            
+            # ✅ KORREKT: Daten aus CUSTOM_DATA extrahieren (nicht headers!)
             custom_data = msg.get('custom_data', {})
             target_id = custom_data.get('TARGET_CLIENT_ID')
             public_key = custom_data.get('PUBLIC_KEY')
+            caller_name = custom_data.get('CALLER_NAME')
             
             if not public_key:
-                raise Exception("No public key received")
+                print("[CALL ERROR] No public key received in custom_data")
+                raise Exception("No public key received from server")
                 
-            print(f"[CALL] Received public key for client {target_id}")
+            if not target_id:
+                print("[CALL WARNING] No target ID in response")
+                target_id = self.pending_call['recipient'].get('id', 'unknown')
+                
+            print(f"[CALL] Received public key for client {target_id} (length: {len(public_key)})")
             
-            # WireGuard Schlüsselpaar generieren
-            wg_private_key, wg_public_key = self.client.wg_manager.generate_keypair()
+            # ✅ WireGuard Schlüsselpaar generieren
+            wg_private_key, wg_public_key = self._generate_wireguard_keypair()
+            print(f"[CALL] Generated WireGuard keys (pub: {wg_public_key[:20]}...)")
             
-            # Session Key generieren
+            # ✅ Session Key generieren (48 Bytes: 16 IV + 32 AES Key)
             session_secret = os.urandom(48)
             iv = session_secret[:16]
             aes_key = session_secret[16:48]
             
-            # Call-Daten vorbereiten
+            # ✅ Call-Daten vorbereiten
             call_data = {
                 "caller_name": self.client._client_name,
                 "caller_client_id": self.client._find_my_client_id(),
@@ -1171,42 +921,140 @@ class CALL:
                 "call_type": "wireguard_audio"
             }
             
-            # Mit Public Key des Empfängers verschlüsseln
-            recipient_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(public_key.encode()))
-            encrypted_data = recipient_key.public_encrypt(
-                json.dumps(call_data).encode('utf-8'), 
-                RSA.pkcs1_padding
-            )
+            print(f"[CALL] Prepared call data for encryption")
             
-            # CALL_REQUEST senden
-            call_request = self.client.build_sip_message("MESSAGE", "server", {
+            # ✅ Mit Public Key des Empfängers verschlüsseln
+            try:
+                # Public Key laden
+                recipient_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(public_key.encode()))
+                
+                # Daten serialisieren und verschlüsseln
+                call_data_json = json.dumps(call_data).encode('utf-8')
+                encrypted_data = recipient_key.public_encrypt(call_data_json, RSA.pkcs1_padding)
+                encrypted_b64 = base64.b64encode(encrypted_data).decode('utf-8')
+                
+                print(f"[CALL] Call data encrypted successfully (size: {len(encrypted_b64)} chars)")
+                
+            except Exception as e:
+                print(f"[CALL ERROR] Encryption failed: {str(e)}")
+                raise Exception(f"Verschlüsselung fehlgeschlagen: {str(e)}")
+            
+            # ✅ CALL_REQUEST an Server senden
+            call_request_data = {
                 "MESSAGE_TYPE": "CALL_REQUEST",
                 "TARGET_CLIENT_ID": target_id,
-                "ENCRYPTED_CALL_DATA": base64.b64encode(encrypted_data).decode('utf-8'),
+                "ENCRYPTED_CALL_DATA": encrypted_b64,
                 "CALLER_NAME": self.client._client_name,
                 "CALLER_CLIENT_ID": self.client._find_my_client_id(),
                 "TIMESTAMP": int(time.time())
-            })
+            }
             
-            self.client._send_message(call_request)
+            call_request_msg = self.client.build_sip_message("MESSAGE", "server", call_request_data)
             
-            # Call-Daten aktualisieren
+            if not self.client._send_message(call_request_msg):
+                raise Exception("Failed to send CALL_REQUEST to server")
+                
+            print("[CALL] CALL_REQUEST sent to server")
+            
+            # ✅ Call-Status aktualisieren
             self.pending_call.update({
                 'status': 'request_sent',
                 'wg_private_key': wg_private_key,
                 'wg_public_key': wg_public_key,
-                'session_secret': session_secret
+                'session_secret': session_secret,
+                'target_id': target_id
             })
             
-            print("[CALL] Call request sent with encrypted data")
+            # ✅ WireGuard Server vorbereiten (als Caller)
+            print("[CALL] Setting up WireGuard tunnel as caller...")
+            success = self._setup_caller_wireguard(wg_private_key, wg_public_key)
+            
+            if not success:
+                raise Exception("WireGuard tunnel setup failed")
+                
+            print("[CALL] WireGuard tunnel setup complete - waiting for callee...")
+            
+            # ✅ UI aktualisieren
+            recipient_name = self.pending_call['recipient'].get('name', 'Unknown')
+            if hasattr(self.client, 'update_call_ui'):
+                self.client.update_call_ui(True, "ringing", recipient_name)
+                
+            return True
             
         except Exception as e:
-            print(f"[CALL ERROR] Public key handling failed: {str(e)}")
-            self.cleanup_call_resources()
+            print(f"[CALL ERROR] Public key response handling failed: {str(e)}")
+            
+            # ✅ Fehler an UI melden
             if hasattr(self.client, 'after'):
-                self.client.after(0, lambda: messagebox.showerror("Call Failed", f"Verbindungsaufbau fehlgeschlagen: {str(e)}"))
+                self.client.after(0, lambda: messagebox.showerror(
+                    "Call Failed", 
+                    f"Verbindungsaufbau fehlgeschlagen: {str(e)}"
+                ))
+            
+            self.cleanup_call_resources()
+            return False
 
-    # === INCOMING CALL HANDLING ===
+    def _setup_caller_wireguard(self, private_key, public_key):
+        """Richtet WireGuard als Caller (Server) ein"""
+        try:
+            interface = "wg-phonebook"
+            
+            # ✅ Altes Interface bereinigen
+            subprocess.run(['sudo', 'ip', 'link', 'del', 'dev', interface], 
+                          stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+            time.sleep(0.5)
+            
+            # ✅ Neues Interface erstellen
+            result = subprocess.run([
+                'sudo', 'ip', 'link', 'add', 'dev', interface, 'type', 'wireguard'
+            ], capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                print(f"[WG ERROR] Interface creation failed: {result.stderr}")
+                return False
+            
+            # ✅ Private Key setzen
+            result = subprocess.run([
+                'sudo', 'wg', 'set', interface, 'private-key', '/dev/stdin'
+            ], input=private_key, capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                print(f"[WG ERROR] Private key setup failed: {result.stderr}")
+                return False
+            
+            # ✅ Listen Port setzen
+            result = subprocess.run([
+                'sudo', 'wg', 'set', interface, 'listen-port', '51820'
+            ], capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                print(f"[WG ERROR] Listen port setup failed: {result.stderr}")
+                return False
+            
+            # ✅ IP Adresse setzen (Caller bekommt .1)
+            result = subprocess.run([
+                'sudo', 'ip', 'addr', 'add', '10.8.0.1/24', 'dev', interface
+            ], capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                print(f"[WG ERROR] IP assignment failed: {result.stderr}")
+                return False
+            
+            # ✅ Interface aktivieren
+            result = subprocess.run([
+                'sudo', 'ip', 'link', 'set', 'up', 'dev', interface
+            ], capture_output=True, text=True)
+            
+            if result.returncode != 0:
+                print(f"[WG ERROR] Interface activation failed: {result.stderr}")
+                return False
+            
+            print("[WG] WireGuard tunnel setup successful as caller (10.8.0.1)")
+            return True
+            
+        except Exception as e:
+            print(f"[WG ERROR] Tunnel setup failed: {str(e)}")
+            return False
     def handle_incoming_call(self, msg):
         """Verarbeitet eingehende Anrufe"""
         try:
@@ -1257,7 +1105,7 @@ class CALL:
         """Nimmt eingehenden Anruf an"""
         try:
             # Daten entschlüsseln
-            private_key = self._load_privatekey()
+            private_key = load_privatekey()
             priv_key = RSA.load_key_string(private_key.encode())
             
             encrypted_bytes = base64.b64decode(encrypted_data)
@@ -1769,6 +1617,9 @@ class PHONEBOOK(ctk.CTk):
     def __init__(self):
         super().__init__()
         # Vorhandene Initialisierung...
+        
+        self.phonebook_entries = []  # Wichtig für UI
+        self.phonebook_update_signal = None
         self.client_socket = None
         self.server_public_key = None
         self.encrypted_secret = None
@@ -1922,7 +1773,225 @@ class PHONEBOOK(ctk.CTk):
         except Exception as e:
             print(f"[PHONEBOOK ERROR] Entry click failed: {str(e)}")
 
+    def connection_loop(self,client_socket, server_ip, message_handler=None):
+        """Improved connection loop with proper SIP ping/pong and FRAMING support"""
+        global connected
+        connected = True
+        print("[SETUP] connected = True")
+        
+        # Lokale IP ermitteln
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect((server_ip, 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+            print(f"[DEBUG] Local IP for ping: {local_ip}")
+        except Exception as ip_error:
+            print(f"[WARNING] Could not determine local IP for ping: {ip_error}")
+            local_ip = "127.0.0.1"
+        
+        client_name = load_client_name()
+        
+        while True:
+            try:
+                # ✅ KORREKTUR: PING im JSON-Format senden
+                ping_data = {
+                    "MESSAGE_TYPE": "PING",
+                    "TIMESTAMP": int(time.time()),
+                    "CLIENT_NAME": client_name
+                }
+                
+                ping_msg = self.build_sip_message(
+                    "MESSAGE", 
+                    server_ip, 
+                    ping_data,
+                    from_server=False,
+                    client_name=client_name
+                )
+                
+                # Send ping mit Framing
+                if not send_frame(client_socket, ping_msg.encode('utf-8')):
+                    print("Failed to send ping - connection broken")
+                    break
+                    
+                print("DEBUG: ping gesendet (JSON format)")
 
+                # Wait for pong mit Framing
+                response = recv_frame(client_socket, timeout=35)
+                if response and isinstance(response, bytes):
+                    response = response.decode('utf-8')
+                
+                if not response:
+                    print("Server disconnected - no response")
+                    break
+                    
+                if message_handler:
+                    # Verwende die handle_server_message Methode
+                    if hasattr(message_handler, 'handle_server_message'):
+                        message_handler.handle_server_message(response)
+                    else:
+                        # Fallback
+                        print("Pong received (no handler)")
+                else:
+                    # Default pong handling
+                    sip_data = self.parse_sip_message(response)
+                    if sip_data:
+                        custom_data = sip_data.get('custom_data', {})
+                        if custom_data.get('PONG') == 'true' or custom_data.get('MESSAGE_TYPE') == 'PONG':
+                            print("Pong received")
+                        else:
+                            print(f"Unexpected response type: {custom_data.get('MESSAGE_TYPE', 'UNKNOWN')}")
+                    else:
+                        print(f"Unexpected response: {response[:100]}...")
+
+                time.sleep(30)  # Ping interval
+                
+            except socket.timeout:
+                print("Connection timeout")
+                break
+            except Exception as e:
+                print(f"Connection error: {str(e)}")
+                break
+    def start_connection(self, server_ip, server_port, client_name, client_socket, message_handler=None):
+        """VOLLSTÄNDIG KORRIGIERTE REGISTRATION MIT EINHEITLICHEM PARSING"""
+        try:
+            # 1. Configure socket
+            client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
+            client_socket.settimeout(15.0)
+
+            # 2. Load client public key
+            client_pubkey = load_publickey()
+            if not is_valid_public_key(client_pubkey):
+                raise ValueError("Invalid client public key format")
+
+            # 3. REGISTRATION NACHRICHT
+            register_data = {
+                "MESSAGE_TYPE": "REGISTER",
+                "CLIENT_NAME": client_name,
+                "PUBLIC_KEY": client_pubkey,
+                "TIMESTAMP": int(time.time()),
+                "VERSION": "2.0"
+            }
+            
+            register_msg = self.build_sip_message(
+                "REGISTER", 
+                f"{server_ip}:{server_port}", 
+                register_data, 
+                from_server=False,
+                client_name=client_name
+            )
+            
+            print("\n[Client] Sending registration...")
+            send_frame(client_socket, register_msg.encode('utf-8'))
+
+            # 4. Response empfangen und parsen
+            response = recv_frame(client_socket)
+            if not response:
+                raise ConnectionError("Empty response from server")
+
+            if isinstance(response, bytes):
+                response = response.decode('utf-8')
+
+            print(f"\n[Client] Server response received ({len(response)} bytes)")
+
+            # 5. ✅ EINHEITLICHES SIP-PARSING
+            sip_data = self.parse_sip_message(response)
+            if not sip_data:
+                raise ValueError("Invalid SIP response format")
+                
+            print(f"[DEBUG] SIP message type: {sip_data.get('type')}")
+            print(f"[DEBUG] Status code: {sip_data.get('status_code')}")
+
+            # 6. ✅ KORREKTE BODY-EXTRAKTION
+            body = sip_data.get('body', '')
+            if not body:
+                raise ValueError("No body in SIP response")
+                
+            print(f"[DEBUG] Body length: {len(body)}")
+            print(f"[DEBUG] Body content: {body[:200]}...")
+
+            # 7. ✅ BODY ALS JSON PARSEN
+            try:
+                response_data = json.loads(body)
+                print(f"[DEBUG] JSON parsed successfully: {list(response_data.keys())}")
+            except json.JSONDecodeError as e:
+                print(f"[DEBUG] JSON decode error: {e}")
+                raise ValueError("Invalid JSON in response body")
+
+            # 8. Server Public Key extrahieren
+            server_public_key = response_data.get('SERVER_PUBLIC_KEY')
+            if not server_public_key:
+                # Alternative Schlüsselnamen prüfen
+                possible_keys = ['public_key', 'server_public_key', 'server_key']
+                for key in possible_keys:
+                    if key in response_data:
+                        server_public_key = response_data[key]
+                        print(f"[DEBUG] Found key in field: {key}")
+                        break
+            
+            if not server_public_key:
+                print(f"[DEBUG] Available fields: {list(response_data.keys())}")
+                raise ValueError("No server public key found in response")
+
+            # 9. Key formatieren und validieren
+            server_public_key = server_public_key.replace('\\\\n', '\n').replace('\\n', '\n')
+            
+            if not is_valid_public_key(server_public_key):
+                print("[DEBUG] Key validation failed")
+                raise ValueError("Invalid server public key format")
+
+            # Save server public key
+            with open("server_public_key.pem", "w") as f:
+                f.write(server_public_key)
+            print("[DEBUG] Server public key saved")
+
+            # 10. Zweite Response (Merkle Data) empfangen
+            merkle_response = recv_frame(client_socket)
+            if not merkle_response:
+                raise ConnectionError("No Merkle data received")
+
+            if isinstance(merkle_response, bytes):
+                merkle_response = merkle_response.decode('utf-8')
+
+            # Merkle Data parsen
+            merkle_sip_data = self.parse_sip_message(merkle_response)
+            if not merkle_sip_data:
+                raise ValueError("Invalid Merkle SIP response")
+
+            merkle_body = merkle_sip_data.get('body', '')
+            if not merkle_body:
+                raise ValueError("No body in Merkle response")
+                
+            try:
+                merkle_data = json.loads(merkle_body)
+            except json.JSONDecodeError as e:
+                print(f"[DEBUG] Merkle JSON error: {e}")
+                raise ValueError("Invalid JSON in Merkle response")
+
+            # Merkle Daten extrahieren
+            all_keys = merkle_data.get('ALL_KEYS', [])
+            merkle_root = merkle_data.get('MERKLE_ROOT', '')
+
+            if not merkle_root:
+                raise ValueError("No Merkle root in response")
+
+            # Merkle Verification
+            print("\n=== CLIENT VERIFICATION ===")
+            if not verify_merkle_integrity(all_keys, merkle_root):
+                raise ValueError("Merkle verification failed")
+
+            print("[DEBUG] Merkle verification successful")
+
+            # 11. Hauptloop starten
+            print("\n[Client] Starting communication loop...")
+            self.connection_loop(client_socket, server_ip, message_handler)
+            return True
+
+        except Exception as e:
+            error_msg = f"Connection failed: {str(e)}"
+            print(f"\n[Client ERROR] {error_msg}")
+            traceback.print_exc()
+            return False
 
     def _send_message(self, message):
         """Sendet Nachricht an Server - Thread-sichere Version"""
@@ -1951,162 +2020,134 @@ class PHONEBOOK(ctk.CTk):
             print(f"[SEND ERROR] Failed to queue message: {str(e)}")
             return False
 
-    def build_sip_message(self, method, recipient, custom_data={}, from_server=False, host=None):
-        """Robuste SIP-Nachrichtenerstellung - ANGEPASST FÜR CLIENT"""
-        # Erstelle eine Kopie der custom_data um das Original nicht zu modifizieren
-        processed_data = custom_data.copy()
+    def build_sip_message(self,method, recipient, custom_data=None, from_server=False, client_name=None, server_host=None):
+        """VOLLSTÄNDIG EINHEITLICHE SIP-NACHRICHTENERSTELLUNG - FÜR CLIENT UND SERVER"""
+        if custom_data is None:
+            custom_data = {}
         
-        # ALL_KEYS speziell behandeln - nur wenn es eine Liste von Schlüsseln ist
-        if 'ALL_KEYS' in processed_data:
-            keys = processed_data['ALL_KEYS']
-            
-            # Sicherstellen dass es eine Liste ist
-            if not isinstance(keys, list):
-                print(f"[WARNING] ALL_KEYS is not a list: {type(keys)}")
-                if isinstance(keys, str) and keys == 'ALL_KEYS':
-                    del processed_data['ALL_KEYS']
-                    print("[WARNING] Removed malformed ALL_KEYS entry")
-                else:
-                    try:
-                        keys = [keys]
-                    except:
-                        del processed_data['ALL_KEYS']
-                        print("[WARNING] Could not process ALL_KEYS - removed")
-            
-            if isinstance(keys, list):
-                formatted_keys = []
-                for key in keys:
-                    try:
-                        if not isinstance(key, str):
-                            key_str = str(key)
-                        else:
-                            key_str = key
-                        
-                        if (key_str and 
-                            not key_str.strip() == 'ALL_KEYS' and
-                            'BEGIN PUBLIC KEY' not in key_str):
-                            formatted_key = f"-----BEGIN PUBLIC KEY-----\n{key_str}\n-----END PUBLIC KEY-----"
-                            formatted_keys.append(formatted_key)
-                        else:
-                            formatted_keys.append(key_str)
-                    except Exception as e:
-                        print(f"[ERROR] Failed to format key: {str(e)}")
-                        formatted_keys.append(key)
-                
-                processed_data['ALL_KEYS'] = formatted_keys
+        if not isinstance(custom_data, dict):
+            raise ValueError("custom_data must be a dictionary")
         
-        # Body-Erstellung basierend auf Inhaltstyp
+        # Basis-Datenstruktur
+        message_data = {
+            "MESSAGE_TYPE": custom_data.get("MESSAGE_TYPE", "UNKNOWN"),
+            "TIMESTAMP": int(time.time()),
+            "VERSION": "2.0"
+        }
+        
+        # Benutzerdaten hinzufügen
+        for key, value in custom_data.items():
+            if key != "MESSAGE_TYPE":
+                message_data[key] = value
+        
+        # JSON-Body erstellen
         try:
-            # Prüfen ob JSON benötigt wird
-            requires_json = any(isinstance(v, (dict, list)) for v in processed_data.values())
-            
-            if requires_json:
-                body = json.dumps(processed_data, separators=(',', ':'))
-                content_type = "application/json"
-            else:
-                # Key-Value Format für einfache Daten
-                body_lines = []
-                for k, v in processed_data.items():
-                    if isinstance(v, (list, dict)):
-                        body_lines.append(f"{k}: {json.dumps(v)}")
-                    else:
-                        body_lines.append(f"{k}: {v}")
-                body = "\r\n".join(body_lines)
-                content_type = "text/plain"
-            
-            # Absenderadresse bestimmen - KORRIGIERT FÜR CLIENT
-            if from_server:
-                from_header = "<sip:server@{}>".format(host) if host else "<sip:server>"
-            else:
-                client_name = self._client_name
-                try:
-                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    s.connect(("8.8.8.8", 80))
-                    client_ip = s.getsockname()[0]
-                    s.close()
-                except:
-                    client_ip = "127.0.0.1"
-                
-                from_header = "<sip:{}@{}>".format(client_name, client_ip)
-            
-            # SIP-Nachricht erstellen - KORRIGIERT: Kein self.host
-            return (
-                f"{method} sip:{recipient} SIP/2.0\r\n"
-                f"From: {from_header}\r\n"
-                f"To: <sip:{recipient}>\r\n"  # ✅ Nur recipient
-                f"Content-Type: {content_type}\r\n"
-                f"Content-Length: {len(body)}\r\n\r\n"
-                f"{body}"
-            )
-            
+            body = json.dumps(message_data, separators=(',', ':'))
         except Exception as e:
-            print(f"[CRITICAL] Failed to build SIP message: {str(e)}")
-            # Fallback
-            return (
-                f"{method} sip:{recipient} SIP/2.0\r\n"
-                f"From: <sip:{self._client_name}@client>\r\n"
-                f"To: <sip:{recipient}>\r\n"
-                f"Content-Type: text/plain\r\n"
-                f"Content-Length: {len(str(processed_data))}\r\n\r\n"
-                f"{processed_data}"
-            )
-
-    def parse_sip_message(self, message):
-        """Parse SIP-Nachrichten mit Header und Body"""
+            raise ValueError(f"JSON encoding failed: {e}")
+        
+        # Absenderadresse bestimmen
+        if from_server:
+            from_header = f"<sip:server@{server_host}>" if server_host else "<sip:server>"
+        else:
+            # Client-Absender
+            if not client_name:
+                client_name = "unknown"
+            
+            try:
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                client_ip = s.getsockname()[0]
+                s.close()
+            except:
+                client_ip = "127.0.0.1"
+            
+            from_header = f"<sip:{client_name}@{client_ip}>"
+        
+        # SIP-Nachricht erstellen
+        sip_message = (
+            f"{method} sip:{recipient} SIP/2.0\r\n"
+            f"From: {from_header}\r\n"
+            f"To: <sip:{recipient}>\r\n"
+            f"Content-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n\r\n"
+            f"{body}"
+        )
+        
+        return sip_message
+    def parse_sip_message(self,message):
+        """VOLLSTÄNDIG EINHEITLICHER SIP-PARSER - FÜR CLIENT UND SERVER IDENTISCH"""
+        # 1. Input-Normalisierung
+        if isinstance(message, dict):
+            return message  # Bereits geparst
+            
         if isinstance(message, bytes):
             try:
                 message = message.decode('utf-8')
             except UnicodeDecodeError:
+                print("[PARSE ERROR] Invalid UTF-8 encoding")
                 return None
-
+        
         message = message.strip()
         if not message:
             return None
 
-        lines = [line.strip() for line in message.replace('\r\n', '\n').split('\n') if line.strip()]
-        result = {'headers': {}, 'custom_data': {}}
+        # 2. Header und Body trennen
+        parts = message.split('\r\n\r\n', 1)
+        if len(parts) < 2:
+            print("[PARSE ERROR] No body separator found")
+            return None
+            
+        headers_part, body_part = parts
+        headers_lines = headers_part.split('\r\n')
 
-        # Parse first line
-        first_line = lines[0]
+        # 3. Ergebnis-Struktur
+        result = {
+            'headers': {},
+            'body': body_part.strip(),
+            'custom_data': {}
+        }
+
+        # 4. Erste Zeile (Request/Response Line)
+        first_line = headers_lines[0]
         if first_line.startswith('SIP/2.0'):
-            parts = first_line.split(maxsplit=2)
-            if len(parts) >= 2:
-                result['status_code'] = parts[1]
-                if len(parts) > 2:
-                    result['status_message'] = parts[2]
+            # Response
+            parts = first_line.split(' ', 2)
+            result['status_code'] = parts[1] if len(parts) > 1 else ''
+            result['status_message'] = parts[2] if len(parts) > 2 else ''
+            result['type'] = 'response'
         else:
-            result['method'] = first_line.split()[0]
+            # Request
+            parts = first_line.split(' ', 2)
+            result['method'] = parts[0] if len(parts) > 0 else ''
+            result['uri'] = parts[1] if len(parts) > 1 else ''
+            result['protocol'] = parts[2] if len(parts) > 2 else ''
+            result['type'] = 'request'
 
-        # Parse headers
-        for line in lines[1:]:
+        # 5. Header parsen
+        for line in headers_lines[1:]:
             if ': ' in line:
-                key, val = line.split(': ', 1)
-                key = key.strip().upper()
-                val = val.strip()
+                key, value = line.split(': ', 1)
+                result['headers'][key.strip().upper()] = value.strip()
                 
-                if key == "CONTENT-LENGTH":
+                # Content-Length speziell behandeln
+                if key.strip().upper() == 'CONTENT-LENGTH':
                     try:
-                        result['content_length'] = int(val)
+                        result['content_length'] = int(value.strip())
                     except ValueError:
                         pass
-                elif key not in result['headers']:
-                    result['headers'][key] = val
 
-        # Parse body
-        if 'content_length' in result and result['content_length'] > 0:
-            body_lines = lines[len(result['headers']) + 1:]
-            body = '\n'.join(body_lines)
-            
+        # 6. Body als JSON parsen (falls vorhanden)
+        body_content = body_part.strip()
+        if body_content:
             try:
-                result['custom_data'] = dict(
-                    line.split(': ', 1)
-                    for line in body.splitlines()
-                    if ': ' in line
-                )
-            except Exception:
-                result['body'] = body
+                result['custom_data'] = json.loads(body_content)
+            except json.JSONDecodeError:
+                # Body ist kein JSON, einfach als Text belassen
+                result['custom_data'] = {'raw_body': body_content}
 
-        return result if ('method' in result or 'status_code' in result) else None
+        return result
+
 
 
     def _process_queue(self):
@@ -2144,45 +2185,53 @@ class PHONEBOOK(ctk.CTk):
             self._processing_queue = False
 
     def _process_received_frame(self, frame_data):
-        """Verarbeitet empfangene Frames und leitet Call-Nachrichten an CALL Manager weiter"""
+        """VOLLSTÄNDIG EINHEITLICHE FRAME-VERARBEITUNG - NUR JSON"""
         try:
+            # 1. Decoding
             if isinstance(frame_data, bytes):
                 try:
                     message = frame_data.decode('utf-8')
                 except UnicodeDecodeError:
-                    # Binärdaten für Audio oder verschlüsselte Daten
+                    # Binärdaten für Audio/verschlüsselte Daten
                     if hasattr(self, 'call_manager') and self.call_manager.active_call:
                         print("[AUDIO] Received binary data during active call")
                     return
             else:
                 message = frame_data
 
+            # 2. ✅ AUSSCHLIESSLICH SIP-PARSER VERWENDEN
             msg = self.parse_sip_message(message)
             if not msg:
+                print("[PROCESS ERROR] Invalid SIP message format")
                 return
 
-            # Prüfe auf Call-bezogene Nachrichten
-            headers = msg.get('headers', {})
+            # 3. ✅ AUSSCHLIESSLICH JSON custom_data VERWENDEN
             custom_data = msg.get('custom_data', {})
-            message_type = headers.get('MESSAGE_TYPE') or custom_data.get('MESSAGE_TYPE')
+            message_type = custom_data.get('MESSAGE_TYPE', 'UNKNOWN')
 
-            # Leite Call-Nachrichten an CALL Manager weiter
+            print(f"[PROCESS] Message type: {message_type}")
+
+            # 4. NACHRICHTEN-ROUTING
             if message_type in ['INCOMING_CALL', 'SESSION_KEY', 'CALL_RESPONSE', 
                               'CALL_TIMEOUT', 'PUBLIC_KEY_RESPONSE', 'CALL_END']:
                 if hasattr(self, 'call_manager'):
                     print(f"[CALL] Delegating {message_type} to call manager")
-                    self.call_manager.handle_message(message_type, msg)
+                    self.call_manager.handle_message(msg)
                 return
 
-            # Andere Nachrichtentypen normal verarbeiten
+            # 5. ANDERE NACHRICHTENTYPEN
             if message_type == 'IDENTITY_CHALLENGE':
                 self._handle_identity_challenge(msg)
             elif message_type == 'IDENTITY_VERIFIED':
                 self._handle_identity_verified(msg)
             elif message_type == 'PHONEBOOK_UPDATE':
                 self._process_phonebook_update(msg)
-            elif headers.get('PING') == 'true':
+            elif message_type == 'PING':
                 self._handle_ping_message()
+            elif message_type == 'PONG':
+                print("[PONG] Received from server")
+            else:
+                print(f"[PROCESS WARNING] Unknown message type: {message_type}")
                 
         except Exception as e:
             print(f"[FRAME PROCESS ERROR] {str(e)}")
@@ -2234,37 +2283,8 @@ class PHONEBOOK(ctk.CTk):
             print(f"[SHOW ERROR ERROR] {str(e)}")
 
     # Existierende Methoden beibehalten aber ggf. anpassen
-    def on_update_click(self):
-        """Handler für den Update-Button Click - Startet Identity Challenge für Phonebook Update"""
-        global connected
-        try:
-            if not hasattr(self, 'client_socket') or not self.client_socket or not connected:
-                messagebox.showerror("Fehler", "Nicht mit Server verbunden")
-                print("[UPDATE ERROR] Nicht mit Server verbunden")
-                return
+    # IN CLIENT.PY - Korrigiere die Update-Nachricht
 
-            print("[CLIENT] Update-Button geklickt - Starte Identity Challenge Prozess")
-
-            # Baue UPDATE SIP Nachricht (framed)
-            update_msg = self.build_sip_message("MESSAGE", "server", {
-                "MESSAGE_TYPE": "UPDATE_REQUEST",
-                "TIMESTAMP": int(time.time()),
-                "CLIENT_NAME": self._client_name
-            })
-
-            # Sende UPDATE Nachricht
-            if self._send_message(update_msg):
-                print("[CLIENT] UPDATE Nachricht an Server gesendet")
-            else:
-                messagebox.showerror("Fehler", "Update-Nachricht konnte nicht gesendet werden")
-
-        except Exception as e:
-            print(f"[CLIENT ERROR] Update click failed: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            messagebox.showerror("Fehler", f"Update konnte nicht gestartet werden: {str(e)}")
-
-    # Weitere existierende Methoden...
     def create_settings(self):
         # Unverändert beibehalten
         self.connection_window = ctk.CTkToplevel(self.phonebook_tab)
@@ -2500,7 +2520,7 @@ class PHONEBOOK(ctk.CTk):
             print(f"[DEBUG 47] === END CONNECTION ATTEMPT ===")
             print(f"{'='*60}\n")
     def on_update_click(self):
-        """Handler für den Update-Button Click - Startet Identity Challenge für Phonebook Update"""
+        """KORRIGIERTE Update-Nachricht mit JSON-Format"""
         global connected
         try:
             if not hasattr(self, 'client_socket') or not self.client_socket or not connected:
@@ -2508,38 +2528,44 @@ class PHONEBOOK(ctk.CTk):
                 print("[UPDATE ERROR] Nicht mit Server verbunden")
                 return
 
-            print("[CLIENT] Update-Button geklickt - Starte Identity Challenge Prozess")
+            print("[CLIENT] Update-Button geklickt - Sende JSON Update Request")
 
-            # Baue UPDATE SIP Nachricht (framed)
-            update_msg = (
-                f"MESSAGE sip:{self.server_ip} SIP/2.0\r\n"
-                f"From: <sip:{self._client_name}@client>\r\n"
-                f"To: <sip:{self.server_ip}>\r\n"
-                f"Content-Type: text/plain\r\n"
-                f"Content-Length: 12\r\n"
-                f"UPDATE: true\r\n\r\n"  # Header-Format
-                f"UPDATE: true"  # Body-Format als Fallback
+            # ✅ KORREKTUR: UPDATE im JSON-Format senden
+            update_data = {
+                "MESSAGE_TYPE": "UPDATE_REQUEST",
+                "CLIENT_NAME": self._client_name,
+                "TIMESTAMP": int(time.time()),
+                "VERSION": "2.0"
+            }
+            
+            update_msg = self.build_sip_message(
+                "MESSAGE", 
+                self.server_ip, 
+                update_data
             )
 
             # Sende UPDATE Nachricht mit Framing
             try:
-                send_frame(self.client_socket, update_msg.encode('utf-8'))
-                print("[CLIENT] UPDATE Nachricht an Server gesendet")
-                
-                # Füge zur Queue für spätere Verarbeitung hinzu
-                if not hasattr(self, '_message_queue'):
-                    self._message_queue = []
+                if send_frame(self.client_socket, update_msg.encode('utf-8')):
+                    print("[CLIENT] JSON Update Request an Server gesendet")
                     
-                self._message_queue.append({
-                    'type': 'update_request_sent',
-                    'message': update_msg,
-                    'timestamp': time.time(),
-                    'server_ip': self.server_ip
-                })
+                    # Zur Queue hinzufügen
+                    if not hasattr(self, '_message_queue'):
+                        self._message_queue = []
+                        
+                    self._message_queue.append({
+                        'type': 'update_request_sent',
+                        'message': update_msg,
+                        'timestamp': time.time(),
+                        'server_ip': self.server_ip
+                    })
 
-                # Starte Queue-Verarbeitung falls nicht bereits aktiv
-                if not hasattr(self, '_processing_queue') or not self._processing_queue:
-                    self._process_queue()
+                    # Queue-Verarbeitung starten
+                    if not hasattr(self, '_processing_queue') or not self._processing_queue:
+                        threading.Thread(target=self._process_queue, daemon=True).start()
+
+                else:
+                    messagebox.showerror("Fehler", "Update-Nachricht konnte nicht gesendet werden")
 
             except Exception as e:
                 print(f"[CLIENT ERROR] Senden der UPDATE Nachricht fehlgeschlagen: {str(e)}")
@@ -2549,7 +2575,7 @@ class PHONEBOOK(ctk.CTk):
             print(f"[CLIENT ERROR] Update click failed: {str(e)}")
             import traceback
             traceback.print_exc()
-            messagebox.showerror("Fehler", f"Update konnte nicht gestartet werden: {str(e)}")           
+            messagebox.showerror("Fehler", f"Update konnte nicht gestartet werden: {str(e)}")
     def set_selected_entry(self, entry, frame):
         """Setzt den ausgewählten Eintrag und aktualisiert die UI"""
         self.selected_entry = entry
@@ -2765,20 +2791,12 @@ class PHONEBOOK(ctk.CTk):
     def open_language_settings(self):
         messagebox.showinfo("Sprache", "Spracheinstellungen (nicht implementiert)")
 
-    def _process_json_body(self, body):
-        try:
-            data = json.loads(body)
-            if 'MESSAGE_TYPE' in data and data['MESSAGE_TYPE'] == "PHONEBOOK_UPDATE":
-                return self._process_phonebook_update(data)
-            return False
-        except json.JSONDecodeError:
-            print("[CLIENT] Invalid JSON in message body")
-            return False
+
     def _handle_ping_message(self):
         """Handle PING messages by responding with PONG"""
         try:
             if hasattr(self, 'client_socket') and self.client_socket:
-                pong_msg = build_sip_message(
+                pong_msg = self.build_sip_message(
                     "MESSAGE",
                     "server",
                     {"PONG": "true"}
@@ -2827,41 +2845,57 @@ class PHONEBOOK(ctk.CTk):
         if not self._processing_queue:
             return self._process_queue()
         return True
-    def _handle_identity_challenge(self, message):
-        """Verarbeitet Identity Challenge vom Server - KORRIGIERTE VERSION"""
+    def _handle_identity_challenge(self, msg):
+        """VOLLSTÄNDIG EINHEITLICHE IDENTITY CHALLENGE VERARBEITUNG - KORRIGIERT FÜR SIP"""
         try:
             print("\n" + "="*60)
             print("[IDENTITY] START: Handling identity challenge from server")
             print("="*60)
             
-            # 1. Parse SIP message als Key-Value (nicht JSON)
-            print("[DEBUG] Step 1: Parsing SIP message as key-value")
-            sip_data = parse_sip_message(message)
-            if not sip_data:
-                print("[IDENTITY ERROR] Invalid SIP message format")
+            # 1. ✅ UNTERSCHEIDUNG: SIP-NACHRICHT vs. ROHES JSON
+            if isinstance(msg, str) and 'SIP/2.0' in msg:
+                print("[IDENTITY] Received SIP-formatted message, extracting JSON body...")
+                # SIP-Nachricht parsen
+                sip_data = self.parse_sip_message(msg)
+                if not sip_data:
+                    print("[IDENTITY ERROR] Failed to parse SIP message")
+                    return False
+                    
+                # JSON-Body extrahieren
+                body = sip_data.get('body', '')
+                if not body:
+                    print("[IDENTITY ERROR] No body in SIP message")
+                    return False
+                    
+                try:
+                    custom_data = json.loads(body)
+                    print("[IDENTITY] Successfully extracted JSON from SIP body")
+                except json.JSONDecodeError as e:
+                    print(f"[IDENTITY ERROR] JSON decode failed: {e}")
+                    return False
+                    
+            elif isinstance(msg, dict):
+                print("[IDENTITY] Received direct JSON message")
+                custom_data = msg.get('custom_data', {})
+            else:
+                print("[IDENTITY ERROR] Unsupported message format")
                 return False
             
-            # 2. Extrahiere custom_data aus Body (Key-Value Format)
-            body = sip_data.get('body', '')
-            custom_data = {}
-            for line in body.split('\n'):
-                if ': ' in line:
-                    key, value = line.split(': ', 1)
-                    custom_data[key.strip()] = value.strip()
-            
-            print(f"[DEBUG] Custom data extracted: {list(custom_data.keys())}")
-            
-            # 3. Extract challenge data
+            # 2. ERFORDERLICHE FELDER EXTRAHIEREN
             encrypted_challenge_b64 = custom_data.get('ENCRYPTED_CHALLENGE')
             challenge_id = custom_data.get('CHALLENGE_ID')
             
             if not encrypted_challenge_b64 or not challenge_id:
-                print("[IDENTITY ERROR] Missing challenge data in body")
-                print(f"[DEBUG] Body content: {body}")
+                print("[IDENTITY ERROR] Missing required fields in challenge")
+                print(f"[DEBUG] ENCRYPTED_CHALLENGE: {'present' if encrypted_challenge_b64 else 'missing'}")
+                print(f"[DEBUG] CHALLENGE_ID: {'present' if challenge_id else 'missing'}")
+                print(f"[DEBUG] Available keys: {list(custom_data.keys())}")
                 return False
             
-            # 4. Base64 decode
-            print("[DEBUG] Base64 decoding challenge")
+            print(f"[DEBUG] Challenge ID: {challenge_id}")
+            print(f"[DEBUG] Encrypted challenge length: {len(encrypted_challenge_b64)}")
+            
+            # 3. Base64 decode
             try:
                 encrypted_challenge = base64.b64decode(encrypted_challenge_b64)
                 print(f"[DEBUG] Decoded challenge length: {len(encrypted_challenge)} bytes")
@@ -2869,7 +2903,7 @@ class PHONEBOOK(ctk.CTk):
                 print(f"[IDENTITY ERROR] Base64 decode failed: {str(e)}")
                 return False
             
-            # 5. Decrypt with client private key
+            # 4. Mit privatem Schlüssel entschlüsseln
             print("[DEBUG] Decrypting with client private key")
             try:
                 private_key = load_privatekey()
@@ -2885,15 +2919,15 @@ class PHONEBOOK(ctk.CTk):
                 print(f"[IDENTITY ERROR] Decryption failed: {str(e)}")
                 return False
             
-            # 6. Create response
+            # 5. Response erstellen
             response_data = challenge + "VALIDATED"
             print(f"[DEBUG] Response data: {response_data}")
             
-            # 7. Encrypt response with server public key
+            # 6. Mit Server Public Key verschlüsseln
             print("[DEBUG] Encrypting with server public key")
             try:
                 server_pubkey = load_server_publickey()
-                # Bereinige den Key von literal \n Zeichen
+                # PEM-Format bereinigen
                 if '\\n' in server_pubkey:
                     server_pubkey = server_pubkey.replace('\\n', '\n')
                 
@@ -2908,29 +2942,26 @@ class PHONEBOOK(ctk.CTk):
                 print(f"[IDENTITY ERROR] Encryption failed: {str(e)}")
                 return False
             
-            # 8. Send response back to server als Key-Value (nicht JSON)
-            print("[DEBUG] Sending key-value response to server")
+            # 7. ✅ KORREKTE SIP-RESPONSE SENDEN (nicht nur JSON)
+            print("[DEBUG] Sending SIP response to server")
             
-            response_body = (
-                f"MESSAGE_TYPE: IDENTITY_RESPONSE\r\n"
-                f"CHALLENGE_ID: {challenge_id}\r\n"
-                f"ENCRYPTED_RESPONSE: {encrypted_response_b64}"
-            )
+            response_data = {
+                "MESSAGE_TYPE": "IDENTITY_RESPONSE",
+                "CHALLENGE_ID": challenge_id,
+                "ENCRYPTED_RESPONSE": encrypted_response_b64,
+                "TIMESTAMP": int(time.time())
+            }
             
-            response_msg = (
-                f"MESSAGE sip:server SIP/2.0\r\n"
-                f"From: <sip:{self._client_name}@client>\r\n"
-                f"To: <sip:server>\r\n"
-                f"Content-Type: text/plain\r\n"
-                f"Content-Length: {len(response_body)}\r\n\r\n"
-                f"{response_body}"
-            )
+            # Verwende build_sip_message für korrektes SIP-Format
+            response_msg = self.build_sip_message("MESSAGE", "server", response_data)
             
-            send_frame(self.client_socket, response_msg.encode('utf-8'))
-            print("[IDENTITY] Response sent to server successfully!")
-            
-            return True
-            
+            if self._send_message(response_msg):
+                print("[IDENTITY] SIP response sent to server successfully!")
+                return True
+            else:
+                print("[IDENTITY ERROR] Failed to send response")
+                return False
+                
         except Exception as e:
             print(f"[IDENTITY ERROR] Challenge handling failed: {str(e)}")
             import traceback
@@ -2939,29 +2970,98 @@ class PHONEBOOK(ctk.CTk):
 
 
     def _handle_identity_verified(self, message):
-        """Verarbeitet Identity Verification Bestätigung vom Server"""
+        """Korrigierte Verarbeitung der Identity Verification Bestätigung"""
         try:
-            print("[IDENTITY] Received verification confirmation from server")
+            print("\n" + "="*60)
+            print("[IDENTITY] Processing verification confirmation")
+            print("="*60)
             
-            sip_data = parse_sip_message(message)
-            if not sip_data:
-                print("[IDENTITY ERROR] Invalid SIP message format")
-                return False
+            # 1. Nachricht parsen (kann String oder Dict sein)
+            if isinstance(message, str):
+                print("[IDENTITY] Received string message, parsing as SIP...")
+                sip_data = self.parse_sip_message(message)
+                if not sip_data:
+                    print("[IDENTITY ERROR] Failed to parse SIP message")
+                    return False
+                    
+                # Extrahiere JSON-Body
+                body = sip_data.get('body', '')
+                if not body:
+                    print("[IDENTITY ERROR] No body in SIP message")
+                    return False
+                    
+                try:
+                    message_data = json.loads(body)
+                    print("[IDENTITY] Successfully extracted JSON from SIP body")
+                except json.JSONDecodeError as e:
+                    print(f"[IDENTITY ERROR] JSON decode failed: {e}")
+                    return False
+            else:
+                print("[IDENTITY] Received dict message")
+                message_data = message
             
-            custom_data = sip_data.get('custom_data', {})
-            status = custom_data.get('STATUS')
+            # 2. Verschiedene mögliche Erfolgs-Indikatoren prüfen
+            status_indicators = [
+                message_data.get('STATUS'),
+                message_data.get('MESSAGE_TYPE'), 
+                message_data.get('RESULT'),
+                '200' in str(message)  # Fallback für Status-Code
+            ]
             
-            if status == 'IDENTITY_VERIFIED':
-                print("[IDENTITY] Successfully verified by server!")
-                # Hier könntest du weitere Aktionen nach erfolgreicher Verifizierung durchführen
+            print(f"[IDENTITY] Status indicators: {status_indicators}")
+            
+            # 3. Erfolg erkennen anhand verschiedener möglicher Muster
+            is_verified = any([
+                status == 'VERIFICATION_SUCCESSFUL' for status in status_indicators if status
+            ]) or any([
+                'VERIFIED' in str(indicator) for indicator in status_indicators if indicator
+            ]) or any([
+                'SUCCESS' in str(indicator) for indicator in status_indicators if indicator
+            ]) or '200 OK' in str(message)
+            
+            if is_verified:
+                print("✅ [IDENTITY] Successfully verified by server!")
+                
+                # 4. Phonebook anfordern
+                print("[IDENTITY] Requesting phonebook update...")
+                self.request_phonebook_update()
                 return True
             else:
-                print(f"[IDENTITY] Verification failed: {custom_data.get('REASON', 'Unknown error')}")
+                reason = message_data.get('REASON', 'Unknown error')
+                print(f"❌ [IDENTITY] Verification failed: {reason}")
                 return False
                 
         except Exception as e:
             print(f"[IDENTITY ERROR] Verification handling failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return False
+
+    def request_phonebook_update(self):
+        """Fordert Phonebook-Update nach erfolgreicher Verifikation an"""
+        try:
+            print("[PHONEBOOK] Requesting update after identity verification...")
+            
+            update_data = {
+                "MESSAGE_TYPE": "PHONEBOOK_REQUEST",
+                "CLIENT_NAME": self._client_name,
+                "TIMESTAMP": int(time.time()),
+                "VERSION": "2.0"
+            }
+            
+            update_msg = self.build_sip_message(
+                "MESSAGE", 
+                self.server_ip, 
+                update_data
+            )
+            
+            if self._send_message(update_msg):
+                print("[PHONEBOOK] Update request sent successfully")
+            else:
+                print("[PHONEBOOK ERROR] Failed to send update request")
+                
+        except Exception as e:
+            print(f"[PHONEBOOK ERROR] Update request failed: {str(e)}")
     def receive_messages(self):
         """Empfängt Nachrichten vom Server und schreibt sie korrekt in die Queue"""
         while self.connected:
@@ -3180,7 +3280,7 @@ class PHONEBOOK(ctk.CTk):
                         continue
                         
                     try:
-                        sip_data = parse_sip_message(queue_item)
+                        sip_data = self.parse_sip_message(queue_item)
                         if sip_data:
                             print("[CLIENT] Verarbeite SIP Nachricht aus String-Queue")
                             # Prüfe auf Call-Nachrichten in String-Format
@@ -3225,28 +3325,10 @@ class PHONEBOOK(ctk.CTk):
         finally:
             self._processing_queue = False
 
-    def _process_framed_data(self, framed_data):
-        """Verarbeitet gerahmte Rohdaten ohne SIP-Header"""
-        print("[DEBUG] Processing framed encrypted data")
-        
-        try:
-            # Frame-Header entfernen (falls vorhanden)
-            if len(framed_data) > 4 and framed_data[:4] == struct.pack('!I', len(framed_data)-4):
-                framed_data = framed_data[4:]
-            
-            # Mindestlänge überprüfen
-            if len(framed_data) < 512:
-                print("[ERROR] Framed data too short for encrypted payload")
-                return False
-                
-            return self._decrypt_phonebook(framed_data)
-            
-        except Exception as e:
-            print(f"[ERROR] Frame processing failed: {str(e)}")
-            return False
+
     def _process_sip_message(self, message):
         """Verarbeitet SIP-Nachrichten mit verschlüsselten Daten"""
-        sip_data = parse_sip_message(message)
+        sip_data = self.parse_sip_message(message)
         if not sip_data:
             return False
 
@@ -3792,7 +3874,7 @@ class PHONEBOOK(ctk.CTk):
             # Verbindungsaufbau
             update_status("Verbinde mit Server...")
             try:
-                success = start_connection(
+                success = self.start_connection(
                     ip,
                     port,
                     self._client_name,

@@ -45,46 +45,73 @@ def secure_random(size):
 
 
 
+# === EINHEITLICHER FRAMING STANDARD ===
 def send_frame(sock, data):
-    """Verschickt Daten mit Längenprefix"""
+    """Einheitlicher Frame-Sender für ALLE Nachrichten - KORRIGIERT"""
     if isinstance(data, str):
         data = data.encode('utf-8')
+    
+    # 4-Byte Längenheader (Network Byte Order)
     header = struct.pack('!I', len(data))
-    sock.sendall(header + data)
+    try:
+        sock.sendall(header + data)
+        print(f"[FRAME] Sent {len(data)} bytes")
+        return True
+    except (BrokenPipeError, socket.error, OSError) as e:
+        print(f"[FRAME ERROR] Send failed: {e}")
+        return False
 
 def recv_frame(sock, timeout=30):
-    """Frame receiver with increased size limit for RSA keys"""
+    """Einheitlicher Frame-Empfänger für ALLE Nachrichten - KORRIGIERT"""
+    original_timeout = sock.gettimeout()
     sock.settimeout(timeout)
+    
     try:
-        # Read header
-        header = sock.recv(4)
-        if len(header) != 4:
-            return None
-            
+        # Header lesen (4 Bytes)
+        header = b''
+        start_time = time.time()
+        
+        while len(header) < 4:
+            remaining_time = timeout - (time.time() - start_time)
+            if remaining_time <= 0:
+                raise TimeoutError("Header receive timeout")
+                
+            sock.settimeout(remaining_time)
+            chunk = sock.recv(4 - len(header))
+            if not chunk:
+                return None
+            header += chunk
+        
         length = struct.unpack('!I', header)[0]
-        # ✅ ERHÖHT auf 64KB für RSA Public Keys (4096-bit Keys sind ~800 bytes)
-        if length > 65536:  # 64KB max (statt 10MB)
-            print(f"[FRAME ERROR] Frame too large: {length} bytes")
+        
+        # Sicherheitscheck
+        if length > 65536:  # 64KB max
             raise ValueError(f"Frame too large: {length} bytes")
         
-        # Read body
-        received = bytearray()
+        # Body lesen
+        received = b''
         while len(received) < length:
-            chunk = sock.recv(min(length - len(received), 4096))
+            remaining_time = timeout - (time.time() - start_time)
+            if remaining_time <= 0:
+                raise TimeoutError("Body receive timeout")
+                
+            sock.settimeout(remaining_time)
+            chunk_size = min(4096, length - len(received))
+            chunk = sock.recv(chunk_size)
             if not chunk:
-                raise ConnectionError("Connection closed prematurely")
-            received.extend(chunk)
+                raise ConnectionError("Incomplete frame")
+            received += chunk
         
-        print(f"[FRAME DEBUG] Received {length} bytes frame")
+        print(f"[FRAME] Received {length} bytes")
+        return received
         
-        # Try UTF-8 decode for SIP messages
-        try:
-            return received.decode('utf-8')
-        except UnicodeDecodeError:
-            return bytes(received)
-            
     except socket.timeout:
-        raise TimeoutError("Timeout waiting for frame")
+        raise TimeoutError("Frame receive timeout")
+    except Exception as e:
+        print(f"[FRAME ERROR] Receive failed: {e}")
+        return None
+    finally:
+        sock.settimeout(original_timeout)
 def debug_print_key(key_type, key_data):
     """Print detailed key information"""
     print(f"\n=== {key_type.upper()} KEY DEBUG ===")
@@ -300,39 +327,7 @@ def build_merkle_tree_from_keys(all_keys):
     
     return merkle_root
 
-    
-
-
-@staticmethod
-def handle_sip_message(raw_data):
-    """Verarbeitet eingehende SIP-Nachrichten"""
-    try:
-        data = raw_data.decode()
-        if not data:
-            return None
-            
-        parts = data.split("\r\n\r\n", 1)
-        headers = {}
-        for line in parts[0].split("\r\n"):
-            if ": " in line:
-                key, val = line.split(": ", 1)
-                headers[key.lower()] = val.strip()
-        
-        custom_data = {}
-        if len(parts) > 1:
-            for line in parts[1].split("\r\n"):
-                if ": " in line:
-                    key, val = line.split(": ", 1)
-                    custom_data[key] = val.strip()
-
-        return {
-            "method": data.split()[0],
-            "headers": headers,
-            "custom_data": custom_data
-        }
-    except Exception as e:
-        print(f"SIP-Parsingfehler: {e}")
-        return None
+   
 def load_client_name():
     """Lädt den Client-Namen - versucht active_clients.json, sonst Dialog"""
     # Fallback für Nicht-Hauptthread
@@ -371,50 +366,23 @@ class CONVEY:
         self.call_lock = threading.RLock()  # Lock für Thread-Sicherheit
 
 
+    # In CONVEY Klasse - EINHEITLICHE Response-Erstellung
     def handle_get_public_key(self, msg, client_socket, client_name):
-        """Public-Key-Handling - KORRIGIERT FÜR HEADER-DATEN"""
+        """EINHEITLICHE Public-Key-Antwort - KORRIGIERT"""
         try:
-            headers = msg.get('headers', {})
             custom_data = msg.get('custom_data', {})
-            body = msg.get('body', '')
             
-            print(f"[CONVEY DEBUG] All headers: {headers}")
-            print(f"[CONVEY DEBUG] Custom data: {custom_data}")
-            print(f"[CONVEY DEBUG] Body length: {len(body)}")
+            # EINHEITLICHE Daten-Extraktion
+            target_id = custom_data.get('TARGET_CLIENT_ID')
+            caller_name = custom_data.get('CALLER_NAME', client_name)
             
-            # ✅ KORREKTUR: Daten aus HEADERS extrahieren (nicht aus Body!)
-            target_id = None
-            caller_name = None
-            
-            # Durchsuche alle Header nach den benötigten Daten
-            for header_name, header_value in headers.items():
-                print(f"[CONVEY DEBUG] Checking header: {header_name} = {header_value}")
-                
-                if 'TARGET_CLIENT_ID' in header_name:
-                    target_id = header_value
-                    print(f"[CONVEY DEBUG] Found TARGET_CLIENT_ID: {target_id}")
-                elif 'CALLER_NAME' in header_name:
-                    caller_name = header_value
-                    print(f"[CONVEY DEBUG] Found CALLER_NAME: {caller_name}")
-                elif 'CALLER_CLIENT_ID' in header_name:
-                    print(f"[CONVEY DEBUG] Found CALLER_CLIENT_ID: {header_value}")
-                elif 'MESSAGE_TYPE' in header_name:
-                    print(f"[CONVEY DEBUG] Found MESSAGE_TYPE: {header_value}")
-            
-            # Falls nicht in Headers, aus custom_data nehmen
             if not target_id:
-                target_id = custom_data.get('TARGET_CLIENT_ID')
-            if not caller_name:
-                caller_name = custom_data.get('CALLER_NAME', client_name)
-                
-            if not target_id:
-                print(f"[CONVEY ERROR] Missing target client ID after header parsing")
-                print(f"[CONVEY DEBUG] Available headers: {list(headers.keys())}")
+                print("[CONVEY ERROR] Missing target client ID")
                 return False
                 
             print(f"[CONVEY] Public key request from {caller_name} for client {target_id}")
             
-            # Thread-sichere Client-Suche
+            # Ziel-Client finden (thread-safe)
             target_client = None
             with self.server.clients_lock:
                 for client_id, client_info in self.server.clients.items():
@@ -423,35 +391,30 @@ class CONVEY:
                         break
             
             if not target_client or 'public_key' not in target_client:
-                print(f"[CONVEY ERROR] Target client {target_id} not found or no public key")
-                
-                error_msg = self.server.build_sip_message("MESSAGE", caller_name, {
-                    "MESSAGE_TYPE": "CALL_ERROR",
-                    "ERROR": "TARGET_NOT_FOUND",
-                    "TARGET_ID": target_id,
-                    "TIMESTAMP": int(time.time())
-                })
-                
-                send_frame(client_socket, error_msg.encode('utf-8'))
+                print(f"[CONVEY ERROR] Target client {target_id} not found")
                 return False
             
-            # Public Key senden
-            response_msg = self.server.build_sip_message("MESSAGE", caller_name, {
-                "MESSAGE_TYPE": "PUBLIC_KEY_RESPONSE", 
+            # EINHEITLICHE Response-Erstellung
+            response_data = {
+                "MESSAGE_TYPE": "PUBLIC_KEY_RESPONSE",
                 "TARGET_CLIENT_ID": target_id,
                 "PUBLIC_KEY": target_client['public_key'],
-                "CALLER_NAME": caller_name,
-                "TIMESTAMP": int(time.time())
-            })
+                "CALLER_NAME": caller_name
+            }
             
+            response_msg = self.server.build_sip_message(
+                "MESSAGE", 
+                caller_name, 
+                response_data
+            )
+            
+            # EINHEITLICHES Framing
             send_frame(client_socket, response_msg.encode('utf-8'))
             print(f"[CONVEY] Sent public key for client {target_id} to {caller_name}")
             return True
             
         except Exception as e:
             print(f"[CONVEY ERROR] Public key handling failed: {str(e)}")
-            import traceback
-            traceback.print_exc()
             return False
     def handle_call_request(self, msg, client_socket, client_name):
         """Vermittelt Call-Requests zwischen Clients"""
@@ -832,157 +795,119 @@ class Server:
         
         print("="*20)
 
-    def build_sip_message(self, method, recipient, custom_data={}):
-        """Robuste SIP-Nachrichtenerstellung mit korrekter Schlüsselverarbeitung"""
-        # Erstelle eine Kopie der custom_data um das Original nicht zu modifizieren
-        processed_data = custom_data.copy()
+# === EINHEITLICHER SIP STANDARD ===
+    def build_sip_message(self, method, recipient, custom_data=None, from_server=True):
+        """SERVER-VERSION - verwendet Server-spezifische Attribute"""
+        if custom_data is None:
+            custom_data = {}
         
-        # ALL_KEYS speziell behandeln - nur wenn es eine Liste von Schlüsseln ist
-        if 'ALL_KEYS' in processed_data:
-            keys = processed_data['ALL_KEYS']
-            
-            # Sicherstellen dass es eine Liste ist
-            if not isinstance(keys, list):
-                print(f"[WARNING] ALL_KEYS is not a list: {type(keys)}")
-                # Versuche es in eine Liste zu konvertieren oder entferne es
-                if isinstance(keys, str) and keys == 'ALL_KEYS':
-                    # Das ist der Fehlerfall - entferne das falsche ALL_KEYS
-                    del processed_data['ALL_KEYS']
-                    print("[WARNING] Removed malformed ALL_KEYS entry")
-                else:
-                    try:
-                        keys = [keys]  # Versuche es in eine Ein-Element-Liste zu konvertieren
-                    except:
-                        del processed_data['ALL_KEYS']
-                        print("[WARNING] Could not process ALL_KEYS - removed")
-            
-            if isinstance(keys, list):
-                formatted_keys = []
-                for key in keys:
-                    try:
-                        # Sicherstellen dass es ein String ist
-                        if not isinstance(key, str):
-                            key_str = str(key)
-                        else:
-                            key_str = key
-                        
-                        # Nur gültige öffentliche Schlüssel formatieren
-                        if (key_str and 
-                            not key_str.strip() == 'ALL_KEYS' and  # ❌ Falsche ALL_KEYS Einträge filtern
-                            'BEGIN PUBLIC KEY' not in key_str):    # Bereits formatierte Schlüssel überspringen
-                            
-                            # Als PEM formatieren
-                            formatted_key = f"-----BEGIN PUBLIC KEY-----\n{key_str}\n-----END PUBLIC KEY-----"
-                            formatted_keys.append(formatted_key)
-                        else:
-                            # Bereits formatierte oder ungültige Schlüssel direkt übernehmen
-                            formatted_keys.append(key_str)
-                            
-                    except Exception as e:
-                        print(f"[ERROR] Failed to format key: {str(e)}")
-                        formatted_keys.append(key)  # Original behalten falls Fehler
-                
-                processed_data['ALL_KEYS'] = formatted_keys
+        if not isinstance(custom_data, dict):
+            raise ValueError("custom_data must be a dictionary")
         
-        # Body-Erstellung basierend auf Inhaltstyp
+        # Basis-Datenstruktur
+        message_data = {
+            "MESSAGE_TYPE": custom_data.get("MESSAGE_TYPE", "UNKNOWN"),
+            "TIMESTAMP": int(time.time()),
+            "VERSION": "2.0"
+        }
+        
+        # Benutzerdaten hinzufügen
+        for key, value in custom_data.items():
+            if key != "MESSAGE_TYPE":
+                message_data[key] = value
+        
+        # JSON-Body erstellen
         try:
-            # Prüfen ob JSON benötigt wird (bei komplexen Datenstrukturen)
-            requires_json = any(isinstance(v, (dict, list)) for v in processed_data.values())
-            
-            if requires_json:
-                body = json.dumps(processed_data, separators=(',', ':'))
-                content_type = "application/json"
-            else:
-                # Key-Value Format für einfache Daten
-                body_lines = []
-                for k, v in processed_data.items():
-                    if isinstance(v, (list, dict)):
-                        # Komplexe Werte als JSON stringifyen
-                        body_lines.append(f"{k}: {json.dumps(v)}")
-                    else:
-                        body_lines.append(f"{k}: {v}")
-                body = "\r\n".join(body_lines)
-                content_type = "text/plain"
-            
-            # SIP-Nachricht erstellen
-            return (
-                f"{method} sip:{recipient} SIP/2.0\r\n"
-                f"From: <sip:server@{self.host}>\r\n"
-                f"To: <sip:{recipient}>\r\n"
-                f"Content-Type: {content_type}\r\n"
-                f"Content-Length: {len(body)}\r\n\r\n"
-                f"{body}"
-            )
-            
+            body = json.dumps(message_data, separators=(',', ':'))
         except Exception as e:
-            print(f"[CRITICAL] Failed to build SIP message: {str(e)}")
-            # Fallback: Einfache Text-Nachricht
-            return (
-                f"{method} sip:{recipient} SIP/2.0\r\n"
-                f"From: <sip:server@{self.host}>\r\n"
-                f"To: <sip:{recipient}>\r\n"
-                f"Content-Type: text/plain\r\n"
-                f"Content-Length: {len(str(processed_data))}\r\n\r\n"
-                f"{processed_data}"
-            )
+            raise ValueError(f"JSON encoding failed: {e}")
+        
+        # ✅ SERVER-SPEZIFISCHE ABSENDERADRESSE
+        if from_server:
+            from_header = f"<sip:server@{self.host}>" if hasattr(self, 'host') else "<sip:server>"
+        else:
+            # Server sollte nicht als Client senden - Fallback
+            from_header = "<sip:server>"
+        
+        # SIP-Nachricht erstellen
+        sip_message = (
+            f"{method} sip:{recipient} SIP/2.0\r\n"
+            f"From: {from_header}\r\n"
+            f"To: <sip:{recipient}>\r\n"
+            f"Content-Type: application/json\r\n"
+            f"Content-Length: {len(body)}\r\n\r\n"
+            f"{body}"
+        )
+        
+        return sip_message
 
-    def parse_sip_message(self, message):
-        """Parse SIP-Nachrichten mit Header und Body"""
+    def parse_sip_message(self,message):
+        """VOLLSTÄNDIG EINHEITLICHER SIP-PARSER - NUR JSON"""
+        # 1. Input-Normalisierung
+        if isinstance(message, dict):
+            return message  # Bereits geparst
+            
         if isinstance(message, bytes):
             try:
                 message = message.decode('utf-8')
             except UnicodeDecodeError:
+                print("[PARSE ERROR] Invalid UTF-8 encoding")
                 return None
-
+        
         message = message.strip()
         if not message:
             return None
 
-        lines = [line.strip() for line in message.replace('\r\n', '\n').split('\n') if line.strip()]
-        result = {'headers': {}, 'custom_data': {}}
-
-        # Parse first line
-        first_line = lines[0]
-        if first_line.startswith('SIP/2.0'):
-            parts = first_line.split(maxsplit=2)
-            if len(parts) >= 2:
-                result['status_code'] = parts[1]
-                if len(parts) > 2:
-                    result['status_message'] = parts[2]
-        else:
-            result['method'] = first_line.split()[0]
-
-        # Parse headers
-        for line in lines[1:]:
-            if ': ' in line:
-                key, val = line.split(': ', 1)
-                key = key.strip().upper()
-                val = val.strip()
-                
-                if key == "CONTENT-LENGTH":
-                    try:
-                        result['content_length'] = int(val)
-                    except ValueError:
-                        pass
-                elif key not in result['headers']:
-                    result['headers'][key] = val
-
-        # Parse body
-        if 'content_length' in result and result['content_length'] > 0:
-            body_lines = lines[len(result['headers']) + 1:]
-            body = '\n'.join(body_lines)
+        # 2. Header und Body trennen
+        parts = message.split('\r\n\r\n', 1)
+        if len(parts) < 2:
+            print("[PARSE ERROR] No body separator found")
+            return None
             
+        headers_part, body_part = parts
+        headers_lines = headers_part.split('\r\n')
+
+        # 3. Ergebnis-Struktur
+        result = {
+            'headers': {},
+            'body': body_part.strip(),
+            'custom_data': {},
+            'method': '',
+            'status_code': ''
+        }
+
+        # 4. Erste Zeile (Request/Response Line)
+        first_line = headers_lines[0]
+        if first_line.startswith('SIP/2.0'):
+            # Response
+            parts = first_line.split(' ', 2)
+            result['status_code'] = parts[1] if len(parts) > 1 else ''
+            result['status_message'] = parts[2] if len(parts) > 2 else ''
+        else:
+            # Request
+            parts = first_line.split(' ', 2)
+            result['method'] = parts[0] if len(parts) > 0 else ''
+            result['uri'] = parts[1] if len(parts) > 1 else ''
+            result['protocol'] = parts[2] if len(parts) > 2 else ''
+
+        # 5. Header parsen
+        for line in headers_lines[1:]:
+            if ': ' in line:
+                key, value = line.split(': ', 1)
+                result['headers'][key.strip().upper()] = value.strip()
+
+        # 6. ✅ NUR JSON-BODY - KEINE AUSNAHMEN
+        body_content = body_part.strip()
+        if body_content:
             try:
-                result['custom_data'] = dict(
-                    line.split(': ', 1)
-                    for line in body.splitlines()
-                    if ': ' in line
-                )
-            except Exception:
-                result['body'] = body
+                result['custom_data'] = json.loads(body_content)
+                print(f"[PARSE DEBUG] JSON body parsed: {list(result['custom_data'].keys())}")
+            except json.JSONDecodeError as e:
+                print(f"[PARSE ERROR] Invalid JSON format: {e}")
+                print(f"[PARSE DEBUG] Body content: {body_content[:200]}...")
+                return None  # ✅ KEIN FALLBACK - JSON IST PFLICHT
 
-        return result if ('method' in result or 'status_code' in result) else None
-
+        return result
 
 
 
@@ -1088,303 +1013,499 @@ class Server:
                 for c in self.clients.values()
             )
     def _process_client_queue(self, client_queue, client_socket, client_name):
-        """Verarbeitet Nachrichten aus der Client-eigenen Queue - VOLLSTÄNDIG KORRIGIERT"""
-        try:
-            # VERBESSERT: Rekursionsschutz hinzufügen
-            if hasattr(self, '_processing_client_queue') and self._processing_client_queue:
-                return
-            self._processing_client_queue = True
+        """VOLLSTÄNDIGE Verarbeitung der Client-Queue - KEINE FEHLER WERDEN IGNORIERT"""
+        if hasattr(self, '_processing_client_queue') and self._processing_client_queue:
+            return
             
+        self._processing_client_queue = True
+        
+        try:
             while client_queue:
                 queue_item = client_queue.pop(0)
                 
-                if queue_item.get('type') == 'frame_data':  # VERBESSERT: .get() für Sicherheit
+                # === FRAME_DATA VERARBEITUNG ===
+                if queue_item.get('type') == 'frame_data':
                     frame_data = queue_item.get('data')
                     if not frame_data:
                         continue
-                        
+                    
                     try:
-                        message = frame_data.decode('utf-8')
-                        print(f"[SERVER] Empfangen von {client_name}: {len(message)} bytes")
+                        # 1. Decoding versuchen
+                        if isinstance(frame_data, bytes):
+                            try:
+                                message = frame_data.decode('utf-8')
+                            except UnicodeDecodeError:
+                                # Binärdaten (verschlüsselte Daten, Audio, etc.)
+                                print(f"[SERVER] Binary data from {client_name} ({len(frame_data)} bytes)")
+                                
+                                # Versuche als verschlüsselte Phonebook-Daten zu verarbeiten
+                                if len(frame_data) > 512:
+                                    result = self._process_encrypted_phonebook(frame_data)
+                                    if result:
+                                        continue
+                                
+                                # Audio-Daten während aktiven Calls
+                                if hasattr(self, 'convey_manager') and self.convey_manager.active_calls:
+                                    for call_id, call_data in self.convey_manager.active_calls.items():
+                                        if call_data.get('caller_id') == client_name or call_data.get('callee_id') == client_name:
+                                            print(f"[AUDIO] Binary data during active call {call_id}")
+                                            # Audio-Daten weiterleiten
+                                            self._forward_audio_data(frame_data, call_data, client_name)
+                                            break
+                                continue
+                        else:
+                            message = str(frame_data)
                         
-                        # Parse mit EXISTIERENDER Methode
+                        print(f"[SERVER] Received from {client_name}: {len(message)} bytes")
+                        
+                        # 2. SIP-Nachricht parsen
                         msg = self.parse_sip_message(message)
                         if not msg:
-                            print(f"[SERVER ERROR] Ungültiges SIP Format von {client_name}")
+                            print(f"[SERVER ERROR] Invalid SIP format from {client_name}")
+                            # Sende Fehlerantwort
+                            error_msg = self.build_sip_message("400 Bad Request", client_name, {
+                                "MESSAGE_TYPE": "ERROR",
+                                "ERROR": "INVALID_SIP_FORMAT",
+                                "TIMESTAMP": int(time.time())
+                            })
+                            send_frame(client_socket, error_msg.encode('utf-8'))
                             continue
-                            
-                        # Debug-Ausgabe
-                        debug_msg = message[:200] + "..." if len(message) > 200 else message
-                        print(f"[SERVER DEBUG] SIP Nachricht:\n{debug_msg}")
                         
-                        # Header und Custom Data
+                        # 3. Debug-Ausgabe
+                        debug_msg = message[:500] + "..." if len(message) > 500 else message
+                        print(f"[SERVER DEBUG] SIP message from {client_name}:\n{debug_msg}")
+                        
+                        # 4. Daten extrahieren
                         headers = msg.get('headers', {})
                         custom_data = msg.get('custom_data', {})
-                        body = msg.get('body', '')  # ✅ NEU: Body für Key-Value Parsing
+                        body = msg.get('body', '')
                         
-                        # ✅ ERWEITERTE MESSAGE_TYPE ERKENNUNG - Key-Value aus Body
+                        # 5. MESSAGE_TYPE ermitteln (mehrere Fallbacks)
                         message_type = None
-                        if 'MESSAGE_TYPE' in custom_data:
-                            message_type = custom_data['MESSAGE_TYPE']
-                            print(f"[DEBUG] Found MESSAGE_TYPE in custom_data: {message_type}")
-                        elif 'MESSAGE_TYPE' in headers:
-                            message_type = headers['MESSAGE_TYPE']
-                            print(f"[DEBUG] Found MESSAGE_TYPE in headers: {message_type}")
-                        else:
-                            # ✅ NEU: Key-Value Parsing aus Body für GET_PUBLIC_KEY
-                            for line in body.split('\n'):
-                                if 'MESSAGE_TYPE: ' in line:
-                                    message_type = line.split('MESSAGE_TYPE: ')[1].strip()
-                                    print(f"[DEBUG] Found MESSAGE_TYPE in body: {message_type}")
-                                    break
+                        message_type_sources = [
+                            custom_data.get('MESSAGE_TYPE'),
+                            headers.get('MESSAGE_TYPE'),
+                            headers.get('MESSAGE-TYPE'),
+                            custom_data.get('TYPE'),
+                            headers.get('TYPE')
+                        ]
                         
-                        # ✅ CALL-bezogene Nachrichten an CONVEY MANAGER delegieren
-                        if message_type in ['GET_PUBLIC_KEY', 'CALL_REQUEST', 'CALL_RESPONSE', 'CALL_END']:
+                        for source in message_type_sources:
+                            if source:
+                                message_type = source
+                                break
+                        
+                        # Fallback: Body durchsuchen
+                        if not message_type and body:
+                            # JSON Body
+                            if body.strip().startswith('{'):
+                                try:
+                                    body_data = json.loads(body)
+                                    message_type = body_data.get('MESSAGE_TYPE')
+                                except:
+                                    pass
+                            # Key-Value Body
+                            else:
+                                for line in body.split('\n'):
+                                    line = line.strip()
+                                    if line.startswith('MESSAGE_TYPE:'):
+                                        message_type = line.split('MESSAGE_TYPE:', 1)[1].strip()
+                                        break
+                                    elif line.startswith('TYPE:'):
+                                        message_type = line.split('TYPE:', 1)[1].strip()
+                                        break
+                        
+                        if not message_type:
+                            print(f"[SERVER WARNING] No message type from {client_name}")
+                            message_type = "UNKNOWN"
+                        
+                        print(f"[SERVER] Message type: {message_type} from {client_name}")
+                        
+                        # === NACHRICHTENTYP-ROUTING ===
+                        
+                        # === CALL-RELATED MESSAGES ===
+                        if message_type in ['GET_PUBLIC_KEY', 'CALL_REQUEST', 'CALL_RESPONSE', 
+                                          'CALL_END', 'INCOMING_CALL', 'SESSION_KEY']:
                             if hasattr(self, 'convey_manager'):
                                 print(f"[CALL] Delegating {message_type} to convey manager")
                                 
-                                # ✅ NEU: Body-Daten zu custom_data hinzufügen falls nötig
-                                if body and message_type == 'GET_PUBLIC_KEY':
-                                    body_data = {}
-                                    for line in body.split('\n'):
-                                        line = line.strip()
-                                        if line and ': ' in line:  # ✅ VERBESSERT: Leerzeilen ignorieren
-                                            key, value = line.split(': ', 1)
-                                            body_data[key.strip()] = value.strip()
-                                    # Füge Body-Daten zu custom_data hinzu (nur falls nicht vorhanden)
-                                    for key, value in body_data.items():
-                                        if key not in custom_data:  # ✅ VERBESSERT: Nur hinzufügen falls nicht schon da
-                                            custom_data[key] = value
-                                    msg['custom_data'] = custom_data
-                                
-                                if message_type == 'GET_PUBLIC_KEY':
-                                    self.convey_manager.handle_get_public_key(msg, client_socket, client_name)
-                                elif message_type == 'CALL_REQUEST':
-                                    self.convey_manager.handle_call_request(msg, client_socket, client_name)
-                                elif message_type == 'CALL_RESPONSE':
-                                    self.convey_manager.handle_call_response(msg, client_socket, client_name)
-                                elif message_type == 'CALL_END':
-                                    self.convey_manager.handle_call_end(msg, client_socket, client_name)
-                            else:
-                                print(f"[CALL ERROR] No convey manager available for {message_type}")
-                            continue
-                        
-                        # ✅ SESSION_KEY Handling
-                        if message_type == 'SESSION_KEY':
-                            print(f"[CALL] Session key received from {client_name}")
-                            self._handle_session_key(msg, client_socket, client_name)
-                            continue
-                        
-                        # ✅ INCOMING_CALL Response Handling
-                        if message_type == 'INCOMING_CALL_RESPONSE':
-                            print(f"[CALL] Incoming call response from {client_name}")
-                            if hasattr(self, 'convey_manager'):
-                                self.convey_manager.handle_call_response(msg, client_socket, client_name)
-                            continue
-                        
-                        # ✅ Ping Handling
-                        if headers.get('PING') == 'true' or custom_data.get('PING') == 'true':
-                            print(f"[PING] Empfangen von {client_name}")
-                            pong_response = self.build_sip_message("MESSAGE", client_name, {"PONG": "true"})
-                            send_frame(client_socket, pong_response.encode('utf-8'))
-                            continue
-                        
-                        # ✅ UPDATE Handling
-                        update_detected = False
-                        if headers.get('UPDATE') == 'true':
-                            update_detected = True
-                        elif custom_data.get('UPDATE') == 'true':
-                            update_detected = True
-                        elif message_type == 'UPDATE_REQUEST':
-                            update_detected = True
-                        
-                        if update_detected:
-                            print(f"[UPDATE] Empfangen von {client_name}")
-                            
-                            # Finde client_id und public key
-                            client_id = None
-                            client_pubkey = None
-                            with self.clients_lock:
-                                for cid, data in self.clients.items():
-                                    if data.get('name') == client_name:
-                                        client_id = cid
-                                        client_pubkey = data.get('public_key')
-                                        break
-                            
-                            if client_id and client_pubkey:
-                                print(f"[UPDATE] Starte Identity Challenge für {client_name} (ID: {client_id})")
-                                identity_verified, challenge_id = self.test_identity_sip(client_socket, client_pubkey, client_name)
-                                
-                                if identity_verified:
-                                    print(f"[IDENTITY] {client_name} erfolgreich verifiziert")
-                                    if self.send_phonebook(client_id):
-                                        print(f"[UPDATE] Phonebook gesendet an {client_name}")
-                                    else:
-                                        print(f"[UPDATE ERROR] Phonebook konnte nicht gesendet werden an {client_name}")
-                                else:
-                                    print(f"[IDENTITY] {client_name} Verifizierung fehlgeschlagen")
-                                        
-                                    error_msg = self.build_sip_message("401 Unauthorized", client_name, {
-                                        "STATUS": "IDENTITY_VERIFICATION_FAILED",
-                                        "REASON": "Challenge response invalid",
+                                try:
+                                    if message_type == 'GET_PUBLIC_KEY':
+                                        self.convey_manager.handle_get_public_key(msg, client_socket, client_name)
+                                    elif message_type == 'CALL_REQUEST':
+                                        self.convey_manager.handle_call_request(msg, client_socket, client_name)
+                                    elif message_type == 'CALL_RESPONSE':
+                                        self.convey_manager.handle_call_response(msg, client_socket, client_name)
+                                    elif message_type == 'CALL_END':
+                                        self.convey_manager.handle_call_end(msg, client_socket, client_name)
+                                    elif message_type == 'INCOMING_CALL':
+                                        # INCOMING_CALL wird vom Server initiiert, nicht empfangen
+                                        print(f"[CALL WARNING] INCOMING_CALL should not be received from client")
+                                    elif message_type == 'SESSION_KEY':
+                                        self._handle_session_key(msg, client_socket, client_name)
+                                except Exception as e:
+                                    print(f"[CALL ERROR] Handling failed for {message_type}: {str(e)}")
+                                    # Fehler an Client senden
+                                    error_msg = self.build_sip_message("500 Error", client_name, {
+                                        "MESSAGE_TYPE": "ERROR",
+                                        "ERROR": f"CALL_PROCESSING_FAILED: {str(e)}",
+                                        "ORIGINAL_TYPE": message_type,
                                         "TIMESTAMP": int(time.time())
                                     })
                                     send_frame(client_socket, error_msg.encode('utf-8'))
                             else:
-                                print(f"[UPDATE ERROR] Client {client_name} nicht gefunden oder kein Public Key")    
-                                error_msg = self.build_sip_message("404 Not Found", client_name, {
-                                        "STATUS": "CLIENT_NOT_FOUND",
-                                        "ERROR": "Client not registered or missing public key",
-                                        "TIMESTAMP": int(time.time())
-                                    })
+                                print(f"[CALL ERROR] No convey manager for {message_type}")
+                                error_msg = self.build_sip_message("503 Service Unavailable", client_name, {
+                                    "MESSAGE_TYPE": "ERROR",
+                                    "ERROR": "CALL_SERVICE_UNAVAILABLE",
+                                    "TIMESTAMP": int(time.time())
+                                })
                                 send_frame(client_socket, error_msg.encode('utf-8'))
                             continue
                         
-                        # ✅ Identity Response Handling
-                        if message_type == 'IDENTITY_RESPONSE':
-                            print(f"[IDENTITY] Response empfangen von {client_name}")
+                        # === PING/PONG HANDLING ===
+                        elif (headers.get('PING') == 'true' or custom_data.get('PING') == 'true' or 
+                              message_type == 'PING'):
+                            print(f"[PING] Received from {client_name}")
+                            pong_response = self.build_sip_message("MESSAGE", client_name, {
+                                "MESSAGE_TYPE": "PONG",
+                                "TIMESTAMP": int(time.time())
+                            })
+                            if not send_frame(client_socket, pong_response.encode('utf-8')):
+                                print(f"[PING ERROR] Failed to send pong to {client_name}")
+                            continue
+                        
+                        elif message_type == 'PONG':
+                            print(f"[PONG] Received from {client_name}")
+                            # Einfach bestätigen
+                            ack_msg = self.build_sip_message("200 OK", client_name, {
+                                "MESSAGE_TYPE": "PONG_ACK",
+                                "TIMESTAMP": int(time.time())
+                            })
+                            send_frame(client_socket, ack_msg.encode('utf-8'))
+                            continue
+                        
+                        # === UPDATE & IDENTITY HANDLING ===
+                        elif (message_type == 'UPDATE_REQUEST' or 
+                              headers.get('UPDATE') == 'true' or 
+                              custom_data.get('UPDATE') == 'true'):
+                            print(f"[UPDATE] Request from {client_name}")
+                            self._handle_update_request(client_socket, client_name, msg)
+                            continue
+                        
+                        elif message_type == 'IDENTITY_RESPONSE':
+                            print(f"[IDENTITY] Response from {client_name}")
                             self._handle_identity_response(client_socket, client_name, msg)
                             continue
                         
-                        # ✅ ENCRYPTED_SECRET Handling
-                        if 'ENCRYPTED_SECRET' in custom_data:
-                            print(f"[ENCRYPTED] Empfangen von {client_name}")
-                            
-                            # Finde client_id
-                            client_id = None
-                            with self.clients_lock:
-                                for cid, data in self.clients.items():
-                                    if data.get('name') == client_name:
-                                        client_id = cid
-                                        break
-                            
-                            if client_id:
-                                try:
-                                    encrypted_secret = base64.b64decode(custom_data['ENCRYPTED_SECRET'])
-                                    if self.store_client_secret(client_id, encrypted_secret):
-                                        ack_msg = self.build_sip_message("200 OK", client_name, {
-                                            "STATUS": "SECRET_STORED",
-                                            "CLIENT_ID": client_id,
-                                            "TIMESTAMP": int(time.time())
-                                        })
-                                        print(f"[SECRET] Gespeichert für {client_name}")
-                                    else:
-                                        ack_msg = self.build_sip_message("500 Error", client_name, {
-                                            "STATUS": "SECRET_STORAGE_FAILED",
-                                            "ERROR": "Failed to store secret",
-                                            "TIMESTAMP": int(time.time())
-                                        })
-                                        print(f"[SECRET ERROR] Konnte Secret nicht speichern für {client_name}")
-                                except Exception as e:
-                                    ack_msg = self.build_sip_message("500 Error", client_name, {
-                                        "STATUS": "PROCESSING_ERROR",
-                                        "ERROR": str(e)[:100],
-                                        "TIMESTAMP": int(time.time())
-                                    })
-                                    print(f"[SECRET ERROR] Fehler bei Secret-Verarbeitung: {str(e)}")
-                            else:
-                                ack_msg = self.build_sip_message("404 Not Found", client_name, {
-                                    "STATUS": "CLIENT_NOT_FOUND",
-                                    "ERROR": "Client not registered",
-                                    "TIMESTAMP": int(time.time())
-                                })
-                                print(f"[SECRET ERROR] Client {client_name} nicht gefunden")
-                            
-                            send_frame(client_socket, ack_msg.encode('utf-8'))
-                            continue
-                        
-                        # ✅ PHONEBOOK_REQUEST Handling
-                        if message_type == 'PHONEBOOK_REQUEST' or 'PHONEBOOK_REQUEST' in custom_data:
-                            print(f"[PHONEBOOK] Request von {client_name}")
-                            
-                            # Finde client_id
-                            client_id = None
-                            with self.clients_lock:
-                                for cid, data in self.clients.items():
-                                    if data.get('name') == client_name:
-                                        client_id = cid
-                                        break
-                            
-                            if client_id:
-                                if self.send_phonebook(client_id):
-                                    ack_msg = self.build_sip_message("200 OK", client_name, {
-                                        "STATUS": "PHONEBOOK_SENT",
-                                        "CLIENT_ID": client_id,
-                                        "TIMESTAMP": int(time.time())
-                                    })
-                                    print(f"[PHONEBOOK] Gesendet an {client_name}")
-                                else:
-                                    ack_msg = self.build_sip_message("500 Error", client_name, {
-                                        "STATUS": "PHONEBOOK_FAILED",
-                                        "ERROR": "Could not send phonebook",
-                                        "CLIENT_ID": client_id,
-                                        "TIMESTAMP": int(time.time())
-                                    })
-                                    print(f"[PHONEBOOK ERROR] Konnte Phonebook nicht senden an {client_name}")
-                            else:
-                                ack_msg = self.build_sip_message("404 Not Found", client_name, {
-                                    "STATUS": "CLIENT_NOT_FOUND",
-                                    "ERROR": "Client not registered",
-                                    "TIMESTAMP": int(time.time())
-                                })
-                                print(f"[PHONEBOOK ERROR] Client {client_name} nicht gefunden")
-                            
-                            send_frame(client_socket, ack_msg.encode('utf-8'))
-                            continue
-                        
-                        # ✅ CALL_SETUP Handling (Legacy)
-                        if 'CALL_SETUP' in custom_data:
-                            call_data = custom_data
-                            if call_data.get('CALL_SETUP') == 'request':
-                                caller_id = call_data.get('CALLER_ID')
-                                callee_id = call_data.get('CALLEE_ID')
-                                if caller_id and callee_id:
-                                    if self.initiate_call_between_clients(caller_id, callee_id):
-                                        ack_msg = self.build_sip_message("200 OK", client_name, {
-                                            "STATUS": "CALL_INITIATED",
-                                            "CALLER_ID": caller_id,
-                                            "CALLEE_ID": callee_id,
-                                            "TIMESTAMP": int(time.time())
-                                        })
-                                        print(f"[CALL] Vermittelt zwischen {caller_id} und {callee_id}")
-                                    else:
-                                        ack_msg = self.build_sip_message("500 Error", client_name, {
-                                            "STATUS": "CALL_FAILED",
-                                            "ERROR": "Could not initiate call",
-                                            "CALLER_ID": caller_id,
-                                            "CALLEE_ID": callee_id,
-                                            "TIMESTAMP": int(time.time())
-                                        })
-                                        print(f"[CALL ERROR] Konnte Call nicht vermitteln")
-                                    
-                                    send_frame(client_socket, ack_msg.encode('utf-8'))
-                            continue
-                        
-                        # ✅ Unbekannte Nachricht - Standardantwort
-                        print(f"[UNKNOWN] Unbekannte Nachricht von {client_name}: {message_type}")
-                        print(f"[DEBUG] Custom data keys: {list(custom_data.keys())}")
-                        
-                        # Standard Bestätigung senden
-                        ack_msg = self.build_sip_message("200 OK", client_name, {
-                                "STATUS": "MESSAGE_RECEIVED",
-                                "MESSAGE_TYPE": message_type or "UNKNOWN",
+                        elif message_type == 'IDENTITY_CHALLENGE':
+                            print(f"[IDENTITY] Challenge from {client_name} - should be server-initiated")
+                            # Client sollte keine Challenges senden
+                            error_msg = self.build_sip_message("400 Bad Request", client_name, {
+                                "MESSAGE_TYPE": "ERROR",
+                                "ERROR": "UNEXPECTED_IDENTITY_CHALLENGE",
                                 "TIMESTAMP": int(time.time())
                             })
+                            send_frame(client_socket, error_msg.encode('utf-8'))
+                            continue
                         
-                        send_frame(client_socket, ack_msg.encode('utf-8'))
+                        # === SECRET & ENCRYPTION HANDLING ===
+                        elif (message_type == 'ENCRYPTED_SECRET' or 
+                              'ENCRYPTED_SECRET' in custom_data or 
+                              'CLIENT_SECRET' in custom_data):
+                            print(f"[SECRET] Received from {client_name}")
+                            self._handle_encrypted_secret(msg, client_socket, client_name)
+                            continue
                         
-                    except UnicodeDecodeError:
-                        print(f"[SERVER ERROR] Kein UTF-8 SIP von {client_name} - Verwerfe {len(frame_data)} bytes")
+                        # === PHONEBOOK HANDLING ===
+                        elif (message_type == 'PHONEBOOK_REQUEST' or 
+                              'PHONEBOOK_REQUEST' in custom_data):
+                            print(f"[PHONEBOOK] Request from {client_name}")
+                            self._handle_phonebook_request(msg, client_socket, client_name)
+                            continue
+                        
+                        elif message_type == 'PHONEBOOK_UPDATE':
+                            print(f"[PHONEBOOK] Update from {client_name}")
+                            # Client sollte keine Phonebook-Updates senden
+                            error_msg = self.build_sip_message("400 Bad Request", client_name, {
+                                "MESSAGE_TYPE": "ERROR", 
+                                "ERROR": "CLIENT_CANNOT_SEND_PHONEBOOK_UPDATE",
+                                "TIMESTAMP": int(time.time())
+                            })
+                            send_frame(client_socket, error_msg.encode('utf-8'))
+                            continue
+                        
+                        # === LEGACY CALL SETUP ===
+                        elif ('CALL_SETUP' in custom_data or 
+                              message_type == 'CALL_SETUP'):
+                            print(f"[LEGACY CALL] Setup from {client_name}")
+                            self._handle_legacy_call_setup(msg, client_socket, client_name)
+                            continue
+                        
+                        # === REGISTRATION & DISCOVERY ===
+                        elif message_type == 'REGISTER':
+                            print(f"[REGISTER] Received from {client_name}")
+                            # Client ist bereits registriert, bestätigen
+                            ack_msg = self.build_sip_message("200 OK", client_name, {
+                                "MESSAGE_TYPE": "REGISTRATION_CONFIRMED",
+                                "STATUS": "ALREADY_REGISTERED",
+                                "TIMESTAMP": int(time.time())
+                            })
+                            send_frame(client_socket, ack_msg.encode('utf-8'))
+                            continue
+                        
+                        elif message_type == 'DISCOVER':
+                            print(f"[DISCOVER] Request from {client_name}")
+                            self._handle_discovery_request(msg, client_socket, client_name)
+                            continue
+                        
+                        # === ERROR HANDLING ===
+                        elif message_type == 'ERROR':
+                            print(f"[ERROR] Received from {client_name}: {custom_data.get('ERROR', 'Unknown error')}")
+                            # Error bestätigen
+                            ack_msg = self.build_sip_message("200 OK", client_name, {
+                                "MESSAGE_TYPE": "ERROR_ACK",
+                                "RECEIVED_ERROR": custom_data.get('ERROR', 'UNKNOWN'),
+                                "TIMESTAMP": int(time.time())
+                            })
+                            send_frame(client_socket, ack_msg.encode('utf-8'))
+                            continue
+                        
+                        # === UNBEKANNTE NACHRICHT ===
+                        else:
+                            print(f"[UNKNOWN] Unknown message type from {client_name}: {message_type}")
+                            print(f"[DEBUG] Headers: {list(headers.keys())}")
+                            print(f"[DEBUG] Custom data: {list(custom_data.keys())}")
+                            
+                            # Versuche die Nachricht als Status-Update zu behandeln
+                            if any(key in custom_data for key in ['STATUS', 'STATE', 'INFO']):
+                                print(f"[STATUS] Status update from {client_name}")
+                                ack_msg = self.build_sip_message("200 OK", client_name, {
+                                    "MESSAGE_TYPE": "STATUS_ACK",
+                                    "RECEIVED_STATUS": message_type,
+                                    "TIMESTAMP": int(time.time())
+                                })
+                            else:
+                                # Generische Bestätigung für unbekannte Nachrichten
+                                ack_msg = self.build_sip_message("200 OK", client_name, {
+                                    "MESSAGE_TYPE": "UNKNOWN_MESSAGE_ACK",
+                                    "RECEIVED_TYPE": message_type,
+                                    "SUGGESTION": "Use valid MESSAGE_TYPE",
+                                    "TIMESTAMP": int(time.time())
+                                })
+                            
+                            send_frame(client_socket, ack_msg.encode('utf-8'))
+                            continue
+                            
+                    except UnicodeDecodeError as ude:
+                        print(f"[SERVER ERROR] UTF-8 decoding failed from {client_name}: {ude}")
+                        error_msg = self.build_sip_message("400 Bad Request", client_name, {
+                            "MESSAGE_TYPE": "ERROR",
+                            "ERROR": "INVALID_ENCODING",
+                            "DETAILS": "Message must be valid UTF-8",
+                            "TIMESTAMP": int(time.time())
+                        })
+                        send_frame(client_socket, error_msg.encode('utf-8'))
                         continue
                         
+                    except Exception as e:
+                        print(f"[SERVER ERROR] Processing failed for {client_name}: {str(e)}")
+                        error_msg = self.build_sip_message("500 Internal Error", client_name, {
+                            "MESSAGE_TYPE": "ERROR", 
+                            "ERROR": "PROCESSING_FAILED",
+                            "DETAILS": str(e)[:100],
+                            "TIMESTAMP": int(time.time())
+                        })
+                        send_frame(client_socket, error_msg.encode('utf-8'))
+                        continue
+                
+                # === ANDERE QUEUE-TYPEN ===
+                elif queue_item.get('type') == 'send_message':
+                    # Direkter Sendevorgang
+                    message = queue_item.get('message')
+                    if message:
+                        try:
+                            if isinstance(message, str):
+                                message = message.encode('utf-8')
+                            send_frame(client_socket, message)
+                            print(f"[QUEUE] Direct message sent to {client_name}")
+                        except Exception as e:
+                            print(f"[QUEUE ERROR] Direct send failed: {e}")
+                
+                elif queue_item.get('type') == 'internal_command':
+                    # Interne Kommandos verarbeiten
+                    command = queue_item.get('command')
+                    print(f"[INTERNAL] Processing command: {command} for {client_name}")
+                    self._handle_internal_command(command, client_socket, client_name)
+                
+                else:
+                    print(f"[QUEUE WARNING] Unknown queue item type: {queue_item.get('type')}")
+                    
         except Exception as e:
-            print(f"[CLIENT QUEUE ERROR] {str(e)}")
+            print(f"[CLIENT QUEUE CRITICAL ERROR] {str(e)}")
             import traceback
             traceback.print_exc()
+            
+            # Versuche Fehler an Client zu senden
+            try:
+                error_msg = self.build_sip_message("500 Internal Error", client_name, {
+                    "MESSAGE_TYPE": "ERROR",
+                    "ERROR": "QUEUE_PROCESSING_FAILED",
+                    "TIMESTAMP": int(time.time())
+                })
+                send_frame(client_socket, error_msg.encode('utf-8'))
+            except:
+                print("[CRITICAL] Could not send error message to client")
+                
         finally:
-            # VERBESSERT: Flag immer zurücksetzen
-            if hasattr(self, '_processing_client_queue'):
-                self._processing_client_queue = False
+            self._processing_client_queue = False
+            print(f"[QUEUE] Finished processing queue for {client_name}")
+
+    # === HILFSMETHODEN FÜR DIE VOLLSTÄNDIGE VERARBEITUNG ===
+
+    def _handle_encrypted_secret(self, msg, client_socket, client_name):
+        """Verarbeitet verschlüsselte Secrets"""
+        try:
+            custom_data = msg.get('custom_data', {})
+            encrypted_secret = (custom_data.get('ENCRYPTED_SECRET') or 
+                               custom_data.get('CLIENT_SECRET'))
+            
+            if not encrypted_secret:
+                raise ValueError("No encrypted secret found")
+            
+            # Client-ID finden
+            client_id = None
+            with self.clients_lock:
+                for cid, data in self.clients.items():
+                    if data.get('name') == client_name:
+                        client_id = cid
+                        break
+            
+            if not client_id:
+                raise ValueError(f"Client {client_name} not found")
+            
+            # Secret verarbeiten
+            encrypted_bytes = base64.b64decode(encrypted_secret)
+            if self.store_client_secret(client_id, encrypted_bytes):
+                response_msg = self.build_sip_message("200 OK", client_name, {
+                    "MESSAGE_TYPE": "SECRET_STORED",
+                    "CLIENT_ID": client_id,
+                    "TIMESTAMP": int(time.time())
+                })
+                print(f"[SECRET] Stored for {client_name}")
+            else:
+                response_msg = self.build_sip_message("500 Error", client_name, {
+                    "MESSAGE_TYPE": "ERROR",
+                    "ERROR": "SECRET_STORAGE_FAILED",
+                    "CLIENT_ID": client_id,
+                    "TIMESTAMP": int(time.time())
+                })
+                print(f"[SECRET ERROR] Storage failed for {client_name}")
+            
+            send_frame(client_socket, response_msg.encode('utf-8'))
+            
+        except Exception as e:
+            print(f"[SECRET ERROR] Handling failed: {str(e)}")
+            error_msg = self.build_sip_message("500 Error", client_name, {
+                "MESSAGE_TYPE": "ERROR",
+                "ERROR": f"SECRET_PROCESSING_FAILED: {str(e)}",
+                "TIMESTAMP": int(time.time())
+            })
+            send_frame(client_socket, error_msg.encode('utf-8'))
+
+    def _handle_phonebook_request(self, msg, client_socket, client_name):
+        """Verarbeitet Phonebook-Requests"""
+        try:
+            # Client-ID finden
+            client_id = None
+            with self.clients_lock:
+                for cid, data in self.clients.items():
+                    if data.get('name') == client_name:
+                        client_id = cid
+                        break
+            
+            if not client_id:
+                raise ValueError(f"Client {client_name} not found")
+            
+            # Phonebook senden
+            if self.send_phonebook(client_id):
+                response_msg = self.build_sip_message("200 OK", client_name, {
+                    "MESSAGE_TYPE": "PHONEBOOK_SENT",
+                    "CLIENT_ID": client_id,
+                    "TIMESTAMP": int(time.time())
+                })
+                print(f"[PHONEBOOK] Sent to {client_name}")
+            else:
+                response_msg = self.build_sip_message("500 Error", client_name, {
+                    "MESSAGE_TYPE": "ERROR",
+                    "ERROR": "PHONEBOOK_SEND_FAILED",
+                    "CLIENT_ID": client_id,
+                    "TIMESTAMP": int(time.time())
+                })
+                print(f"[PHONEBOOK ERROR] Send failed for {client_name}")
+            
+            send_frame(client_socket, response_msg.encode('utf-8'))
+            
+        except Exception as e:
+            print(f"[PHONEBOOK ERROR] Handling failed: {str(e)}")
+            error_msg = self.build_sip_message("500 Error", client_name, {
+                "MESSAGE_TYPE": "ERROR",
+                "ERROR": f"PHONEBOOK_PROCESSING_FAILED: {str(e)}",
+                "TIMESTAMP": int(time.time())
+            })
+            send_frame(client_socket, error_msg.encode('utf-8'))
+
+    def _handle_legacy_call_setup(self, msg, client_socket, client_name):
+        """Verarbeitet Legacy Call-Setup"""
+        try:
+            custom_data = msg.get('custom_data', {})
+            call_data = custom_data.get('CALL_SETUP')
+            
+            if call_data == 'request':
+                caller_id = custom_data.get('CALLER_ID')
+                callee_id = custom_data.get('CALLEE_ID')
+                
+                if caller_id and callee_id:
+                    if self.initiate_call_between_clients(caller_id, callee_id):
+                        response_msg = self.build_sip_message("200 OK", client_name, {
+                            "MESSAGE_TYPE": "CALL_INITIATED",
+                            "CALLER_ID": caller_id,
+                            "CALLEE_ID": callee_id,
+                            "TIMESTAMP": int(time.time())
+                        })
+                        print(f"[LEGACY CALL] Initiated between {caller_id} and {callee_id}")
+                    else:
+                        response_msg = self.build_sip_message("500 Error", client_name, {
+                            "MESSAGE_TYPE": "ERROR",
+                            "ERROR": "CALL_INITIATION_FAILED",
+                            "CALLER_ID": caller_id,
+                            "CALLEE_ID": callee_id,
+                            "TIMESTAMP": int(time.time())
+                        })
+                        print(f"[LEGACY CALL ERROR] Initiation failed")
+                else:
+                    response_msg = self.build_sip_message("400 Bad Request", client_name, {
+                        "MESSAGE_TYPE": "ERROR",
+                        "ERROR": "MISSING_CALLER_OR_CALLEE_ID",
+                        "TIMESTAMP": int(time.time())
+                    })
+            else:
+                response_msg = self.build_sip_message("400 Bad Request", client_name, {
+                    "MESSAGE_TYPE": "ERROR",
+                    "ERROR": "INVALID_CALL_SETUP_FORMAT",
+                    "TIMESTAMP": int(time.time())
+                })
+            
+            send_frame(client_socket, response_msg.encode('utf-8'))
+            
+        except Exception as e:
+            print(f"[LEGACY CALL ERROR] Handling failed: {str(e)}")
+            error_msg = self.build_sip_message("500 Error", client_name, {
+                "MESSAGE_TYPE": "ERROR",
+                "ERROR": f"LEGACY_CALL_PROCESSING_FAILED: {str(e)}",
+                "TIMESTAMP": int(time.time())
+            })
+            send_frame(client_socket, error_msg.encode('utf-8'))
     def _handle_session_key(self, msg, client_socket, client_name):
         """Verarbeitet Session Key Nachrichten"""
         try:
@@ -1767,103 +1888,110 @@ class Server:
         return None        
     def normalize_client_public_key(self, key):
         """
-        Normalisiert einen Client Public Key für M2Crypto mit erweitertem Debugging
+        Verbesserte Normalisierung von Client Public Keys für M2Crypto
         """
         if not key or not isinstance(key, str):
-            print("[DEBUG] Key is None or not a string")
+            print("[KEY NORMALIZE] Key is None or not a string")
             return None
         
         key = key.strip()
-        print(f"[DEBUG] Original key length: {len(key)}")
-        print(f"[DEBUG] Key starts with: {repr(key[:50])}")
-        print(f"[DEBUG] Key ends with: {repr(key[-50:])}")
+        print(f"[KEY NORMALIZE] Original key length: {len(key)}")
+        print(f"[KEY NORMALIZE] First 100 chars: {key[:100]}")
+        
+        # ZUERST: Alle Varianten von escaped newlines ersetzen
+        key = key.replace('\\\\n', '\n').replace('\\n', '\n')
         
         # Fall 1: Bereits korrektes PEM Format
         if key.startswith('-----BEGIN PUBLIC KEY-----') and key.endswith('-----END PUBLIC KEY-----'):
-            print("[DEBUG] Key is already in PEM format")
-            return key
-        
-        # Fall 2: Base64 content ohne PEM Header
-        try:
-            # Entferne eventuelle Prefixe wie "SERVER_PUBLIC_KEY: "
-            if ':' in key:
-                key = key.split(':', 1)[1].strip()
+            print("[KEY NORMALIZE] Key is in valid PEM format after newline replacement")
             
-            # Teste ob es Base64 ist
-            import re
-            # Entferne alle Whitespace Zeichen
-            clean_key = re.sub(r'\s+', '', key)
+            # Validiere, dass der Key tatsächlich korrekt ist
+            try:
+                # Teste ob der Key geladen werden kann
+                test_bio = BIO.MemoryBuffer(key.encode())
+                test_key = RSA.load_pub_key_bio(test_bio)
+                print("[KEY NORMALIZE] Key validation successful")
+                return key
+            except Exception as e:
+                print(f"[KEY NORMALIZE] Key validation failed: {e}")
+                # Versuche Reparatur
+        
+        # Fall 2: Key enthält PEM Marker aber möglicherweise falsche Formatierung
+        if '-----BEGIN PUBLIC KEY-----' in key and '-----END PUBLIC KEY-----' in key:
+            try:
+                # Extrahiere den Key-Inhalt zwischen den Markern
+                start = key.find('-----BEGIN PUBLIC KEY-----') + len('-----BEGIN PUBLIC KEY-----')
+                end = key.find('-----END PUBLIC KEY-----')
+                key_content = key[start:end].strip()
+                
+                # Entferne alle Whitespace-Zeichen und baue korrekten PEM
+                key_content = ''.join(key_content.split())
+                
+                # Baue korrektes PEM Format mit korrekten Zeilenumbrüchen
+                normalized_key = f"-----BEGIN PUBLIC KEY-----\n{key_content}\n-----END PUBLIC KEY-----"
+                
+                # Validiere den reparierten Key
+                test_bio = BIO.MemoryBuffer(normalized_key.encode())
+                test_key = RSA.load_pub_key_bio(test_bio)
+                print("[KEY NORMALIZE] Successfully reconstructed and validated PEM format")
+                return normalized_key
+                
+            except Exception as e:
+                print(f"[KEY NORMALIZE] Reconstruction failed: {e}")
+        
+        # Fall 3: Nur Base64 content
+        try:
+            # Entferne eventuelle Prefixe
+            clean_key = key
+            if ':' in key:
+                clean_key = key.split(':', 1)[1].strip()
+            
+            # Entferne alle Whitespace-Zeichen
+            clean_key = ''.join(clean_key.split())
+            
+            # Validiere Base64
             base64.b64decode(clean_key)
             
-            # Wrap in PEM headers
-            pem_key = f"-----BEGIN PUBLIC KEY-----\n{clean_key}\n-----END PUBLIC KEY-----"
-            print("[DEBUG] Successfully converted Base64 to PEM format")
+            # Wrap in PEM headers mit korrekten Zeilenumbrüchen
+            # Base64 in 64-Zeilen-Blöcke aufteilen für korrektes PEM
+            chunks = [clean_key[i:i+64] for i in range(0, len(clean_key), 64)]
+            pem_key = f"-----BEGIN PUBLIC KEY-----\n" + "\n".join(chunks) + f"\n-----END PUBLIC KEY-----"
+            
+            # Validiere
+            test_bio = BIO.MemoryBuffer(pem_key.encode())
+            test_key = RSA.load_pub_key_bio(test_bio)
+            print("[KEY NORMALIZE] Successfully converted Base64 to PEM format")
             return pem_key
             
         except Exception as e:
-            print(f"[DEBUG] Key is not valid Base64: {e}")
+            print(f"[KEY NORMALIZE] Base64 conversion failed: {e}")
         
-        # Fall 3: Key enthält literal \n Zeichen
-        if '\\n' in key:
-            print("[DEBUG] Key contains literal \\n characters, replacing...")
-            key = key.replace('\\n', '\n')
-            if key.startswith('-----BEGIN PUBLIC KEY-----') and key.endswith('-----END PUBLIC KEY-----'):
-                return key
-        
-        print("[DEBUG] Key format could not be normalized")
-        return None             
+        print("[KEY NORMALIZE] Key format could not be normalized")
+        return None
     def test_identity_sip(self, client_socket, client_pubkey, client_name):
-        """
-        Führt einen Identity-Test über SIP-Nachrichten durch mit erweitertem Debugging
-        """
-        timeout = 45
-        challenge_id = None
-        
+        """KORRIGIERTE Identity Challenge - EINHEITLICHER STANDARD"""
         try:
-            print(f"[DEBUG] Starting identity test for client: {client_name}")
+            print(f"[IDENTITY] Starting identity challenge for {client_name}")
             
-            # 0. Server Private Key verwenden
+            # 1. Server Private Key laden
             private_key_path = "server_private_key.pem"
             if not os.path.exists(private_key_path):
-                print(f"[DEBUG] ERROR: Server private key file not found: {private_key_path}")
+                print(f"[IDENTITY ERROR] Private key file not found: {private_key_path}")
                 return False, None
             
-            print(f"[DEBUG] Using server private key: {private_key_path}")
-            
-            # 1. Private Key laden und validieren
-            try:
-                with open(private_key_path, "rb") as f:
-                    priv_key_data = f.read()
-                    priv_key = RSA.load_key_string(priv_key_data)
-                
-                # Teste ob der private Schlüssel funktioniert
-                test_data = b"test_message_123"
-                encrypted_test = priv_key.public_encrypt(test_data, RSA.pkcs1_padding)
-                decrypted_test = priv_key.private_decrypt(encrypted_test, RSA.pkcs1_padding)
-                
-                if decrypted_test != test_data:
-                    print("[DEBUG] ERROR: Private key test failed - decryption mismatch")
-                    print(f"Expected: {test_data}")
-                    print(f"Got: {decrypted_test}")
-                    return False, None
-                else:
-                    print("[DEBUG] Private key test PASSED")
-                    
-            except Exception as e:
-                print(f"[DEBUG] ERROR: Private key test failed: {e}")
-                import traceback
-                traceback.print_exc()
-                return False, None
+            with open(private_key_path, "rb") as f:
+                priv_key_data = f.read()
+                priv_key = RSA.load_key_string(priv_key_data)
             
             # 2. Challenge generieren
-            challenge = base64.b64encode(secure_random(16)).decode('ascii')
+            challenge = base64.b64encode(os.urandom(16)).decode('ascii')
             challenge_id = str(uuid.uuid4())
-            print(f"[SERVER] Generated SIP challenge: {challenge} (ID: {challenge_id})")
+            print(f"[IDENTITY] Generated challenge (ID: {challenge_id})")
             
             # 3. Challenge mit Client-Public-Key verschlüsseln
             try:
+                # Public Key normalisieren
                 if '\\n' in client_pubkey:
-                    print("[DEBUG] Replacing literal \\n with actual newlines")
                     client_pubkey = client_pubkey.replace('\\n', '\n')
                 
                 pub_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(client_pubkey.encode()))
@@ -1871,14 +1999,11 @@ class Server:
                     challenge.encode('utf-8'), 
                     RSA.pkcs1_padding
                 )
-                print(f"[DEBUG] Challenge encrypted successfully, length: {len(encrypted_challenge)} bytes")
             except Exception as e:
-                print(f"[DEBUG] Encryption error: {e}")
-                import traceback
-                traceback.print_exc()
+                print(f"[IDENTITY ERROR] Encryption failed: {e}")
                 return False, challenge_id
             
-            # 4. Challenge senden
+            # 4. Challenge senden (EINHEITLICHES JSON-FORMAT)
             challenge_msg = self.build_sip_message("MESSAGE", client_name, {
                 "MESSAGE_TYPE": "IDENTITY_CHALLENGE",
                 "CHALLENGE_ID": challenge_id,
@@ -1886,181 +2011,95 @@ class Server:
                 "TIMESTAMP": int(time.time())
             })
             
-            send_frame(client_socket, challenge_msg.encode('utf-8'))
-            print("[SERVER] Sent SIP challenge to client")
+            if not send_frame(client_socket, challenge_msg.encode('utf-8')):
+                print("[IDENTITY ERROR] Failed to send challenge")
+                return False, challenge_id
             
-            # 5. Response empfangen
-            client_socket.settimeout(5.0)
+            print("[IDENTITY] Challenge sent successfully")
+            
+            # 5. Response mit Timeout erwarten
+            client_socket.settimeout(30.0)
             start_time = time.time()
-            response_text = None
             
-            while time.time() - start_time < timeout:
+            while time.time() - start_time < 30:
                 try:
-                    response_data = recv_frame(client_socket)
+                    # Frame empfangen
+                    response_data = recv_frame(client_socket, timeout=5)
                     if not response_data:
                         continue
                     
-                    if isinstance(response_data, bytes):
-                        response_text = response_data.decode('utf-8', errors='ignore')
-                    else:
-                        response_text = str(response_data)
-                    
-                    # Ping handling
-                    if "PING" in response_text:
-                        pong_response = self.build_sip_message("MESSAGE", client_name, {"PONG": "true"})
-                        send_frame(client_socket, pong_response.encode('utf-8'))
+                    # Nachricht parsen (EINHEITLICHER PARSER)
+                    response_msg = self.parse_sip_message(response_data)
+                    if not response_msg:
                         continue
                     
-                    # Identity Response check
-                    if "IDENTITY_RESPONSE" in response_text and challenge_id in response_text:
-                        print("[DEBUG] ✓ FOUND MATCHING IDENTITY_RESPONSE!")
-                        break
+                    response_custom_data = response_msg.get('custom_data', {})
+                    response_type = response_custom_data.get('MESSAGE_TYPE')
+                    response_challenge_id = response_custom_data.get('CHALLENGE_ID')
+                    
+                    # Ping ignorieren
+                    if response_type == 'PING':
+                        pong_msg = self.build_sip_message("MESSAGE", client_name, {
+                            "MESSAGE_TYPE": "PONG",
+                            "TIMESTAMP": int(time.time())
+                        })
+                        send_frame(client_socket, pong_msg.encode('utf-8'))
+                        continue
+                    
+                    # Identity Response prüfen
+                    if response_type == 'IDENTITY_RESPONSE' and response_challenge_id == challenge_id:
+                        encrypted_response_b64 = response_custom_data.get('ENCRYPTED_RESPONSE')
                         
+                        if not encrypted_response_b64:
+                            print("[IDENTITY ERROR] No encrypted response in identity response")
+                            return False, challenge_id
+                        
+                        # Response entschlüsseln
+                        try:
+                            encrypted_response = base64.b64decode(encrypted_response_b64)
+                            decrypted_response = priv_key.private_decrypt(encrypted_response, RSA.pkcs1_padding)
+                            decrypted_text = decrypted_response.decode('utf-8')
+                            
+                            expected_response = challenge + "VALIDATED"
+                            
+                            if decrypted_text == expected_response:
+                                print("[IDENTITY] Challenge response validated successfully")
+                                
+                                # Erfolgsnachricht senden
+                                success_msg = self.build_sip_message("200 OK", client_name, {
+                                    "MESSAGE_TYPE": "IDENTITY_VERIFIED",
+                                    "CHALLENGE_ID": challenge_id,
+                                    "STATUS": "VERIFICATION_SUCCESSFUL",
+                                    "TIMESTAMP": int(time.time())
+                                })
+                                send_frame(client_socket, success_msg.encode('utf-8'))
+                                return True, challenge_id
+                            else:
+                                print("[IDENTITY ERROR] Response validation failed")
+                                print(f"Expected: {expected_response}")
+                                print(f"Received: {decrypted_text}")
+                                return False, challenge_id
+                                
+                        except Exception as e:
+                            print(f"[IDENTITY ERROR] Response decryption failed: {e}")
+                            return False, challenge_id
+                    
                 except socket.timeout:
-                    continue
+                    continue  # Timeout ist normal, weiter warten
                 except Exception as e:
-                    print(f"[DEBUG] Error receiving response: {e}")
+                    print(f"[IDENTITY ERROR] Response handling error: {e}")
                     continue
-            else:
-                print("[DEBUG] Identity test failed: Timeout")
-                return False, challenge_id
             
-            # 6. Response parsen
-            lines = response_text.split('\r\n')
-            body_started = False
-            body_lines = []
+            # Timeout erreicht
+            print("[IDENTITY ERROR] Timeout waiting for identity response")
+            return False, challenge_id
             
-            for line in lines:
-                if line.strip() == '':
-                    body_started = True
-                    continue
-                if body_started:
-                    body_lines.append(line.strip())
-            
-            # Custom Data parsen
-            custom_data = {}
-            for line in body_lines:
-                if ': ' in line:
-                    key, value = line.split(': ', 1)
-                    custom_data[key.strip()] = value.strip()
-            
-            response_challenge_id = custom_data.get('CHALLENGE_ID')
-            encrypted_response_b64 = custom_data.get('ENCRYPTED_RESPONSE')
-            
-            if not all([response_challenge_id, encrypted_response_b64]):
-                print("[DEBUG] Identity test failed: Missing response fields")
-                return False, challenge_id
-            
-            if response_challenge_id != challenge_id:
-                print("[DEBUG] Identity test failed: Challenge ID mismatch")
-                return False, challenge_id
-            
-            # 7. Response entschlüsseln
-            try:
-                encrypted_response_bytes = base64.b64decode(encrypted_response_b64)
-                print(f"[DEBUG] Decoded encrypted response: {len(encrypted_response_bytes)} bytes")
-                
-                decrypted_response = priv_key.private_decrypt(encrypted_response_bytes, RSA.pkcs1_padding)
-                
-                if decrypted_response is None:
-                    print("[DEBUG] Identity test FAILED: Decryption returned None")
-                    return False, challenge_id
-                    
-                if len(decrypted_response) == 0:
-                    print("[DEBUG] Identity test FAILED: Decryption returned empty data")
-                    return False, challenge_id
-                
-                # Decoding versuchen
-                try:
-                    decrypted_text = decrypted_response.decode('utf-8')
-                except UnicodeDecodeError:
-                    try:
-                        decrypted_text = decrypted_response.decode('latin-1')
-                    except:
-                        print("[DEBUG] Identity test FAILED: Could not decode response")
-                        return False, challenge_id
-                
-                expected_response = challenge + "VALIDATED"
-                
-                if decrypted_text == expected_response:
-                    print("[SERVER] Identity test PASSED")
-                    success_msg = self.build_sip_message("200 OK", client_name, {
-                        "STATUS": "IDENTITY_VERIFIED",
-                        "CHALLENGE_ID": challenge_id
-                    })
-                    send_frame(client_socket, success_msg.encode('utf-8'))
-                    return True, challenge_id
-                else:
-                    print("[DEBUG] Identity test FAILED: Response mismatch")
-                    print(f"Expected: {expected_response}")
-                    print(f"Got: {decrypted_text}")
-                    return False, challenge_id
-                    
-            except Exception as e:
-                print(f"[DEBUG] Identity test FAILED: Decryption error: {e}")
-                import traceback
-                traceback.print_exc()
-                return False, challenge_id
-                
         except Exception as e:
-            print(f"[DEBUG] Identity test FAILED: {e}")
+            print(f"[IDENTITY ERROR] Identity test failed: {e}")
             import traceback
             traceback.print_exc()
-            return False, challenge_id
-    def _process_identity_response(self, sip_data, raw_data):
-        """Verarbeitet Identity Response - KORRIGIERT FÜR KEY-VALUE"""
-        try:
-            print("[DEBUG] ✓ FOUND MATCHING IDENTITY_RESPONSE!")
-            
-            # Extrahiere Body und parse als Key-Value
-            body = sip_data.get('body', '')
-            custom_data = {}
-            for line in body.split('\n'):
-                line = line.strip()
-                if ': ' in line:
-                    key, value = line.split(': ', 1)
-                    custom_data[key] = value
-            
-            challenge_id = custom_data.get('CHALLENGE_ID')
-            encrypted_response_b64 = custom_data.get('ENCRYPTED_RESPONSE')
-            
-            if not challenge_id or not encrypted_response_b64:
-                print("[ERROR] Missing fields in identity response")
-                return False
-            
-            # Überprüfe ob Challenge ID existiert
-            if challenge_id not in self.active_challenges:
-                print(f"[ERROR] Unknown challenge ID: {challenge_id}")
-                return False
-            
-            original_challenge = self.active_challenges[challenge_id]
-            
-            # Entschlüssele die Response
-            try:
-                encrypted_response = base64.b64decode(encrypted_response_b64)
-                decrypted_response = self.private_key.private_decrypt(
-                    encrypted_response, RSA.pkcs1_padding
-                ).decode('utf-8')
+            return False, None
                 
-                print(f"[DEBUG] Decrypted response: {decrypted_response}")
-                print(f"[DEBUG] Expected: {original_challenge}VALIDATED")
-                
-                # Validiere die Response
-                if decrypted_response == original_challenge + "VALIDATED":
-                    print(f"[IDENTITY] {sip_data['from_user']} erfolgreich verifiziert")
-                    del self.active_challenges[challenge_id]
-                    return True
-                else:
-                    print("[IDENTITY] Verification failed - response mismatch")
-                    return False
-                    
-            except Exception as e:
-                print(f"[IDENTITY ERROR] Decryption failed: {str(e)}")
-                return False
-                
-        except Exception as e:
-            print(f"[IDENTITY ERROR] Processing failed: {str(e)}")
-            return False                       
     def _process_queue(self):
         """Thread-safe message processing with proper locking"""
         self._processing_queue = True
@@ -2172,37 +2211,249 @@ class Server:
         except UnicodeDecodeError:
             print(f"[SERVER ERROR] Kein UTF-8 SIP von {client_name} - Verwerfe {len(frame_data)} bytes")
     def _handle_update_request(self, client_socket, client_name, msg):
-        """Thread-safe update request handling"""
-        # ✅ SICHER: Client suchen mit clients_lock
-        client_id = None
-        client_pubkey = None
-        
-        with self.clients_lock:
-            clients_copy = self.clients.copy()
-        
-        for cid, data in clients_copy.items():
-            if data.get('name') == client_name:
-                client_id = cid
-                client_pubkey = data.get('public_key')
-                break
-        
-        if client_id and client_pubkey:
-            print(f"[UPDATE] Starte Identity Challenge für {client_name} (ID: {client_id})")
+        """VOLLSTÄNDIG KORRIGIERTE Update-Request-Verarbeitung - OHNE QUEUE"""
+        try:
+            print(f"[UPDATE] Handling update request from {client_name}")
             
-            self._message_queue.append({
-                'type': 'start_identity_challenge',
-                'client_socket': client_socket,
-                'client_name': client_name,
-                'client_id': client_id,
-                'client_pubkey': client_pubkey
-            })
-        else:
-            print(f"[UPDATE ERROR] Client {client_name} nicht gefunden oder kein Public Key")
-            # Debug output
+            # 1. Client-ID und Public Key finden
+            client_id = None
+            client_pubkey = None
             with self.clients_lock:
-                print(f"[DEBUG] Available clients: {list(self.clients.keys())}")
                 for cid, data in self.clients.items():
-                    print(f"  {cid}: {data.get('name')} - pubkey: {'public_key' in data}")
+                    if data.get('name') == client_name:
+                        client_id = cid
+                        client_pubkey = data.get('public_key')
+                        break
+            
+            if not client_id or not client_pubkey:
+                print(f"[UPDATE ERROR] Client {client_name} not found or no public key")
+                error_msg = self.build_sip_message("404 Not Found", client_name, {
+                    "MESSAGE_TYPE": "ERROR",
+                    "ERROR": "CLIENT_NOT_FOUND",
+                    "DETAILS": "Client not registered or missing public key",
+                    "TIMESTAMP": int(time.time())
+                })
+                send_frame(client_socket, error_msg.encode('utf-8'))
+                return
+            
+            print(f"[UPDATE] Starting DIRECT identity challenge for {client_name} (ID: {client_id})")
+            
+            # 2. Identity Challenge DIREKT durchführen (OHNE Queue)
+            identity_verified = self._direct_identity_challenge(client_socket, client_pubkey, client_name)
+            
+            if identity_verified:
+                print(f"[IDENTITY] {client_name} successfully verified")
+                
+                # 3. Phonebook direkt senden
+                if self.send_phonebook(client_id):
+                    print(f"[UPDATE] Phonebook sent to {client_name}")
+                    success_msg = self.build_sip_message("200 OK", client_name, {
+                        "MESSAGE_TYPE": "UPDATE_COMPLETE",
+                        "STATUS": "PHONEBOOK_SENT",
+                        "CLIENT_ID": client_id,
+                        "TIMESTAMP": int(time.time())
+                    })
+                    send_frame(client_socket, success_msg.encode('utf-8'))
+                else:
+                    print(f"[UPDATE ERROR] Failed to send phonebook to {client_name}")
+                    error_msg = self.build_sip_message("500 Error", client_name, {
+                        "MESSAGE_TYPE": "ERROR",
+                        "ERROR": "PHONEBOOK_SEND_FAILED",
+                        "CLIENT_ID": client_id,
+                        "TIMESTAMP": int(time.time())
+                    })
+                    send_frame(client_socket, error_msg.encode('utf-8'))
+            else:
+                print(f"[IDENTITY] {client_name} verification failed")
+                error_msg = self.build_sip_message("401 Unauthorized", client_name, {
+                    "MESSAGE_TYPE": "ERROR",
+                    "ERROR": "IDENTITY_VERIFICATION_FAILED",
+                    "REASON": "Challenge response invalid or timeout",
+                    "TIMESTAMP": int(time.time())
+                })
+                send_frame(client_socket, error_msg.encode('utf-8'))
+                
+        except Exception as e:
+            print(f"[UPDATE ERROR] Handling failed: {str(e)}")
+            error_msg = self.build_sip_message("500 Error", client_name, {
+                "MESSAGE_TYPE": "ERROR",
+                "ERROR": f"UPDATE_PROCESSING_FAILED: {str(e)}",
+                "TIMESTAMP": int(time.time())
+            })
+            send_frame(client_socket, error_msg.encode('utf-8'))
+
+    def _direct_identity_challenge(self, client_socket, client_pubkey, client_name):
+        """DIREKTE Identity Challenge OHNE Queue - KORRIGIERT"""
+        try:
+            print(f"[IDENTITY] Starting direct challenge for {client_name}")
+            
+            # 1. Zuerst den Public Key normalisieren
+            normalized_pubkey = self.normalize_client_public_key(client_pubkey)
+            if not normalized_pubkey:
+                print(f"[IDENTITY ERROR] Invalid public key format for {client_name}")
+                return False
+            
+            # 2. Server Private Key laden
+            with open("server_private_key.pem", "rb") as f:
+                priv_key = RSA.load_key_string(f.read())
+            
+            # 3. Challenge generieren
+            challenge = base64.b64encode(os.urandom(16)).decode('ascii')
+            challenge_id = str(uuid.uuid4())
+            
+            print(f"[IDENTITY] Generated challenge (ID: {challenge_id}) for {client_name}")
+            print(f"[IDENTITY DEBUG] Normalized public key length: {len(normalized_pubkey)}")
+            print(f"[IDENTITY DEBUG] Key starts with: {normalized_pubkey[:50]}")
+            
+            # 4. Challenge mit Client-Public-Key verschlüsseln
+            try:
+                # Public Key laden mit verbessertem Error Handling
+                pub_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(normalized_pubkey.encode()))
+                encrypted_challenge = pub_key.public_encrypt(
+                    challenge.encode('utf-8'), 
+                    RSA.pkcs1_padding
+                )
+                print(f"[IDENTITY] Challenge encrypted successfully")
+            except Exception as e:
+                print(f"[IDENTITY ERROR] Encryption failed: {e}")
+                print(f"[IDENTITY DEBUG] Key content: {normalized_pubkey}")
+                return False
+            
+            # Rest der Methode unverändert...
+            # 5. Challenge senden (EINHEITLICHES JSON-FORMAT)
+            challenge_msg = self.build_sip_message("MESSAGE", client_name, {
+                "MESSAGE_TYPE": "IDENTITY_CHALLENGE",
+                "CHALLENGE_ID": challenge_id,
+                "ENCRYPTED_CHALLENGE": base64.b64encode(encrypted_challenge).decode('ascii'),
+                "TIMESTAMP": int(time.time())
+            })
+            
+            if not send_frame(client_socket, challenge_msg.encode('utf-8')):
+                print("[IDENTITY ERROR] Failed to send challenge")
+                return False
+            
+            print("[IDENTITY] Challenge sent successfully")
+            
+            # 6. Response mit Timeout erwarten
+            client_socket.settimeout(30.0)
+            start_time = time.time()
+            
+            while time.time() - start_time < 30:
+                try:
+                    # Frame empfangen
+                    response_data = recv_frame(client_socket, timeout=5)
+                    if not response_data:
+                        continue
+                    
+                    # Nachricht parsen (EINHEITLICHER PARSER)
+                    response_msg = self.parse_sip_message(response_data)
+                    if not response_msg:
+                        continue
+                    
+                    response_custom_data = response_msg.get('custom_data', {})
+                    response_type = response_custom_data.get('MESSAGE_TYPE')
+                    response_challenge_id = response_custom_data.get('CHALLENGE_ID')
+                    
+                    # Ping ignorieren
+                    if response_type == 'PING':
+                        pong_msg = self.build_sip_message("MESSAGE", client_name, {
+                            "MESSAGE_TYPE": "PONG",
+                            "TIMESTAMP": int(time.time())
+                        })
+                        send_frame(client_socket, pong_msg.encode('utf-8'))
+                        continue
+                    
+                    # Identity Response prüfen
+                    if response_type == 'IDENTITY_RESPONSE' and response_challenge_id == challenge_id:
+                        encrypted_response_b64 = response_custom_data.get('ENCRYPTED_RESPONSE')
+                        
+                        if not encrypted_response_b64:
+                            print("[IDENTITY ERROR] No encrypted response in identity response")
+                            return False
+                        
+                        # Response entschlüsseln
+                        try:
+                            encrypted_response = base64.b64decode(encrypted_response_b64)
+                            decrypted_response = priv_key.private_decrypt(
+                                encrypted_response, 
+                                RSA.pkcs1_padding
+                            )
+                            decrypted_text = decrypted_response.decode('utf-8')
+                            
+                            expected_response = challenge + "VALIDATED"
+                            
+                            if decrypted_text == expected_response:
+                                print(f"[IDENTITY] {client_name} successfully verified!")
+                                
+                                # Erfolgsnachricht senden
+                                success_msg = self.build_sip_message("200 OK", client_name, {
+                                    "MESSAGE_TYPE": "IDENTITY_VERIFIED",
+                                    "CHALLENGE_ID": challenge_id,
+                                    "STATUS": "VERIFICATION_SUCCESSFUL",
+                                    "TIMESTAMP": int(time.time())
+                                })
+                                send_frame(client_socket, success_msg.encode('utf-8'))
+                                return True
+                            else:
+                                print("[IDENTITY ERROR] Response validation failed")
+                                print(f"Expected: {expected_response}")
+                                print(f"Received: {decrypted_text}")
+                                return False
+                                
+                        except Exception as e:
+                            print(f"[IDENTITY ERROR] Response decryption failed: {e}")
+                            return False
+                    
+                    # Fallback: Prüfe auf Identity Response in anderen Formaten
+                    elif 'IDENTITY_RESPONSE' in str(response_data):
+                        print("[IDENTITY] Found IDENTITY_RESPONSE in raw text, attempting fallback parsing...")
+                        # Versuche manuelles Parsing als Fallback
+                        if self._handle_fallback_identity_response(str(response_data), challenge, challenge_id, priv_key):
+                            return True
+                            
+                except socket.timeout:
+                    continue  # Timeout ist normal, weiter warten
+                except Exception as e:
+                    print(f"[IDENTITY ERROR] Response handling error: {e}")
+                    continue
+            
+            # Timeout erreicht
+            print("[IDENTITY ERROR] Timeout waiting for identity response")
+            return False
+            
+        except Exception as e:
+            print(f"[IDENTITY ERROR] Direct challenge failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def _handle_fallback_identity_response(self, response_text, challenge, challenge_id, priv_key):
+        """Fallback für Identity Response Parsing bei nicht-standard Format"""
+        try:
+            # Versuche verschiedene Response-Formate zu parsen
+            lines = response_text.split('\n')
+            encrypted_response_b64 = None
+            found_challenge_id = None
+            
+            for line in lines:
+                line = line.strip()
+                if 'ENCRYPTED_RESPONSE:' in line:
+                    encrypted_response_b64 = line.split('ENCRYPTED_RESPONSE:', 1)[1].strip()
+                elif 'CHALLENGE_ID:' in line:
+                    found_challenge_id = line.split('CHALLENGE_ID:', 1)[1].strip()
+            
+            if encrypted_response_b64 and found_challenge_id == challenge_id:
+                encrypted_response = base64.b64decode(encrypted_response_b64)
+                decrypted_response = priv_key.private_decrypt(encrypted_response, RSA.pkcs1_padding)
+                decrypted_text = decrypted_response.decode('utf-8')
+                
+                return decrypted_text == challenge + "VALIDATED"
+            
+            return False
+            
+        except Exception as e:
+            print(f"[IDENTITY FALLBACK ERROR] {e}")
+            return False
 
     def _handle_identity_response(self, client_socket, client_name, msg):
         """Thread-safe identity response handling - MINIMAL KORRIGIERT"""
@@ -3212,13 +3463,13 @@ class Server:
             return ""
     def send_phonebook(self, client_id):
         """
-        Sendet das verschlüsselte Phonebook an einen Client
+        Sendet das verschlüsselte Phonebook an einen Client - KORRIGIERTE VERSION
         """
         try:
             print(f"\n=== SEND PHONEBOOK DEBUG START (Client {client_id}) ===")
             
-            # 1. ✅ ZIEL Client-Daten validieren (EINZELNER Client)
-            target_client_data = self.get_client(client_id)  # ← RICHTIG!
+            # 1. Ziel Client-Daten validieren
+            target_client_data = self.get_client(client_id)
             if not target_client_data:
                 print(f"[ERROR] Client {client_id} nicht gefunden")
                 return False
@@ -3227,11 +3478,27 @@ class Server:
                 print(f"[ERROR] Client {client_id} hat keinen Socket")
                 return False
 
-            # 2. ✅ ALLE Clients fürs Phonebook holen
-            all_clients_data = self.get_all_clients()  # ← Dictionary aller Clients
+            # 2. Public Key des Clients validieren und normalisieren
+            client_pubkey = target_client_data.get('public_key', '')
+            if not client_pubkey:
+                print(f"[ERROR] Client {client_id} hat keinen public key")
+                return False
+
+            # 3. Public Key normalisieren (KORREKTUR)
+            normalized_pubkey = self.normalize_client_public_key(client_pubkey)
+            if not normalized_pubkey:
+                print(f"[ERROR] Client public key konnte nicht normalisiert werden")
+                print(f"[DEBUG] Original key: {client_pubkey[:100]}...")
+                return False
+
+            print(f"[DEBUG] Normalized public key length: {len(normalized_pubkey)}")
+            print(f"[DEBUG] Key starts with: {normalized_pubkey[:50]}...")
+
+            # 4. Alle Clients fürs Phonebook holen
+            all_clients_data = self.get_all_clients()
             print(f"[DEBUG] Total clients for phonebook: {len(all_clients_data)}")
 
-            # 3. Phonebook-Liste erstellen
+            # 5. Phonebook-Liste erstellen
             phonebook_clients = []
             for cid, data in all_clients_data.items():
                 has_public_key = 'public_key' in data and data['public_key']
@@ -3249,7 +3516,7 @@ class Server:
                     }
                     phonebook_clients.append(client_entry)
 
-            # 4. Phonebook-Daten vorbereiten
+            # 6. Phonebook-Daten vorbereiten
             phonebook_data = {
                 'version': '2.0',
                 'timestamp': int(time.time()),
@@ -3259,17 +3526,24 @@ class Server:
                 'clients': phonebook_clients
             }
 
-            # 5. ✅ Verschlüsselung mit ZIEL Client Public Key
-            print("[DEBUG] Encrypting secret with TARGET client public key...")
+            # 7. Verschlüsselung mit normalisiertem Client Public Key
+            print("[DEBUG] Encrypting secret with NORMALIZED client public key...")
             try:
-                pub_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(target_client_data['public_key'].encode()))
+                # Public Key mit verbessertem Error Handling laden
+                pub_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(normalized_pubkey.encode()))
+                print("[DEBUG] Public key successfully loaded")
+                
+                # Secret generieren und verschlüsseln
                 secret = b"+++secret+++" + self.generate_secret()
                 encrypted_secret = pub_key.public_encrypt(secret, RSA.pkcs1_padding)
+                print(f"[DEBUG] Secret encrypted successfully, length: {len(encrypted_secret)}")
+                
             except Exception as e:
                 print(f"[ERROR] Public key encryption failed: {e}")
+                print(f"[DEBUG] Public key content: {normalized_pubkey}")
                 return False
 
-            # 6. AES Verschlüsselung
+            # 8. AES Verschlüsselung
             iv = secret[12:28]  # 16 Bytes IV
             aes_key = secret[28:60]  # 32 Bytes Key
             
@@ -3277,11 +3551,12 @@ class Server:
             phonebook_str = json.dumps(phonebook_data, separators=(',', ':'))
             encrypted_phonebook = cipher.update(phonebook_str.encode()) + cipher.final()
 
-            # 7. Nachricht erstellen und senden
+            # 9. Nachricht erstellen und senden
             message = self.build_sip_message(
                 "MESSAGE",
-                target_client_data['name'],  # ← ZIEL Client Name
+                target_client_data['name'],
                 {
+                    "MESSAGE_TYPE": "PHONEBOOK_UPDATE",
                     "ENCRYPTED_SECRET": base64.b64encode(encrypted_secret).decode(),
                     "ENCRYPTED_PHONEBOOK": base64.b64encode(encrypted_phonebook).decode(),
                     "CLIENT_ID": client_id,
@@ -3289,7 +3564,7 @@ class Server:
                 }
             )
 
-            # 8. Senden
+            # 10. Senden
             with self.client_send_lock:
                 if target_client_data['socket'].fileno() == -1:
                     return False
