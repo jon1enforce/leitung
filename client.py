@@ -771,95 +771,77 @@ class CALL:
             print(f"[WIREGUARD ERROR] Key generation failed: {str(e)}")
             raise
 
+# KORREKTE VERSION von _setup_wireguard_tunnel:
     def _setup_wireguard_tunnel(self, private_key, peer_public_key, endpoint, my_ip):
-        """Richtet einen WireGuard Tunnel ein - KORRIGIERT FÜR OPENBSD/LINUX"""
         try:
             interface = "wg-phonebook"
             
-            # ✅ Privilegien-Eskalations-Tool erkennen
+            # ✅ Privilegien-Tool erkennen
             sudo_command = None
             for cmd in ['doas', 'sudo']:
                 try:
                     subprocess.run([cmd, 'echo', 'test'], capture_output=True, check=True)
                     sudo_command = cmd
-                    print(f"[WG] Using {sudo_command} for privileged commands")
                     break
-                except (subprocess.CalledProcessError, FileNotFoundError):
+                except:
                     continue
             
-            if not sudo_command:
-                print("[WG WARNING] No sudo/doas found, trying without privileges")
-                sudo_command = ""  # Leerstring für direkte Ausführung
+            sudo_prefix = f"{sudo_command} " if sudo_command else ""
             
-            def run_privileged(cmd, input_data=None):
-                """Hilfsfunktion für privilegierte Befehle"""
-                full_cmd = [sudo_command] + cmd if sudo_command else cmd
-                try:
-                    if input_data:
-                        result = subprocess.run(full_cmd, input=input_data, capture_output=True, text=True)
-                    else:
-                        result = subprocess.run(full_cmd, capture_output=True, text=True)
-                    
-                    if result.returncode == 0:
-                        return True
-                    else:
-                        print(f"[WG ERROR] Command failed: {result.stderr}")
-                        return False
-                        
-                except Exception as e:
-                    print(f"[WG ERROR] Command execution failed: {e}")
+            # ✅ Vereinfachte Shell-Befehle
+            commands = [
+                # Private Key setzen
+                f"echo '{private_key}' | {sudo_prefix}wg set {interface} private-key /dev/stdin",
+                # Peer konfigurieren
+                f"{sudo_prefix}wg set {interface} peer {peer_public_key} endpoint {endpoint} allowed-ips 0.0.0.0/0",
+                # IP setzen (ifconfig/ip)
+                f"{sudo_prefix}ifconfig {interface} inet {my_ip} netmask 255.255.255.0 || {sudo_prefix}ip addr add {my_ip}/24 dev {interface}",
+                # Interface aktivieren
+                f"{sudo_prefix}ifconfig {interface} up || {sudo_prefix}ip link set up dev {interface}"
+            ]
+            
+            for cmd in commands:
+                result = subprocess.run(cmd, shell=True, capture_output=True, text=True)
+                if result.returncode != 0:
+                    print(f"[WG ERROR] {result.stderr}")
                     return False
             
-            # ✅ Auf OpenBSD wird das WireGuard-Interface automatisch beim ersten wg-set-Befehl erstellt
-            # Zuerst WireGuard konfigurieren, dann Interface konfigurieren
-            
-            # Private Key setzen (erstellt automatisch das Interface auf OpenBSD)
-            if not run_privileged(['wg', 'set', interface, 'private-key'], input_data=private_key):
-                print("[WG] Trying alternative interface creation...")
-                return False
-            
-            # Peer konfigurieren
-            if not run_privileged(['wg', 'set', interface, 'peer', peer_public_key, 'endpoint', endpoint, 'allowed-ips', '0.0.0.0/0']):
-                return False
-            
-            # ✅ Interface-Erkennung und Konfiguration
-            # Prüfen ob das Interface existiert, falls nicht, versuchen es zu erstellen
-            interface_exists = False
-            try:
-                # Prüfen ob Interface existiert
-                if sudo_command:
-                    check_cmd = [sudo_command, 'ifconfig', interface]
-                else:
-                    check_cmd = ['ifconfig', interface]
-                
-                result = subprocess.run(check_cmd, capture_output=True, text=True)
-                interface_exists = (result.returncode == 0)
-            except:
-                pass
-            
-            if not interface_exists:
-                print(f"[WG] Interface {interface} does not exist, trying to create...")
-                # Versuche Interface mit ifconfig zu erstellen (nur auf OpenBSD nötig)
-                if not run_privileged(['ifconfig', interface, 'create']):
-                    print("[WG] Interface creation failed, but continuing...")
-            
-            # IP Adresse setzen
-            if not run_privileged(['ifconfig', interface, 'inet', my_ip, 'netmask', '255.255.255.0']):
-                # Fallback: ip-Befehl versuchen
-                if not run_privileged(['ip', 'addr', 'add', f'{my_ip}/24', 'dev', interface]):
-                    return False
-            
-            # Interface aktivieren
-            if not run_privileged(['ifconfig', interface, 'up']):
-                # Fallback: ip-Befehl versuchen
-                if not run_privileged(['ip', 'link', 'set', 'up', 'dev', interface]):
-                    return False
-            
-            print(f"[WG] WireGuard tunnel setup successful: {my_ip} -> {endpoint}")
             return True
             
         except Exception as e:
-            print(f"[WIREGUARD ERROR] Tunnel setup failed: {str(e)}")
+            print(f"[WG ERROR] {e}")
+            return False
+
+    # KORREKTE VERSION von _setup_outgoing_call:
+    def _setup_outgoing_call(self, callee_wg_key, callee_ip=None):
+        try:
+            public_ip = callee_ip or self._get_public_ip()
+            my_wg_ip = "10.8.0.1"  # Caller ist .1
+            
+            # ✅ Direktes Setup ohne wg_manager
+            success = self._setup_wireguard_tunnel(
+                self.pending_call['wg_private_key'],
+                callee_wg_key,
+                f"{public_ip}:51820", 
+                my_wg_ip
+            )
+            
+            if success:
+                self.pending_call['status'] = 'connected'
+                self.pending_call['wg_peer_key'] = callee_wg_key
+                
+                if 'session_secret' in self.pending_call:
+                    self.current_secret = self.pending_call['session_secret']
+                    self._start_audio_streams()
+                
+                self._update_ui_wrapper(active=True, status="connected", 
+                                      caller_name=self.pending_call['recipient'].get('name', 'Unknown'))
+                return True
+            return False
+            
+        except Exception as e:
+            print(f"[CALL ERROR] {e}")
+            self.cleanup_call_resources()
             return False
     def _update_ui_wrapper(self, active, status=None, caller_name=None):
         """Wrapper für UI-Updates mit Fallback - VERBESSERT: Vereinfacht"""
@@ -1516,41 +1498,7 @@ class CALL:
             print(f"[CALL ERROR] Response handling failed: {str(e)}")
             self.cleanup_call_resources()
 
-    def _setup_outgoing_call(self, callee_wg_key, callee_ip=None):
-        """Richtet ausgehenden Anruf ein"""
-        try:
-            # WireGuard konfigurieren
-            public_ip = callee_ip or self._get_public_ip()
-            my_wg_ip = "10.8.0.1"  # Caller bekommt .1
-            
-            wg_config = self.client.wg_manager.create_interface_config(
-                self.pending_call['wg_private_key'],
-                callee_wg_key,
-                f"{public_ip}:51820",
-                my_wg_ip
-            )
-            
-            success = self.client.wg_manager.setup_wireguard_tunnel(wg_config)
-            
-            if success:
-                self.pending_call['status'] = 'connected'
-                self.pending_call['wg_peer_key'] = callee_wg_key
-                
-                # Session Key aus pending_call verwenden
-                if 'session_secret' in self.pending_call:
-                    self.current_secret = self.pending_call['session_secret']
-                    self._start_audio_streams()
-                
-                # UI aktualisieren
-                recipient_name = self.pending_call['recipient'].get('name', 'Unknown')
-                self._update_ui_wrapper(active=True, status="connected", caller_name=recipient_name)
-                print("[CALL] Outgoing call setup complete")
-            else:
-                raise Exception("WireGuard setup failed")
-                
-        except Exception as e:
-            print(f"[CALL ERROR] Outgoing call setup failed: {str(e)}")
-            self.cleanup_call_resources()
+
 
     # === AUDIO STREAMS ===
     def _start_audio_streams(self):
