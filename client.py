@@ -791,6 +791,21 @@ class CALL:
                 print("[WG WARNING] No sudo/doas found, trying without privileges")
                 sudo_command = ""  # Leerstring für direkte Ausführung
             
+            # ✅ Netzwerk-Tool erkennen (ip vs ifconfig)
+            ip_tool = None
+            for tool in ['ip', 'ifconfig']:
+                try:
+                    subprocess.run([tool, '--version'], capture_output=True)
+                    ip_tool = tool
+                    print(f"[WG] Using {ip_tool} for network configuration")
+                    break
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    continue
+            
+            if not ip_tool:
+                print("[WG ERROR] No network configuration tool found (ip/ifconfig)")
+                return False
+            
             def run_privileged(cmd, input_data=None):
                 """Hilfsfunktion für privilegierte Befehle"""
                 full_cmd = [sudo_command] + cmd if sudo_command else cmd
@@ -807,11 +822,15 @@ class CALL:
                     print(f"[WG ERROR] Command execution failed: {e}")
                     return False
             
-            # Interface erstellen
-            if not run_privileged(['ip', 'link', 'add', 'dev', interface, 'type', 'wireguard']):
-                return False
+            # Interface erstellen (unterschiedliche Befehle für ip/ifconfig)
+            if ip_tool == 'ip':
+                if not run_privileged(['ip', 'link', 'add', 'dev', interface, 'type', 'wireguard']):
+                    return False
+            else:  # ifconfig
+                if not run_privileged(['ifconfig', interface, 'create']):
+                    return False
             
-            # Private Key setzen
+            # Private Key setzen (wg-Befehl ist gleich)
             if not run_privileged(['wg', 'set', interface, 'private-key'], input_data=private_key):
                 return False
             
@@ -819,13 +838,21 @@ class CALL:
             if not run_privileged(['wg', 'set', interface, 'peer', peer_public_key, 'endpoint', endpoint, 'allowed-ips', '0.0.0.0/0']):
                 return False
             
-            # IP Adresse setzen
-            if not run_privileged(['ip', 'addr', 'add', f'{my_ip}/24', 'dev', interface]):
-                return False
+            # IP Adresse setzen (unterschiedliche Befehle)
+            if ip_tool == 'ip':
+                if not run_privileged(['ip', 'addr', 'add', f'{my_ip}/24', 'dev', interface]):
+                    return False
+            else:  # ifconfig
+                if not run_privileged(['ifconfig', interface, 'inet', my_ip, 'netmask', '255.255.255.0']):
+                    return False
             
             # Interface aktivieren
-            if not run_privileged(['ip', 'link', 'set', 'up', 'dev', interface]):
-                return False
+            if ip_tool == 'ip':
+                if not run_privileged(['ip', 'link', 'set', 'up', 'dev', interface]):
+                    return False
+            else:  # ifconfig
+                if not run_privileged(['ifconfig', interface, 'up']):
+                    return False
             
             print(f"[WG] WireGuard tunnel setup successful: {my_ip} -> {endpoint}")
             return True
