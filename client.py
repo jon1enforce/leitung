@@ -808,61 +808,90 @@ class CALL:
             print(f"[WIREGUARD ERROR] Tunnel setup failed: {str(e)}")
             return False
 
-    def _setup_wireguard_openbsd(self, sudo_prefix, interface, private_key, peer_public_key, endpoint, my_ip):
-        """OpenBSD-spezifische WireGuard Konfiguration"""
+    def _setup_wireguard_openbsd(self, sudo_prefix, private_key, peer_public_key, endpoint, my_ip):
+        """KORRIGIERTE OpenBSD WireGuard Konfiguration mit richtigem Interface-Namen"""
         try:
-            # ✅ OpenBSD: ifconfig mit wgkey und wgpeer verwenden
+            # ✅ Korrekter WireGuard Interface-Name
+            interface = "wg0"  # Muss mit wg + Zahl sein
+            
             endpoint_ip, endpoint_port = endpoint.split(':')
             
-            # 1. Interface mit Private Key erstellen
-            create_cmd = f"{sudo_prefix}ifconfig {interface} create wgkey {private_key}"
-            print(f"[WG] Creating OpenBSD interface: {create_cmd}")
+            print(f"[WG] Setting up OpenBSD WireGuard interface: {interface}")
+            
+            # ✅ 1. Verfügbaren Interface-Namen finden
+            # Prüfe ob wg0 bereits existiert, falls ja nimm wg1, etc.
+            for i in range(10):  # Versuche wg0 bis wg9
+                test_interface = f"wg{i}"
+                check_cmd = f"{sudo_prefix}ifconfig {test_interface}"
+                result = subprocess.run(check_cmd, shell=True, capture_output=True, text=True)
+                if result.returncode != 0:  # Interface existiert nicht -> verwenden
+                    interface = test_interface
+                    break
+            
+            print(f"[WG] Using interface: {interface}")
+            
+            # ✅ 2. Interface erstellen
+            create_cmd = f"{sudo_prefix}ifconfig {interface} create"
+            print(f"[WG] Creating interface: {create_cmd}")
             result = subprocess.run(create_cmd, shell=True, capture_output=True, text=True)
             if result.returncode != 0:
                 print(f"[WG ERROR] Interface creation failed: {result.stderr}")
                 return False
             
-            # 2. Peer konfigurieren
-            peer_cmd = f"{sudo_prefix}ifconfig {interface} wgpeer {peer_public_key} wgendpoint {endpoint_ip} {endpoint_port} wgaip 0.0.0.0/0"
-            print(f"[WG] Configuring peer: {peer_cmd}")
+            # ✅ 3. WireGuard Konfiguration mit wg(8) Tool
+            # Private Key setzen
+            key_cmd = f"echo '{private_key}' | {sudo_prefix}wg set {interface} private-key /dev/stdin"
+            print(f"[WG] Setting private key")
+            result = subprocess.run(key_cmd, shell=True, capture_output=True, text=True)
+            if result.returncode != 0:
+                print(f"[WG ERROR] Private key setup failed: {result.stderr}")
+                return False
+            
+            # ✅ 4. Peer konfigurieren
+            peer_cmd = f"{sudo_prefix}wg set {interface} peer {peer_public_key} endpoint {endpoint} allowed-ips 0.0.0.0/0"
+            print(f"[WG] Configuring peer")
             result = subprocess.run(peer_cmd, shell=True, capture_output=True, text=True)
             if result.returncode != 0:
                 print(f"[WG ERROR] Peer configuration failed: {result.stderr}")
                 return False
             
-            # 3. IP Adresse setzen
+            # ✅ 5. IP Adresse setzen
             ip_cmd = f"{sudo_prefix}ifconfig {interface} inet {my_ip} netmask 255.255.255.0"
-            print(f"[WG] Setting IP: {ip_cmd}")
+            print(f"[WG] Setting IP: {my_ip}")
             result = subprocess.run(ip_cmd, shell=True, capture_output=True, text=True)
             if result.returncode != 0:
                 print(f"[WG ERROR] IP configuration failed: {result.stderr}")
                 return False
             
-            # 4. Interface aktivieren
+            # ✅ 6. Interface aktivieren
             up_cmd = f"{sudo_prefix}ifconfig {interface} up"
-            print(f"[WG] Activating interface: {up_cmd}")
+            print(f"[WG] Activating interface")
             result = subprocess.run(up_cmd, shell=True, capture_output=True, text=True)
             if result.returncode != 0:
                 print(f"[WG ERROR] Interface activation failed: {result.stderr}")
                 return False
             
-            # 5. Überprüfung
-            print("[WG] Verifying OpenBSD configuration...")
+            # ✅ 7. Überprüfung
+            print("[WG] Verifying configuration...")
+            
+            # WireGuard Status
+            wg_check = f"{sudo_prefix}wg show {interface}"
+            result = subprocess.run(wg_check, shell=True, capture_output=True, text=True)
+            if result.returncode == 0:
+                print(f"[WG] WireGuard status OK")
             
             # Interface Status
-            check_cmd = f"{sudo_prefix}ifconfig {interface}"
-            result = subprocess.run(check_cmd, shell=True, capture_output=True, text=True)
+            ifconfig_check = f"{sudo_prefix}ifconfig {interface}"
+            result = subprocess.run(ifconfig_check, shell=True, capture_output=True, text=True)
             if result.returncode == 0:
-                print(f"[WG] Interface status:\n{result.stdout}")
-            else:
-                print(f"[WG WARNING] Interface check failed: {result.stderr}")
+                print(f"[WG] Interface status OK")
             
-            print(f"[WG] OpenBSD WireGuard tunnel setup successful: {my_ip}")
-            return True
+            print(f"[WG] OpenBSD WireGuard setup successful: {interface} -> {my_ip}")
+            return interface  # Rückgabe des tatsächlichen Interface-Namens
             
         except Exception as e:
             print(f"[WG ERROR] OpenBSD setup failed: {str(e)}")
-            return False
+            return None
 
     def _setup_wireguard_linux(self, sudo_prefix, interface, private_key, peer_public_key, endpoint, my_ip):
         """Linux-spezifische WireGuard Konfiguration"""
