@@ -1,1 +1,8 @@
-{}
+{
+  "0": {
+    "name": "kingkong",
+    "public_key": "-----BEGIN PUBLIC KEY-----\\nMIICIjANBgkqhkiG9w0BAQEFAAOCAg8AMIICCgKCAgEAi8+4etbWkWiSSUKRqxkp\\n3rHhZEoA/jq9L8s2ccCcMAte4z2qkUB3R8ndTHf5N71xGnBrmC4829O9GOhyjWGa\\nl1L85PE8dlqy4DGF4YZTSaR8+ehxyb2PdIkv9yfvRFkmCOgxQOjIK5H3dl0FRO1U\\nZYLZFte10b38NGP3WdCPs8QTGzlooIcKg+t2+DYz8ZjCQna55MvTPuW11744uCtb\\nBCugEjijQPcKofmmE6sfmO9Hk04EV85xCGRSKn91cr9PwcoNt8J5oGKV+KDyZ+dN\\nxvavL72s+QFUyxTzY3J4eesFL+/vD6NTbiDl/2bRAOWmDOw94NGWFiJvjdm4GAgc\\nvHjn2/X0kaQWIEP3GBvF8dOXjSyNpVyRGMAG+qpPqHWnMaRmdwvrKc1MC8M0FPXN\\nrsDzqfX/58GypGnLOnjKVxoxljyIrAQWvl3UVlyBmZ4LyASV9umWsI2a7vioL/0V\\nHwEXtJt3dS69uVxXGilpmNGKlvoAAnueu7lQDs4WMROvr/Kr2o9bXw5qd6xd0jsS\\nXdFo8pPdbshjRsm05FsHiZVCfV6zlvTf1a+RtijK96Fs2ZRtAWzXf34L4AyRoBNE\\nWISQzoi2UUrMFAGvEwZSfforkp0RJscQlf2+IUAeMVzmT0bI69zvgAU2edw4BBJm\\nXCcUC3EcENuJ3LHVw638EgECAwEAAQ==\\n-----END PUBLIC KEY-----",
+    "ip": "192.168.8.1",
+    "port": 50722
+  }
+}
