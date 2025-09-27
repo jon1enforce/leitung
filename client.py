@@ -772,26 +772,64 @@ class CALL:
             raise
 
     def _setup_wireguard_tunnel(self, private_key, peer_public_key, endpoint, my_ip):
-        """Richtet einen WireGuard Tunnel ein"""
+        """Richtet einen WireGuard Tunnel ein - KORRIGIERT FÜR OPENBSD/LINUX"""
         try:
             interface = "wg-phonebook"
             
+            # ✅ Privilegien-Eskalations-Tool erkennen
+            sudo_command = None
+            for cmd in ['doas', 'sudo']:
+                try:
+                    subprocess.run([cmd, 'echo', 'test'], capture_output=True, check=True)
+                    sudo_command = cmd
+                    print(f"[WG] Using {sudo_command} for privileged commands")
+                    break
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    continue
+            
+            if not sudo_command:
+                print("[WG WARNING] No sudo/doas found, trying without privileges")
+                sudo_command = ""  # Leerstring für direkte Ausführung
+            
+            def run_privileged(cmd, input_data=None):
+                """Hilfsfunktion für privilegierte Befehle"""
+                full_cmd = [sudo_command] + cmd if sudo_command else cmd
+                try:
+                    if input_data:
+                        result = subprocess.run(full_cmd, input=input_data, capture_output=True, text=True, check=True)
+                    else:
+                        result = subprocess.run(full_cmd, capture_output=True, text=True, check=True)
+                    return True
+                except subprocess.CalledProcessError as e:
+                    print(f"[WG ERROR] Command failed: {e.stderr}")
+                    return False
+                except Exception as e:
+                    print(f"[WG ERROR] Command execution failed: {e}")
+                    return False
+            
             # Interface erstellen
-            subprocess.run(['sudo', 'ip', 'link', 'add', 'dev', interface, 'type', 'wireguard'], check=True)
+            if not run_privileged(['ip', 'link', 'add', 'dev', interface, 'type', 'wireguard']):
+                return False
             
             # Private Key setzen
-            subprocess.run(['sudo', 'wg', 'set', interface, 'private-key'], input=private_key, text=True, check=True)
+            if not run_privileged(['wg', 'set', interface, 'private-key'], input_data=private_key):
+                return False
             
             # Peer konfigurieren
-            subprocess.run(['sudo', 'wg', 'set', interface, 'peer', peer_public_key, 'endpoint', endpoint, 'allowed-ips', '0.0.0.0/0'], check=True)
+            if not run_privileged(['wg', 'set', interface, 'peer', peer_public_key, 'endpoint', endpoint, 'allowed-ips', '0.0.0.0/0']):
+                return False
             
             # IP Adresse setzen
-            subprocess.run(['sudo', 'ip', 'addr', 'add', f'{my_ip}/24', 'dev', interface], check=True)
+            if not run_privileged(['ip', 'addr', 'add', f'{my_ip}/24', 'dev', interface]):
+                return False
             
             # Interface aktivieren
-            subprocess.run(['sudo', 'ip', 'link', 'set', 'up', 'dev', interface], check=True)
+            if not run_privileged(['ip', 'link', 'set', 'up', 'dev', interface]):
+                return False
             
+            print(f"[WG] WireGuard tunnel setup successful: {my_ip} -> {endpoint}")
             return True
+            
         except Exception as e:
             print(f"[WIREGUARD ERROR] Tunnel setup failed: {str(e)}")
             return False
