@@ -1217,56 +1217,68 @@ class CALL:
             return None
 
     def _setup_caller_wireguard(self, private_key, public_key):
-        """Richtet WireGuard als Caller (Server) ein"""
+        """Richtet WireGuard als Caller (Server) ein - KORRIGIERT FÜR OPENBSD/LINUX"""
         try:
             interface = "wg-phonebook"
             
+            # ✅ Privilegien-Eskalations-Tool erkennen
+            sudo_command = None
+            for cmd in ['doas', 'sudo']:
+                try:
+                    subprocess.run([cmd, 'echo', 'test'], capture_output=True, check=True)
+                    sudo_command = cmd
+                    print(f"[WG] Using {sudo_command} for privileged commands")
+                    break
+                except (subprocess.CalledProcessError, FileNotFoundError):
+                    continue
+            
+            if not sudo_command:
+                print("[WG WARNING] No sudo/doas found, trying without privileges")
+                sudo_command = ""  # Leerstring für direkte Ausführung
+            
+            def run_privileged(cmd, input_data=None):
+                """Hilfsfunktion für privilegierte Befehle"""
+                full_cmd = [sudo_command] + cmd if sudo_command else cmd
+                try:
+                    if input_data:
+                        result = subprocess.run(full_cmd, input=input_data, capture_output=True, text=True)
+                    else:
+                        result = subprocess.run(full_cmd, capture_output=True, text=True)
+                    return result
+                except Exception as e:
+                    print(f"[WG ERROR] Command failed: {e}")
+                    return type('Result', (), {'returncode': 1, 'stderr': str(e)})()
+            
             # ✅ Altes Interface bereinigen
-            subprocess.run(['sudo', 'ip', 'link', 'del', 'dev', interface], 
-                          stderr=subprocess.DEVNULL, stdout=subprocess.DEVNULL)
+            run_privileged(['ip', 'link', 'del', 'dev', interface])
             time.sleep(0.5)
             
             # ✅ Neues Interface erstellen
-            result = subprocess.run([
-                'sudo', 'ip', 'link', 'add', 'dev', interface, 'type', 'wireguard'
-            ], capture_output=True, text=True)
-            
+            result = run_privileged(['ip', 'link', 'add', 'dev', interface, 'type', 'wireguard'])
             if result.returncode != 0:
                 print(f"[WG ERROR] Interface creation failed: {result.stderr}")
                 return False
             
             # ✅ Private Key setzen
-            result = subprocess.run([
-                'sudo', 'wg', 'set', interface, 'private-key', '/dev/stdin'
-            ], input=private_key, capture_output=True, text=True)
-            
+            result = run_privileged(['wg', 'set', interface, 'private-key', '/dev/stdin'], input_data=private_key)
             if result.returncode != 0:
                 print(f"[WG ERROR] Private key setup failed: {result.stderr}")
                 return False
             
             # ✅ Listen Port setzen
-            result = subprocess.run([
-                'sudo', 'wg', 'set', interface, 'listen-port', '51820'
-            ], capture_output=True, text=True)
-            
+            result = run_privileged(['wg', 'set', interface, 'listen-port', '51820'])
             if result.returncode != 0:
                 print(f"[WG ERROR] Listen port setup failed: {result.stderr}")
                 return False
             
             # ✅ IP Adresse setzen (Caller bekommt .1)
-            result = subprocess.run([
-                'sudo', 'ip', 'addr', 'add', '10.8.0.1/24', 'dev', interface
-            ], capture_output=True, text=True)
-            
+            result = run_privileged(['ip', 'addr', 'add', '10.8.0.1/24', 'dev', interface])
             if result.returncode != 0:
                 print(f"[WG ERROR] IP assignment failed: {result.stderr}")
                 return False
             
             # ✅ Interface aktivieren
-            result = subprocess.run([
-                'sudo', 'ip', 'link', 'set', 'up', 'dev', interface
-            ], capture_output=True, text=True)
-            
+            result = run_privileged(['ip', 'link', 'set', 'up', 'dev', interface])
             if result.returncode != 0:
                 print(f"[WG ERROR] Interface activation failed: {result.stderr}")
                 return False
