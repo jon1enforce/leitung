@@ -773,7 +773,7 @@ class Server:
                 print("Keeping default host")
         self.active_calls = {}  # Aktive Calls verwalten
         self.call_timeout = 30  # Timeout in Sekunden
-    
+        self._processing_client_queue = False
         # Lock für Thread-sicheren Zugriff auf active_calls
         self.call_lock = threading.RLock()
         self.host = host
@@ -1075,8 +1075,9 @@ class Server:
                 for c in self.clients.values()
             )
     def _process_client_queue(self, client_queue, client_socket, client_name):
-        """VOLLSTÄNDIGE Verarbeitung der Client-Queue - KEINE FEHLER WERDEN IGNORIERT"""
+        """VOLLSTÄNDIGE Verarbeitung der Client-Queue - KORRIGIERTE VERSION"""
         if hasattr(self, '_processing_client_queue') and self._processing_client_queue:
+            print(f"[QUEUE] Queue für {client_name} wird bereits verarbeitet")
             return
             
         self._processing_client_queue = True
@@ -1096,6 +1097,7 @@ class Server:
                         if isinstance(frame_data, bytes):
                             try:
                                 message = frame_data.decode('utf-8')
+                                print(f"[SERVER] Textnachricht von {client_name}: {len(message)} chars")
                             except UnicodeDecodeError:
                                 # Binärdaten (verschlüsselte Daten, Audio, etc.)
                                 print(f"[SERVER] Binary data from {client_name} ({len(frame_data)} bytes)")
@@ -1118,7 +1120,7 @@ class Server:
                         else:
                             message = str(frame_data)
                         
-                        print(f"[SERVER] Received from {client_name}: {len(message)} bytes")
+                        print(f"[SERVER] Verarbeite Nachricht von {client_name}: {len(message)} bytes")
                         
                         # 2. SIP-Nachricht parsen
                         msg = self.parse_sip_message(message)
@@ -1423,8 +1425,6 @@ class Server:
             self._processing_client_queue = False
             print(f"[QUEUE] Finished processing queue for {client_name}")
 
-    # === HILFSMETHODEN FÜR DIE VOLLSTÄNDIGE VERARBEITUNG ===
-
     def _handle_encrypted_secret(self, msg, client_socket, client_name):
         """Verarbeitet verschlüsselte Secrets"""
         try:
@@ -1644,8 +1644,12 @@ class Server:
         client_name = None
 
         # Thread-lokale Queue für diesen Client
-        client_message_queue = []
-        processing_client_queue = False
+        if not hasattr(self, '_message_queue'):
+            self._message_queue = []
+        
+        # ✅ INIT: Stelle sicher dass Processing-Flag existiert  
+        if not hasattr(self, '_processing_client_queue'):
+            self._processing_client_queue = False
 
         try:
             # 1. Registration empfangen (mit Timeout)
@@ -1767,70 +1771,48 @@ class Server:
             send_frame(client_socket, second_response_msg.encode('utf-8'))
             print("[SERVER] Zweite Antwort erfolgreich gesendet")
             
-            # 10. Hauptkommunikationsschleife mit eigener Queue
+            # 10. KORRIGIERTE Hauptkommunikationsschleife
             print(f"[SERVER] Starte Hauptloop für {client_name}")
-            client_socket.settimeout(1.0)
-            last_activity = time.time()
-            buffer = b''
+            client_socket.settimeout(30.0)  # ✅ Höherer Timeout für normale Kommunikation
             
             while True:
                 try:
-                    # RAW Socket lesen (ohne Framing)
-                    try:
-                        data = client_socket.recv(4096)
-                        if not data:
-                            print(f"[SERVER] {client_name} hat Verbindung getrennt")
-                            break
-                        
-                        last_activity = time.time()
-                        buffer += data
-                        
-                        # Versuche, komplette Nachrichten aus dem Buffer zu parsen
-                        while buffer:
-                            # Prüfe auf Framing-Header (4 Bytes Länge)
-                            if len(buffer) >= 4:
-                                # Extrahiere Länge aus Header
-                                length = struct.unpack('!I', buffer[:4])[0]
-                                
-                                # Sicherheitscheck
-                                if length > 10 * 1024 * 1024:  # 10MB max
-                                    print(f"[SECURITY] Frame zu groß: {length} bytes, verwerfe")
-                                    buffer = b''  # Buffer leeren
-                                    break
-                                    
-                                if len(buffer) >= 4 + length:
-                                    # Vollständige Nachricht empfangen
-                                    frame_data = buffer[4:4+length]
-                                    buffer = buffer[4+length:]
-                                    
-                                    # Zur Client-eigenen Queue hinzufügen
-                                    client_message_queue.append({
-                                        'type': 'frame_data',
-                                        'data': frame_data,
-                                        'client_socket': client_socket,
-                                        'client_name': client_name
-                                    })
-                                    
-                                    # Client-Queue verarbeiten
-                                    if not processing_client_queue:
-                                        processing_client_queue = True
-                                        self._process_client_queue(client_message_queue, client_socket, client_name)
-                                        processing_client_queue = False
-                                    
-                                else:
-                                    # Noch nicht genug Daten für vollständigen Frame
-                                    break
-                            else:
-                                # Noch nicht genug Daten für Header
-                                break
-                                
-                    except socket.timeout:
-                        # Timeout ist normal, prüfe auf Inaktivität
-                        if time.time() - last_activity > 60:
-                            print(f"[SERVER] {client_name} inaktiv, trenne Verbindung")
-                            break
+                    # ✅ VERWENDE recv_frame() FÜR ALLE NACHRICHTEN
+                    frame_data = recv_frame(client_socket, timeout=30)
+                    
+                    if frame_data is None:
+                        print(f"[SERVER] {client_name} hat Verbindung getrennt")
+                        break
+                    
+                    if len(frame_data) == 0:
+                        print(f"[SERVER] Leere Nachricht von {client_name}, ignoriere")
                         continue
-
+                    
+                    print(f"[SERVER] Nachricht von {client_name} empfangen: {len(frame_data)} bytes")
+                    
+                    # ✅ Nachricht zur Verarbeitung in die Queue stellen
+                    if not hasattr(self, '_message_queue'):
+                        self._message_queue = []
+                    
+                    self._message_queue.append({
+                        'type': 'frame_data',
+                        'data': frame_data,
+                        'client_socket': client_socket,
+                        'client_name': client_name
+                    })
+                    
+                    # ✅ Queue verarbeiten
+                    self._process_client_queue(self._message_queue, client_socket, client_name)
+                    
+                except socket.timeout:
+                    # Timeout ist normal, prüfe auf Verbindung
+                    print(f"[SERVER] Timeout bei {client_name}, aber Verbindung aktiv")
+                    continue
+                    
+                except ConnectionError as e:
+                    print(f"[SERVER] Verbindungsfehler bei {client_name}: {str(e)}")
+                    break
+                    
                 except Exception as e:
                     print(f"[SERVER] Fehler bei {client_name}: {str(e)}")
                     break
@@ -1849,6 +1831,10 @@ class Server:
             
             if client_id:
                 self._safe_remove_client(client_id)
+            
+            # ✅ Call cleanup für diesen Client
+            if hasattr(self, 'convey_manager') and client_name:
+                self.convey_manager.cleanup_client_calls(client_name)
             
             try:
                 client_socket.close()
@@ -2162,41 +2148,7 @@ class Server:
             traceback.print_exc()
             return False, None
                 
-    def _process_queue(self):
-        """Thread-safe message processing with proper locking"""
-        self._processing_queue = True
-        
-        try:
-            while self._message_queue:
-                queue_item = self._message_queue.pop(0)
-                
-                if queue_item['type'] == 'frame_data':
-                    self._process_frame_data(queue_item)#1
-                    
-                elif queue_item['type'] == 'send_response':
-                    self._process_send_response(queue_item)
-                    
-                elif queue_item['type'] == 'start_identity_challenge':
-                    self._process_start_identity_challenge(queue_item)
-                    
-                elif queue_item['type'] == 'process_identity_response':
-                    self._process_identity_response(queue_item)
-                    
-                elif queue_item['type'] == 'process_sip':
-                    self._process_sip_message(queue_item)
-                    
-                elif queue_item['type'] == 'process_encrypted':
-                    self._process_encrypted(queue_item)
-                    
-                elif queue_item['type'] == 'process_encrypted_binary':
-                    self._process_encrypted_binary(queue_item)
-                            
-        except Exception as e:
-            print(f"[QUEUE ERROR] {str(e)}")
-            import traceback
-            traceback.print_exc()
-        finally:
-            self._processing_queue = False
+
 
 
     def _process_frame_data(self, queue_item):
@@ -2273,7 +2225,7 @@ class Server:
         except UnicodeDecodeError:
             print(f"[SERVER ERROR] Kein UTF-8 SIP von {client_name} - Verwerfe {len(frame_data)} bytes")
     def _handle_update_request(self, client_socket, client_name, msg):
-        """VOLLSTÄNDIG KORRIGIERTE Update-Request-Verarbeitung - OHNE QUEUE"""
+        """VOLLSTÄNDIG KORRIGIERTE Update-Request-Verarbeitung"""
         try:
             print(f"[UPDATE] Handling update request from {client_name}")
             
@@ -2292,36 +2244,30 @@ class Server:
                 error_msg = self.build_sip_message("404 Not Found", client_name, {
                     "MESSAGE_TYPE": "ERROR",
                     "ERROR": "CLIENT_NOT_FOUND",
-                    "DETAILS": "Client not registered or missing public key",
                     "TIMESTAMP": int(time.time())
                 })
                 send_frame(client_socket, error_msg.encode('utf-8'))
                 return
             
-            print(f"[UPDATE] Starting DIRECT identity challenge for {client_name} (ID: {client_id})")
+            print(f"[UPDATE] Starting identity challenge for {client_name} (ID: {client_id})")
             
-            # 2. Identity Challenge DIREKT durchführen (OHNE Queue)
+            # 2. Identity Challenge durchführen
             identity_verified = self._direct_identity_challenge(client_socket, client_pubkey, client_name)
             
             if identity_verified:
                 print(f"[IDENTITY] {client_name} successfully verified")
                 
-                # 3. Phonebook direkt senden
-                if self.send_phonebook(client_id):
+                # 3. SOFORT Phonebook senden (nicht nur Status)
+                phonebook_sent = self.send_phonebook(client_id)
+                
+                if phonebook_sent:
                     print(f"[UPDATE] Phonebook sent to {client_name}")
-                    success_msg = self.build_sip_message("200 OK", client_name, {
-                        "MESSAGE_TYPE": "UPDATE_COMPLETE",
-                        "STATUS": "PHONEBOOK_SENT",
-                        "CLIENT_ID": client_id,
-                        "TIMESTAMP": int(time.time())
-                    })
-                    send_frame(client_socket, success_msg.encode('utf-8'))
+                    # Keine zusätzliche Status-Nachricht nötig - Phonebook enthält alle Daten
                 else:
                     print(f"[UPDATE ERROR] Failed to send phonebook to {client_name}")
                     error_msg = self.build_sip_message("500 Error", client_name, {
                         "MESSAGE_TYPE": "ERROR",
                         "ERROR": "PHONEBOOK_SEND_FAILED",
-                        "CLIENT_ID": client_id,
                         "TIMESTAMP": int(time.time())
                     })
                     send_frame(client_socket, error_msg.encode('utf-8'))
@@ -2330,7 +2276,6 @@ class Server:
                 error_msg = self.build_sip_message("401 Unauthorized", client_name, {
                     "MESSAGE_TYPE": "ERROR",
                     "ERROR": "IDENTITY_VERIFICATION_FAILED",
-                    "REASON": "Challenge response invalid or timeout",
                     "TIMESTAMP": int(time.time())
                 })
                 send_frame(client_socket, error_msg.encode('utf-8'))
@@ -3525,7 +3470,7 @@ class Server:
             return ""
     def send_phonebook(self, client_id):
         """
-        Sendet das verschlüsselte Phonebook an einen Client - KORRIGIERTE VERSION
+        Sendet das verschlüsselte Phonebook an einen Client - VOLLSTÄNDIG KORRIGIERT
         """
         try:
             print(f"\n=== SEND PHONEBOOK DEBUG START (Client {client_id}) ===")
@@ -3540,41 +3485,40 @@ class Server:
                 print(f"[ERROR] Client {client_id} hat keinen Socket")
                 return False
 
+            client_name = target_client_data.get('name', 'unknown')
+            print(f"[DEBUG] Sending phonebook to client: {client_name}")
+
             # 2. Public Key des Clients validieren und normalisieren
             client_pubkey = target_client_data.get('public_key', '')
             if not client_pubkey:
-                print(f"[ERROR] Client {client_id} hat keinen public key")
+                print(f"[ERROR] Client {client_name} hat keinen public key")
                 return False
 
-            # 3. Public Key normalisieren (KORREKTUR)
+            # 3. Public Key normalisieren
             normalized_pubkey = self.normalize_client_public_key(client_pubkey)
             if not normalized_pubkey:
                 print(f"[ERROR] Client public key konnte nicht normalisiert werden")
-                print(f"[DEBUG] Original key: {client_pubkey[:100]}...")
                 return False
 
             print(f"[DEBUG] Normalized public key length: {len(normalized_pubkey)}")
-            print(f"[DEBUG] Key starts with: {normalized_pubkey[:50]}...")
 
             # 4. Alle Clients fürs Phonebook holen
             all_clients_data = self.get_all_clients()
             print(f"[DEBUG] Total clients for phonebook: {len(all_clients_data)}")
 
-            # 5. Phonebook-Liste erstellen
+            # 5. Phonebook-Liste erstellen (NUR ONLINE CLIENTS)
             phonebook_clients = []
             for cid, data in all_clients_data.items():
-                has_public_key = 'public_key' in data and data['public_key']
-                has_name = 'name' in data and data['name']
-                
-                if has_public_key and has_name:
+                # Nur Clients mit gültigen Daten und Public Key
+                if (data.get('name') and data.get('public_key') and 
+                    data.get('socket') is not None):  # Nur online Clients
                     client_entry = {
                         'id': cid,
                         'name': data['name'],
                         'public_key': data['public_key'],
                         'ip': data.get('ip', ''),
                         'port': data.get('port', 0),
-                        'is_self': cid == client_id,
-                        'online': data.get('socket') is not None
+                        'online': True
                     }
                     phonebook_clients.append(client_entry)
 
@@ -3582,61 +3526,89 @@ class Server:
             phonebook_data = {
                 'version': '2.0',
                 'timestamp': int(time.time()),
-                'merkle_root': build_merkle_tree_from_keys(self.all_public_keys),
-                'total_clients': len(all_clients_data),
-                'connected_clients': sum(1 for c in all_clients_data.values() if c.get('socket')),
+                'total_clients': len(phonebook_clients),
                 'clients': phonebook_clients
             }
 
-            # 7. Verschlüsselung mit normalisiertem Client Public Key
-            print("[DEBUG] Encrypting secret with NORMALIZED client public key...")
+            print(f"[DEBUG] Phonebook entries: {len(phonebook_clients)}")
+
+            # 7. Secret generieren
+            secret = self.generate_secret()
+            if not secret or len(secret) != 48:
+                print(f"[ERROR] Invalid secret generated: {len(secret) if secret else 0} bytes")
+                return False
+
+            # 8. Secret mit Client Public Key verschlüsseln
             try:
-                # Public Key mit verbessertem Error Handling laden
                 pub_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(normalized_pubkey.encode()))
-                print("[DEBUG] Public key successfully loaded")
                 
-                # Secret generieren und verschlüsseln
-                secret = b"+++secret+++" + self.generate_secret()
-                encrypted_secret = pub_key.public_encrypt(secret, RSA.pkcs1_padding)
-                print(f"[DEBUG] Secret encrypted successfully, length: {len(encrypted_secret)}")
+                # Secret mit Overhead für Validierung
+                secret_with_overhead = b"+++secret+++" + secret
+                encrypted_secret = pub_key.public_encrypt(secret_with_overhead, RSA.pkcs1_padding)
+                
+                if len(encrypted_secret) != 512:
+                    print(f"[ERROR] Encrypted secret has wrong length: {len(encrypted_secret)}")
+                    return False
+                    
+                print(f"[DEBUG] Secret encrypted successfully: {len(encrypted_secret)} bytes")
                 
             except Exception as e:
                 print(f"[ERROR] Public key encryption failed: {e}")
-                print(f"[DEBUG] Public key content: {normalized_pubkey}")
                 return False
 
-            # 8. AES Verschlüsselung
-            iv = secret[12:28]  # 16 Bytes IV
-            aes_key = secret[28:60]  # 32 Bytes Key
+            # 9. Phonebook mit AES verschlüsseln
+            try:
+                iv = secret[:16]  # Erste 16 Bytes als IV
+                aes_key = secret[16:48]  # Nächste 32 Bytes als AES Key
+                
+                # Phonebook zu JSON serialisieren
+                phonebook_json = json.dumps(phonebook_data, separators=(',', ':'))
+                print(f"[DEBUG] Phonebook JSON length: {len(phonebook_json)}")
+                
+                # AES Verschlüsselung
+                cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 1)  # 1 = encrypt
+                encrypted_phonebook = cipher.update(phonebook_json.encode('utf-8')) + cipher.final()
+                
+                print(f"[DEBUG] Phonebook encrypted: {len(encrypted_phonebook)} bytes")
+                
+            except Exception as e:
+                print(f"[ERROR] AES encryption failed: {e}")
+                return False
+
+            # 10. Phonebook-Nachricht erstellen
+            message_data = {
+                "MESSAGE_TYPE": "PHONEBOOK_UPDATE",
+                "TIMESTAMP": phonebook_data['timestamp'],
+                "ENCRYPTED_SECRET": base64.b64encode(encrypted_secret).decode('ascii'),
+                "ENCRYPTED_PHONEBOOK": base64.b64encode(encrypted_phonebook).decode('ascii'),
+                "CLIENT_ID": client_id,
+                "TOTAL_CLIENTS": len(phonebook_clients)
+            }
+
+            # 11. SIP-Nachricht bauen
+            phonebook_msg = self.build_sip_message("MESSAGE", client_name, message_data)
             
-            cipher = EVP.Cipher("aes_256_cbc", aes_key, iv, 1)
-            phonebook_str = json.dumps(phonebook_data, separators=(',', ':'))
-            encrypted_phonebook = cipher.update(phonebook_str.encode()) + cipher.final()
+            print(f"[DEBUG] Phonebook message length: {len(phonebook_msg)}")
+            print(f"[DEBUG] Message contains ENCRYPTED_SECRET: {'ENCRYPTED_SECRET' in phonebook_msg}")
+            print(f"[DEBUG] Message contains ENCRYPTED_PHONEBOOK: {'ENCRYPTED_PHONEBOOK' in phonebook_msg}")
 
-            # 9. Nachricht erstellen und senden
-            message = self.build_sip_message(
-                "MESSAGE",
-                target_client_data['name'],
-                {
-                    "MESSAGE_TYPE": "PHONEBOOK_UPDATE",
-                    "ENCRYPTED_SECRET": base64.b64encode(encrypted_secret).decode(),
-                    "ENCRYPTED_PHONEBOOK": base64.b64encode(encrypted_phonebook).decode(),
-                    "CLIENT_ID": client_id,
-                    "TIMESTAMP": phonebook_data['timestamp']
-                }
-            )
-
-            # 10. Senden
+            # 12. Nachricht senden
             with self.client_send_lock:
                 if target_client_data['socket'].fileno() == -1:
+                    print(f"[ERROR] Socket closed for {client_name}")
                     return False
                     
-                send_frame(target_client_data['socket'], message)
-                print(f"[SUCCESS] Phonebook an {target_client_data['name']} gesendet")
-                return True
+                success = send_frame(target_client_data['socket'], phonebook_msg.encode('utf-8'))
+                if success:
+                    print(f"[SUCCESS] Phonebook sent to {client_name} with {len(phonebook_clients)} entries")
+                    return True
+                else:
+                    print(f"[ERROR] Failed to send phonebook to {client_name}")
+                    return False
 
         except Exception as e:
-            print(f"[CRITICAL] Fehler in send_phonebook: {str(e)}")
+            print(f"[CRITICAL] Error in send_phonebook: {str(e)}")
+            import traceback
             traceback.print_exc()
             return False
 

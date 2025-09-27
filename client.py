@@ -62,7 +62,6 @@ except (AttributeError, ValueError):
 BUFFER_SIZE = 4096
 
 
-
 # Audio-Einstellungen
 FORMAT = pyaudio.paInt16  # 16-Bit-Audio
 CHANNELS = 1  # Mono
@@ -1853,85 +1852,131 @@ class PHONEBOOK(ctk.CTk):
         except Exception as e:
             print(f"[PHONEBOOK ERROR] Entry click failed: {str(e)}")
 
-    def connection_loop(self,client_socket, server_ip, message_handler=None):
-        """Improved connection loop with proper SIP ping/pong and FRAMING support"""
+    def connection_loop(self, client_socket, server_ip, message_handler=None):
+        """KORRIGIERTE Connection-Loop mit besserem Timeout-Management"""
         global connected
         connected = True
-        print("[SETUP] connected = True")
+        print("[CONNECTION] Starting improved connection loop")
         
         # Lokale IP ermitteln
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect((server_ip, 80))
+            s.connect(("8.8.8.8", 80))
             local_ip = s.getsockname()[0]
             s.close()
-            print(f"[DEBUG] Local IP for ping: {local_ip}")
+            print(f"[CONNECTION] Local IP: {local_ip}")
         except Exception as ip_error:
-            print(f"[WARNING] Could not determine local IP for ping: {ip_error}")
+            print(f"[WARNING] Could not determine local IP: {ip_error}")
             local_ip = "127.0.0.1"
         
-        client_name = load_client_name()
+        client_name = self._client_name
+        ping_interval = 30  # Normales Ping-Intervall
+        fast_ping_interval = 5  # Schnelles Intervall bei ausstehenden Requests
+        last_ping_time = 0
+        pending_requests = 0
         
-        while True:
+        while connected:
             try:
-                # ✅ KORREKTUR: PING im JSON-Format senden
-                ping_data = {
-                    "MESSAGE_TYPE": "PING",
-                    "TIMESTAMP": int(time.time()),
-                    "CLIENT_NAME": client_name
-                }
+                current_time = time.time()
                 
-                ping_msg = self.build_sip_message(
-                    "MESSAGE", 
-                    server_ip, 
-                    ping_data,
-                    from_server=False,
-                    client_name=client_name
-                )
-                
-                # Send ping mit Framing
-                if not send_frame(client_socket, ping_msg.encode('utf-8')):
-                    print("Failed to send ping - connection broken")
-                    break
-                    
-                print("DEBUG: ping gesendet (JSON format)")
-
-                # Wait for pong mit Framing
-                response = recv_frame(client_socket, timeout=35)
-                if response and isinstance(response, bytes):
-                    response = response.decode('utf-8')
-                
-                if not response:
-                    print("Server disconnected - no response")
-                    break
-                    
-                if message_handler:
-                    # Verwende die handle_server_message Methode
-                    if hasattr(message_handler, 'handle_server_message'):
-                        message_handler.handle_server_message(response)
-                    else:
-                        # Fallback
-                        print("Pong received (no handler)")
+                # Entscheide Ping-Intervall basierend auf ausstehenden Requests
+                if pending_requests > 0:
+                    interval = fast_ping_interval
+                    print(f"[PING] Fast mode ({interval}s) - {pending_requests} pending requests")
                 else:
-                    # Default pong handling
-                    sip_data = self.parse_sip_message(response)
-                    if sip_data:
-                        custom_data = sip_data.get('custom_data', {})
-                        if custom_data.get('PONG') == 'true' or custom_data.get('MESSAGE_TYPE') == 'PONG':
-                            print("Pong received")
-                        else:
-                            print(f"Unexpected response type: {custom_data.get('MESSAGE_TYPE', 'UNKNOWN')}")
-                    else:
-                        print(f"Unexpected response: {response[:100]}...")
-
-                time.sleep(30)  # Ping interval
+                    interval = ping_interval
                 
-            except socket.timeout:
-                print("Connection timeout")
-                break
+                # Ping senden wenn Intervall abgelaufen
+                if current_time - last_ping_time >= interval:
+                    # 1. Ping vorbereiten
+                    ping_data = {
+                        "MESSAGE_TYPE": "PING",
+                        "TIMESTAMP": int(current_time),
+                        "CLIENT_NAME": client_name,
+                        "CLIENT_IP": local_ip,
+                        "PENDING_REQUESTS": pending_requests
+                    }
+                    
+                    ping_msg = self.build_sip_message("MESSAGE", server_ip, ping_data)
+                    
+                    # 2. Ping senden
+                    print(f"[PING] Sending ping to {server_ip}")
+                    if send_frame(client_socket, ping_msg.encode('utf-8')):
+                        last_ping_time = current_time
+                        pending_requests += 1  # Ping als ausstehenden Request zählen
+                    else:
+                        print("[PING ERROR] Failed to send ping")
+                        connected = False
+                        break
+                
+                # 3. Auf Antwort warten mit kürzerem Timeout
+                client_socket.settimeout(3.0)  # Nur 3 Sekunden warten
+                
+                try:
+                    response = recv_frame(client_socket, timeout=3)
+                    
+                    if response is None:
+                        # Timeout ist normal - weiter im Loop
+                        continue
+                        
+                    if isinstance(response, bytes):
+                        response = response.decode('utf-8')
+                    
+                    # 4. Antwort verarbeiten
+                    if response:
+                        sip_data = self.parse_sip_message(response)
+                        if sip_data:
+                            custom_data = sip_data.get('custom_data', {})
+                            message_type = custom_data.get('MESSAGE_TYPE')
+                            
+                            if message_type == 'PONG':
+                                print("[PING] Pong received successfully")
+                                pending_requests = max(0, pending_requests - 1)
+                                
+                            elif message_type == 'IDENTITY_CHALLENGE':
+                                print("[IDENTITY] Challenge received in ping loop")
+                                self._handle_identity_challenge(sip_data)
+                                pending_requests = max(0, pending_requests - 1)
+                                
+                            elif message_type == 'PHONEBOOK_UPDATE':
+                                print("[UPDATE] Phonebook received in ping loop")
+                                self._process_phonebook_update(sip_data)
+                                pending_requests = max(0, pending_requests - 1)
+                                
+                            else:
+                                print(f"[PING] Other message: {message_type}")
+                                # Zur normalen Verarbeitung weiterleiten
+                                self.handle_server_message(response)
+                        
+                        else:
+                            print("[PING] Could not parse server response")
+                    
+                except socket.timeout:
+                    # Timeout ist normal bei schnellen Pings
+                    continue
+                    
+                except ConnectionError as e:
+                    print(f"[CONNECTION ERROR] Connection lost: {e}")
+                    connected = False
+                    break
+                    
+                except Exception as e:
+                    print(f"[CONNECTION ERROR] Unexpected error: {e}")
+                    # Kein Break - versuche Verbindung zu halten
+                    continue
+                
+                # Kurze Pause zwischen Durchläufen
+                time.sleep(0.5)
+                
             except Exception as e:
-                print(f"Connection error: {str(e)}")
+                print(f"[CONNECTION LOOP ERROR] {str(e)}")
+                connected = False
                 break
+        
+        # Verbindungsende
+        print("[CONNECTION] Connection loop ended")
+        connected = False
+        self.cleanup_connection()
     def start_connection(self, server_ip, server_port, client_name, client_socket, message_handler=None):
         """VOLLSTÄNDIG KORRIGIERTE REGISTRATION MIT EINHEITLICHEM PARSING"""
         try:
@@ -2231,8 +2276,8 @@ class PHONEBOOK(ctk.CTk):
 
 
     def _process_queue(self):
-        """Verarbeitet Nachrichten aus der Queue - kompatibel mit existing SIP methods"""
-        if hasattr(self, '_processing_queue') and self._processing_queue:
+        """KORRIGIERTE Queue-Verarbeitung ohne Deadlocks"""
+        if getattr(self, '_processing_queue', False):
             return
             
         self._processing_queue = True
@@ -2241,22 +2286,32 @@ class PHONEBOOK(ctk.CTk):
             while hasattr(self, '_message_queue') and self._message_queue:
                 queue_item = self._message_queue.pop(0)
                 
-                if isinstance(queue_item, dict) and queue_item.get('type') == 'send_message':
+                # Frame-Daten verarbeiten
+                if isinstance(queue_item, dict) and queue_item.get('type') == 'frame_data':
+                    frame_data = queue_item['data']
+                    self._process_received_frame(frame_data)
+                
+                # Direkte Nachrichten senden
+                elif isinstance(queue_item, dict) and queue_item.get('type') == 'send_message':
                     message = queue_item['message']
                     try:
                         if hasattr(self, 'client_socket') and self.client_socket:
+                            # VERBESSERT: Timeout handling
+                            self.client_socket.settimeout(30)
                             send_frame(self.client_socket, message.encode('utf-8'))
                             print("[CLIENT] Nachricht gesendet")
+                    except socket.timeout:
+                        print("[CLIENT] Send timeout")
                     except Exception as e:
                         print(f"[CLIENT ERROR] Send failed: {str(e)}")
                 
-                elif isinstance(queue_item, dict) and queue_item.get('type') == 'frame_data':
-                    frame_data = queue_item['data']
-                    self._process_received_frame(frame_data)
-                        
-            # Verarbeite Call-bezogene Nachrichten separat
-            self._process_call_messages()
-                        
+                # Call-bezogene Nachrichten
+                elif isinstance(queue_item, dict) and queue_item.get('type') == 'call_request':
+                    if hasattr(self, 'call_manager'):
+                        recipient = queue_item.get('recipient')
+                        if recipient:
+                            self.call_manager.initiate_call(recipient)
+                            
         except Exception as e:
             print(f"[QUEUE ERROR] {str(e)}")
             import traceback
@@ -2764,14 +2819,27 @@ class PHONEBOOK(ctk.CTk):
             if valid_entries:
                 print("[DEBUG] First entry sample:", valid_entries[0])
 
-            # 5. UI aktualisieren
-            self.update_phonebook_ui(valid_entries)
-            
-            # 6. Internen Zustand aktualisieren
-            if self.phonebook_entries != valid_entries:
-                self.phonebook_entries = valid_entries
-            
-            print("[SUCCESS] Phonebook updated")
+            # 5. ✅ MINIMAL-INVASIVE KORREKTUR: Thread-sichere UI-Aktualisierung
+            def safe_ui_update():
+                try:
+                    self.update_phonebook_ui(valid_entries)
+                    
+                    # 6. Internen Zustand aktualisieren
+                    if self.phonebook_entries != valid_entries:
+                        self.phonebook_entries = valid_entries
+                    
+                    print("[SUCCESS] Phonebook updated")
+                except Exception as e:
+                    error_msg = f"UI update error: {str(e)}"
+                    print(error_msg)
+                    if hasattr(self, 'show_error'):
+                        self.show_error(error_msg)
+
+            # Im Hauptthread direkt ausführen, sonst schedulen
+            if threading.current_thread() == threading.main_thread():
+                safe_ui_update()
+            else:
+                self.after(0, safe_ui_update)
 
         except Exception as e:
             error_msg = f"Critical phonebook update error: {str(e)}"
@@ -2890,41 +2958,123 @@ class PHONEBOOK(ctk.CTk):
             return False
    
     def handle_server_message(self, raw_data):
-        """Improved message handler that properly routes different message types"""
-        print("\n=== HANDLING SERVER MESSAGE ===")
-        print(f"[DEBUG] Raw data: {raw_data[:100]}...")
+        """KORRIGIERT: Vereinfachte Message-Verarbeitung ohne Rekursionsgefahr"""
+        print(f"\n=== HANDLING SERVER MESSAGE ({len(raw_data) if hasattr(raw_data, '__len__') else '?'} bytes) ===")
         
-        # Queue-Initialisierung mit DoS-Schutz - KORRIGIERTE VERSION
-        if not hasattr(self, '_message_queue'):
-            self._message_queue = []
-        if not hasattr(self, '_processing_queue'):
-            self._processing_queue = False
-        if not hasattr(self, '_queue_size_limit'):
-            self._queue_size_limit = 120
-        if not hasattr(self, '_last_minute_check'):
-            self._last_minute_check = time.time()
-        if not hasattr(self, '_messages_this_minute'):
-            self._messages_this_minute = 0
-        
-        # DoS-Schutz: Nachrichten pro Minute limitieren
-        current_time = time.time()
-        if current_time - self._last_minute_check >= 60:
-            self._last_minute_check = current_time
-            self._messages_this_minute = 0
-        
-        if self._messages_this_minute >= self._queue_size_limit:
-            print(f"[DOS PROTECTION] Message limit reached ({self._queue_size_limit}/min) - dropping message")
+        try:
+            # 1. ✅ QUEUE-INITIALISIERUNG (Thread-sicher)
+            if not hasattr(self, '_message_queue'):
+                self._message_queue = []
+            if not hasattr(self, '_queue_processing'):
+                self._queue_processing = False
+            if not hasattr(self, '_queue_size_limit'):
+                self._queue_size_limit = 120
+            
+            # 2. ✅ DOS-SCHUTZ (einfache Version)
+            current_time = time.time()
+            if not hasattr(self, '_last_minute_check'):
+                self._last_minute_check = current_time
+            if not hasattr(self, '_messages_this_minute'):
+                self._messages_this_minute = 0
+            
+            if current_time - self._last_minute_check >= 60:
+                self._last_minute_check = current_time
+                self._messages_this_minute = 0
+            
+            if self._messages_this_minute >= self._queue_size_limit:
+                print(f"[DOS] Limit erreicht - ignoriere Nachricht")
+                return False
+            
+            self._messages_this_minute += 1
+            
+            # 3. ✅ NACHRICHT ZUR QUEUE HINZUFÜGEN
+            self._message_queue.append({
+                'timestamp': time.time(),
+                'data': raw_data
+            })
+            
+            print(f"[QUEUE] Nachricht hinzugefügt ({len(self._message_queue)} in Warteschlange)")
+            
+            # 4. ✅ VERARBEITUNG NUR STARTEN WENN NICHT BEREITS AKTIV
+            if not self._queue_processing:
+                self._queue_processing = True
+                threading.Thread(
+                    target=self._process_queue_simple, 
+                    daemon=True
+                ).start()
+            
+            return True
+            
+        except Exception as e:
+            print(f"[HANDLER ERROR] {str(e)}")
             return False
+
+    def _process_queue_simple(self):
+        """Einfache Queue-Verarbeitung ohne komplexe Logik"""
+        print("[QUEUE] Starte Verarbeitung...")
         
-        self._messages_this_minute += 1
-        
-        # Nachricht zur Queue hinzufügen
-        self._message_queue.append(raw_data)
-        
-        # Verarbeitung starten falls nicht bereits aktiv
-        if not self._processing_queue:
-            return self._process_queue()
-        return True
+        try:
+            while self._message_queue:
+                # Kurze Pause für Batch-Verarbeitung
+                time.sleep(0.05)
+                
+                # Nächste Nachricht aus Queue holen
+                if not self._message_queue:
+                    break
+                    
+                message_item = self._message_queue.pop(0)
+                raw_data = message_item['data']
+                
+                try:
+                    # Nachricht als String konvertieren
+                    if isinstance(raw_data, bytes):
+                        message_str = raw_data.decode('utf-8', errors='ignore')
+                    else:
+                        message_str = str(raw_data)
+                    
+                    print(f"[PROCESS] Verarbeite Nachricht: {message_str[:100]}...")
+                    
+                    # ✅ EINFACHE NACHRICHTEN-ROUTING-LOGIK
+                    
+                    # A) PHONEBOOK-UPDATE
+                    if any(keyword in message_str for keyword in ['PHONEBOOK_UPDATE', 'ENCRYPTED_SECRET', 'ENCRYPTED_PHONEBOOK']):
+                        print("[ROUTE] → Phonebook Update")
+                        self._process_phonebook_update(message_str)
+                    
+                    # B) CALL-NACHRICHTEN
+                    elif any(keyword in message_str for keyword in ['INCOMING_CALL', 'CALL_RESPONSE', 'SESSION_KEY', 'PUBLIC_KEY_RESPONSE']):
+                        print("[ROUTE] → Call Manager")
+                        if hasattr(self, 'call_manager'):
+                            self.call_manager.handle_message(message_str)
+                    
+                    # C) IDENTITY-NACHRICHTEN
+                    elif 'IDENTITY_CHALLENGE' in message_str:
+                        print("[ROUTE] → Identity Challenge")
+                        self._handle_identity_challenge(message_str)
+                    
+                    elif 'IDENTITY_VERIFIED' in message_str:
+                        print("[ROUTE] → Identity Verified") 
+                        self._handle_identity_verified(message_str)
+                    
+                    # D) PING/PONG
+                    elif 'PING' in message_str:
+                        print("[ROUTE] → Ping Handler")
+                        self._handle_ping_message()
+                    
+                    # E) STANDARD-VERARBEITUNG
+                    else:
+                        print("[ROUTE] → Standard Processing")
+                        self._process_received_frame(raw_data)
+                        
+                except Exception as e:
+                    print(f"[PROCESS ERROR] Nachricht fehlgeschlagen: {str(e)}")
+                    continue
+                    
+        except Exception as e:
+            print(f"[QUEUE ERROR] {str(e)}")
+        finally:
+            self._queue_processing = False
+            print("[QUEUE] Verarbeitung beendet")
     def _handle_identity_challenge(self, msg):
         """VOLLSTÄNDIG EINHEITLICHE IDENTITY CHALLENGE VERARBEITUNG - KORRIGIERT FÜR SIP"""
         try:
@@ -3785,131 +3935,114 @@ class PHONEBOOK(ctk.CTk):
             
 
     def _process_phonebook_update(self, message):
-        """Verarbeitet Phonebook-Updates mit vollständiger Entschlüsselung und ausführlichem Debugging"""
+        """KORRIGIERT: Verarbeitet Phonebook-Updates mit korrektem SIP-Parsing"""
         print("\n=== CLIENT PHONEBOOK UPDATE PROCESSING ===")
         
         try:
-            # 1. Validierung der Eingangsdaten
-            print("[DEBUG] Validating input message...")
-            if not isinstance(message, dict):
-                print("[ERROR] Invalid message format - not a dictionary")
-                return False
-    
-            # 2. Extrahiere verschlüsselte Daten
-            print("[DEBUG] Extracting encrypted data from message...")
-            try:
-                encrypted_secret = base64.b64decode(message['ENCRYPTED_SECRET'])
-                encrypted_phonebook = base64.b64decode(message['ENCRYPTED_PHONEBOOK'])
-                print("[DEBUG] Encrypted secret length: {}".format(len(encrypted_secret)))
-                print("[DEBUG] Encrypted phonebook length: {}".format(len(encrypted_phonebook)))
-            except KeyError as e:
-                print("[ERROR] Missing required field: {}".format(str(e)))
-                return False
-            except binascii.Error as e:
-                print("[ERROR] Base64 decoding failed: {}".format(str(e)))
-                return False
-    
-            # 3. Entschlüssele das Geheimnis
-            print("[DEBUG] Decrypting secret with private key...")
-            try:
-                with open("client_private_key.pem", "rb") as f:
-                    priv_key = RSA.load_key_string(f.read())
-                    print("[DEBUG] Private key loaded successfully")
-                    
-                decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
-                secure_del(priv_key)
-                print("[DEBUG] Decrypted secret (len={}): {}...".format(
-                    len(decrypted_secret),
-                    ''.join('{:02x}'.format(b) for b in decrypted_secret[:2])  # Hex conversion without .hex()
-                ))            
-            except Exception as e:
-                print("[ERROR] Failed to decrypt secret: {}".format(str(e)))
-                return False
-    
-            # 4. Validiere das Geheimnis
-            print("[DEBUG] Validating decrypted secret...")
-            if not decrypted_secret.startswith(b"+++secret+++"):
-                print("[ERROR] Invalid secret format - missing overhead")
-                return False
-                
-            secret = decrypted_secret[11:59]  # 48 Bytes
-            secure_del(decrypted_secret)
-            self.secret_vault.store_secret_safely(secret, "server_key")
-            del secret # wipe all secret traces   
-            iv, key = self.secret_vault.get_secret_parts("server_key")
-            print("[DEBUG] IV: {}".format(''.join('{:02x}'.format(b) for b in iv)))
-            print("[DEBUG] AES Key: {}...".format(''.join('{:02x}'.format(b) for b in aes_key[:8])))
-    
-            # 5. Entschlüssele das Phonebook
-            print("[DEBUG] Decrypting phonebook with AES...")
-            try:
-                cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
-                decrypted_data = cipher.update(encrypted_phonebook) + cipher.final()
-                
-                print("[DEBUG] Decrypted data (len={}): {}...".format(
-                    len(decrypted_data),
-                    decrypted_data[:100].decode('utf-8', errors='replace')
-                ))
-            except EVP.EVPError as e:
-                error_msg = "AES decryption failed: {}".format(str(e))
-                print("[ERROR] {}".format(error_msg))
-                logging.error(error_msg, exc_info=True)
-                return False
-            except Exception as e:
-                error_msg = "Unexpected error during decryption: {}".format(str(e))
-                print("[CRITICAL] {}".format(error_msg))
-                logging.critical(error_msg, exc_info=True)
-                return False
-            secure_del(iv)
-            secure_del(key)
-            secure_del(cipher)
-            # 6. Parse JSON-Daten
-            print("[DEBUG] Parsing decrypted JSON data...")
-            try:
-                phonebook_data = json.loads(decrypted_data.decode('utf-8'))
-                print("[DEBUG] Raw phonebook data: {}".format(phonebook_data))
-            except json.JSONDecodeError as e:
-                print("[ERROR] JSON decode failed: {}".format(str(e)))
-                # Safe debug output for potentially sensitive data
-                print("[DEBUG] Problematic data ({} bytes): {}".format(
-                    len(decrypted_data),
-                    repr(decrypted_data[:200].decode('utf-8', errors='replace'))
-                ))
-                return False
-    
-            # 7. Filtere gültige Einträge
-            print("[DEBUG] Validating phonebook entries...")
-            valid_entries = []
-            for entry in phonebook_data:
-                try:
-                    if (isinstance(entry, dict) and 
-                        str(entry.get('id', '')).isdigit() and 
-                        entry.get('name')):
-                        print("[DEBUG] Valid entry found: {}: {}".format(
-                            entry['id'],
-                            entry['name']
-                        ))
-                        valid_entries.append(entry)
-                except Exception as e:
-                    print("[WARNING] Invalid entry skipped: {}".format(str(e)))
-    
-            # 8. Aktualisiere UI
-            if valid_entries:
-                print("[DEBUG] Updating UI with {} valid entries".format(len(valid_entries)))
-                self.phonebook_update_signal.emit(phonebook_data.get('clients', []))
-                return True
+            # 1. ✅ SIP-NACHRICHT PARSEN (egal ob String oder bereits geparst)
+            if isinstance(message, str):
+                print("[DEBUG] Parsing SIP message from string...")
+                sip_data = self.parse_sip_message(message)
+                if not sip_data:
+                    print("[ERROR] Failed to parse SIP message")
+                    return False
+            elif isinstance(message, dict):
+                print("[DEBUG] Using pre-parsed SIP message")
+                sip_data = message
             else:
-                print("[ERROR] No valid entries found in phonebook")
+                print("[ERROR] Unsupported message format")
                 return False
+
+            # 2. ✅ KRITISCH: JSON AUS DEM BODY EXTRAHIEREN
+            body = sip_data.get('body', '')
+            print(f"[DEBUG] Body length: {len(body)}")
+            
+            if not body:
+                print("[ERROR] No body in SIP message")
+                return False
+
+            # 3. ✅ BODY ALS JSON PARSEN
+            try:
+                message_data = json.loads(body)
+                print(f"[DEBUG] JSON parsed successfully. Keys: {list(message_data.keys())}")
+            except json.JSONDecodeError as e:
+                print(f"[ERROR] JSON decode failed: {e}")
+                print(f"[DEBUG] Body content: {body[:200]}...")
+                return False
+
+            # 4. ✅ VERSUCH 1: Direkt verschlüsselte Daten finden
+            if 'ENCRYPTED_SECRET' in message_data and 'ENCRYPTED_PHONEBOOK' in message_data:
+                print("[DEBUG] Found encrypted data in JSON")
+                try:
+                    encrypted_secret = base64.b64decode(message_data['ENCRYPTED_SECRET'])
+                    encrypted_phonebook = base64.b64decode(message_data['ENCRYPTED_PHONEBOOK'])
+                    encrypted_data = encrypted_secret + encrypted_phonebook
+                    
+                    print(f"[DEBUG] Encrypted data: {len(encrypted_data)} bytes")
+                    return self._decrypt_phonebook_data(encrypted_data)
+                    
+                except Exception as e:
+                    print(f"[ERROR] Failed to process encrypted data: {e}")
+                    return False
+
+            # 5. ✅ VERSUCH 2: Custom Data durchsuchen
+            custom_data = sip_data.get('custom_data', {})
+            if 'ENCRYPTED_SECRET' in custom_data and 'ENCRYPTED_PHONEBOOK' in custom_data:
+                print("[DEBUG] Found encrypted data in custom_data")
+                try:
+                    encrypted_secret = base64.b64decode(custom_data['ENCRYPTED_SECRET'])
+                    encrypted_phonebook = base64.b64decode(custom_data['ENCRYPTED_PHONEBOOK'])
+                    encrypted_data = encrypted_secret + encrypted_phonebook
+                    
+                    print(f"[DEBUG] Encrypted data: {len(encrypted_data)} bytes")
+                    return self._decrypt_phonebook_data(encrypted_data)
+                    
+                except Exception as e:
+                    print(f"[ERROR] Failed to process custom_data: {e}")
+                    return False
+
+            # 6. ✅ VERSUCH 3: Rohdaten im Body
+            if 'ENCRYPTED' in body:
+                print("[DEBUG] Searching for encrypted data in raw body...")
                 
+                # Versuche Base64-Daten direkt aus dem Body zu extrahieren
+                import re
+                base64_pattern = r'[A-Za-z0-9+/]{100,}={0,2}'
+                base64_matches = re.findall(base64_pattern, body)
+                
+                if len(base64_matches) >= 2:
+                    print(f"[DEBUG] Found {len(base64_matches)} base64 blocks")
+                    try:
+                        # Nehme die zwei größten Base64-Blöcke
+                        base64_matches.sort(key=len, reverse=True)
+                        encrypted_secret = base64.b64decode(base64_matches[0])
+                        encrypted_phonebook = base64.b64decode(base64_matches[1])
+                        encrypted_data = encrypted_secret + encrypted_phonebook
+                        
+                        print(f"[DEBUG] Extracted encrypted data: {len(encrypted_data)} bytes")
+                        return self._decrypt_phonebook_data(encrypted_data)
+                        
+                    except Exception as e:
+                        print(f"[ERROR] Raw body extraction failed: {e}")
+                        return False
+
+            # 7. ✅ VERSUCH 4: Direkt als Bytes verarbeiten (falls message schon Bytes sind)
+            if isinstance(message, bytes) and len(message) > 512:
+                print("[DEBUG] Processing as raw bytes...")
+                return self._decrypt_phonebook_data(message)
+
+            # 8. ✅ KEINE DATEN GEFUNDEN
+            print("[ERROR] No encrypted phonebook data found in any location")
+            print(f"[DEBUG] Available keys in message_data: {list(message_data.keys())}")
+            print(f"[DEBUG] Available keys in custom_data: {list(custom_data.keys())}")
+            print(f"[DEBUG] Body preview: {body[:500]}...")
+            
+            return False
+            
         except Exception as e:
-            print("[CRITICAL] Processing error: {}".format(str(e)))
+            print(f"[CRITICAL ERROR] Phonebook processing failed: {str(e)}")
             traceback.print_exc()
             return False
-        finally:
-            print("=== CLIENT PHONEBOOK UPDATE PROCESSING END ===")
-    
-
 
     def start_connection_wrapper(self, status_label=None, server_ip=None, server_port=None, client_name=None):
         """Korrigierte Tkinter-Version mit sauberer Attribut-Handhabung"""
