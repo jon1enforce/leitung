@@ -2997,7 +2997,48 @@ class PHONEBOOK(ctk.CTk):
         for widget in self.scrollable_frame.winfo_children():
             widget.destroy()
         self.entry_buttons = []
-    
+    def cleanup_connection(self):
+        """Bereinigt die Verbindung und setzt den Zustand zurück"""
+        try:
+            print("[CLEANUP] Cleaning up connection...")
+            
+            # Socket schließen
+            if hasattr(self, 'client_socket') and self.client_socket:
+                try:
+                    self.client_socket.close()
+                    print("[CLEANUP] Socket closed")
+                except Exception as e:
+                    print(f"[CLEANUP WARNING] Socket close failed: {str(e)}")
+                finally:
+                    self.client_socket = None
+            
+            # Call-Ressourcen bereinigen
+            if hasattr(self, 'call_manager'):
+                try:
+                    self.call_manager.cleanup_call_resources()
+                    print("[CLEANUP] Call resources cleaned")
+                except Exception as e:
+                    print(f"[CLEANUP WARNING] Call cleanup failed: {str(e)}")
+            
+            # Queue zurücksetzen
+            if hasattr(self, '_message_queue'):
+                self._message_queue.clear()
+            
+            # Status zurücksetzen
+            if hasattr(self, 'connected'):
+                self.connected = False
+            
+            # UI zurücksetzen falls vorhanden
+            if hasattr(self, 'status_label') and self.status_label.winfo_exists():
+                try:
+                    self.status_label.configure(text="Verbindung getrennt")
+                except:
+                    pass
+                    
+            print("[CLEANUP] Connection cleanup completed")
+            
+        except Exception as e:
+            print(f"[CLEANUP ERROR] Cleanup failed: {str(e)}")    
     def _add_phonebook_entry(self, entry):
         """Fügt einen einzelnen Eintrag hinzu"""
         btn = ctk.CTkButton(
