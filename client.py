@@ -843,19 +843,45 @@ class CALL:
     def handle_message(self, raw_message):
         """Zentrale Message-Handling Methode - KORRIGIERT FÜR MESSAGE-TYPE ERKENNUNG"""
         try:
-            # ✅ Zuerst den Message-Type aus der Nachricht extrahieren
-            message_type = self._extract_message_type(raw_message)
+            print(f"[CALL] Handling raw message type: {type(raw_message)}")
+            
+            # ✅ Zuerst die Nachricht korrekt parsen
+            if isinstance(raw_message, str):
+                # Verwende den SIP-Parser des Clients
+                if hasattr(self.client, 'parse_sip_message'):
+                    msg = self.client.parse_sip_message(raw_message)
+                else:
+                    # Fallback: Versuche JSON zu parsen
+                    if raw_message.strip().startswith('{'):
+                        try:
+                            msg = json.loads(raw_message)
+                        except json.JSONDecodeError:
+                            msg = {'custom_data': {}}
+                    else:
+                        msg = {'custom_data': {}}
+            elif isinstance(raw_message, dict):
+                msg = raw_message
+            else:
+                print(f"[CALL WARNING] Unsupported message type: {type(raw_message)}")
+                return
+            
+            if not msg:
+                print("[CALL WARNING] Failed to parse message")
+                return
+                
+            # ✅ Jetzt den Message-Type aus der geparsten Nachricht extrahieren
+            message_type = self._extract_message_type(msg)
             print(f"[CALL] Handling message type: {message_type}")
             
             if message_type == 'INCOMING_CALL':
-                self.handle_incoming_call(raw_message)
+                self.handle_incoming_call(msg)
             elif message_type == 'SESSION_KEY':
-                self._handle_session_key(raw_message)
+                self._handle_session_key(msg)
             elif message_type == 'CALL_RESPONSE':
-                self.handle_call_response(raw_message)
+                self.handle_call_response(msg)
             elif message_type == 'PUBLIC_KEY_RESPONSE':
                 print("[CALL] Received PUBLIC_KEY_RESPONSE, processing...")
-                self.handle_public_key_response(raw_message)
+                self.handle_public_key_response(msg)
             elif message_type == 'CALL_TIMEOUT':
                 self.cleanup_call_resources()
                 if hasattr(self.client, 'after'):
@@ -872,29 +898,25 @@ class CALL:
             import traceback
             traceback.print_exc()
 
-    def _extract_message_type(self, message):
-        """EINHEITLICHE MESSAGE-TYPE EXTRAKTION - NUR JSON"""
+    def _extract_message_type(self, parsed_msg):
+        """EINHEITLICHE MESSAGE-TYPE EXTRAKTION - KORRIGIERT FÜR GEPARSTE NACHRICHTEN"""
         try:
-            # Bereits geparste Nachricht
-            if isinstance(message, dict):
-                parsed_msg = message
-            else:
-                # Rohdaten parsen
-                if isinstance(message, bytes):
-                    message = message.decode('utf-8', errors='ignore')
-                parsed_msg = self.parse_sip_message(message)
-            
             if not parsed_msg:
                 return "UNKNOWN"
             
-            # ✅ AUSSCHLIESSLICH JSON custom_data VERWENDEN
+            # ✅ PRIORITÄT 1: custom_data aus geparster SIP-Nachricht
             custom_data = parsed_msg.get('custom_data', {})
             message_type = custom_data.get('MESSAGE_TYPE')
             
             if message_type:
                 return message_type
             
-            # Fallback: Body als JSON parsen
+            # ✅ PRIORITÄT 2: Direkt aus dem Dictionary (falls bereits geparst)
+            message_type = parsed_msg.get('MESSAGE_TYPE')
+            if message_type:
+                return message_type
+                
+            # ✅ PRIORITÄT 3: Body als JSON parsen
             body = parsed_msg.get('body', '')
             if body.strip().startswith('{'):
                 try:
@@ -903,11 +925,18 @@ class CALL:
                 except json.JSONDecodeError:
                     pass
             
+            # ✅ PRIORITÄT 4: Headers durchsuchen
+            headers = parsed_msg.get('headers', {})
+            message_type = headers.get('MESSAGE_TYPE')
+            if message_type:
+                return message_type
+                
             return "UNKNOWN"
             
         except Exception as e:
             print(f"[EXTRACT ERROR] {str(e)}")
             return "UNKNOWN"
+
 
     def initiate_call(self, recipient):
         """Initiiert Anruf mit EINHEITLICHEM Format - KORRIGIERT"""
@@ -965,7 +994,7 @@ class CALL:
             raise
 
     def handle_public_key_response(self, msg):
-        """Verarbeitet Public-Key-Antwort - KORRIGIERT"""
+        """Verarbeitet Public-Key-Antwort - KORRIGIERT FÜR PEM-FORMAT"""
         try:
             # ✅ VALIDIERE: Prüfe ob wir auf eine Key-Anfrage warten
             if not self.pending_call or self.pending_call.get('status') != 'requesting_key':
@@ -974,14 +1003,27 @@ class CALL:
                 
             print(f"[CALL] Processing public key response...")
             
-            # ✅ KORREKT: Daten aus CUSTOM_DATA extrahieren (nicht headers!)
+            # ✅ SICHERSTELLEN: msg ist ein Dictionary
+            if not isinstance(msg, dict):
+                print(f"[CALL ERROR] Expected dict but got {type(msg)}")
+                return False
+                
+            # ✅ KORREKT: Daten aus CUSTOM_DATA extrahieren
             custom_data = msg.get('custom_data', {})
             target_id = custom_data.get('TARGET_CLIENT_ID')
             public_key = custom_data.get('PUBLIC_KEY')
             caller_name = custom_data.get('CALLER_NAME')
             
+            # ✅ FALLBACK: Direkte Felder prüfen
             if not public_key:
-                print("[CALL ERROR] No public key received in custom_data")
+                public_key = msg.get('PUBLIC_KEY')
+            if not target_id:
+                target_id = msg.get('TARGET_CLIENT_ID')
+            if not caller_name:
+                caller_name = msg.get('CALLER_NAME')
+                
+            if not public_key:
+                print("[CALL ERROR] No public key received in any field")
                 raise Exception("No public key received from server")
                 
             if not target_id:
@@ -989,6 +1031,14 @@ class CALL:
                 target_id = self.pending_call['recipient'].get('id', 'unknown')
                 
             print(f"[CALL] Received public key for client {target_id} (length: {len(public_key)})")
+            
+            # ✅ KRITISCHE KORREKTUR: PEM-FORMAT SICHERSTELLEN
+            print("[CALL] Formatting public key for PEM...")
+            public_key = self._ensure_pem_format(public_key)
+            if not public_key:
+                raise Exception("Invalid public key format - cannot convert to PEM")
+                
+            print(f"[CALL] Formatted public key (PEM): {public_key[:100]}...")
             
             # ✅ WireGuard Schlüsselpaar generieren
             wg_private_key, wg_public_key = self._generate_wireguard_keypair()
@@ -1017,11 +1067,21 @@ class CALL:
             
             # ✅ Mit Public Key des Empfängers verschlüsseln
             try:
-                # Public Key laden
-                recipient_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(public_key.encode()))
-                
+                # Public Key laden mit PEM-Validierung
+                print("[CALL] Loading recipient public key...")
+                recipient_key = self._load_public_key(public_key)
+                if not recipient_key:
+                    raise Exception("Failed to load recipient public key")
+                    
                 # Daten serialisieren und verschlüsseln
                 call_data_json = json.dumps(call_data).encode('utf-8')
+                print(f"[CALL] Call data JSON length: {len(call_data_json)}")
+                
+                # Prüfe ob Daten zu lang für RSA sind
+                max_length = 512 - 11  # RSA PKCS#1 Padding
+                if len(call_data_json) > max_length:
+                    raise Exception(f"Call data too large for RSA encryption: {len(call_data_json)} > {max_length}")
+                    
                 encrypted_data = recipient_key.public_encrypt(call_data_json, RSA.pkcs1_padding)
                 encrypted_b64 = base64.b64encode(encrypted_data).decode('utf-8')
                 
@@ -1085,6 +1145,76 @@ class CALL:
             
             self.cleanup_call_resources()
             return False
+
+    def _ensure_pem_format(self, key_data):
+        """Stellt sicher dass der Schlüssel im korrekten PEM-Format vorliegt"""
+        try:
+            if not key_data:
+                return None
+                
+            key_str = key_data.strip()
+            
+            # Falls bereits korrektes PEM, zurückgeben
+            if key_str.startswith('-----BEGIN PUBLIC KEY-----') and key_str.endswith('-----END PUBLIC KEY-----'):
+                print("[PEM] Key is already in valid PEM format")
+                return key_str
+            
+            # Falls Base64 ohne PEM-Header, Header hinzufügen
+            if 'BEGIN PUBLIC KEY' not in key_str and 'END PUBLIC KEY' not in key_str:
+                print("[PEM] Adding PEM headers to base64 key")
+                # Entferne alle Leerzeichen und Zeilenumbrüche
+                key_content = re.sub(r'\s+', '', key_str)
+                # Validiere Base64
+                try:
+                    base64.b64decode(key_content)
+                    key_str = f"-----BEGIN PUBLIC KEY-----\n{key_content}\n-----END PUBLIC KEY-----"
+                    print("[PEM] Successfully converted to PEM format")
+                except Exception as e:
+                    print(f"[PEM ERROR] Invalid base64: {e}")
+                    return None
+            
+            # Validiere den PEM-Key
+            try:
+                bio = BIO.MemoryBuffer(key_str.encode())
+                key = RSA.load_pub_key_bio(bio)
+                if key:
+                    print("[PEM] Key validation successful")
+                    return key_str
+            except Exception as e:
+                print(f"[PEM ERROR] Key validation failed: {e}")
+                
+            return None
+            
+        except Exception as e:
+            print(f"[PEM ERROR] Formatting failed: {e}")
+            return None
+
+    def _load_public_key(self, pem_key):
+        """Lädt einen öffentlichen Schlüssel mit Fehlerbehandlung"""
+        try:
+            if not pem_key:
+                return None
+                
+            # Bereinige den Key
+            pem_key = pem_key.strip()
+            pem_key = pem_key.replace('\\\\n', '\n').replace('\\n', '\n')
+            
+            print(f"[KEY LOAD] Loading key: {pem_key[:100]}...")
+            
+            # Versuche den Key zu laden
+            bio = BIO.MemoryBuffer(pem_key.encode())
+            key = RSA.load_pub_key_bio(bio)
+            
+            if key:
+                print("[KEY LOAD] Successfully loaded public key")
+                return key
+            else:
+                print("[KEY LOAD] Failed to load key")
+                return None
+                
+        except Exception as e:
+            print(f"[KEY LOAD ERROR] {str(e)}")
+            return None
 
     def _setup_caller_wireguard(self, private_key, public_key):
         """Richtet WireGuard als Caller (Server) ein"""
