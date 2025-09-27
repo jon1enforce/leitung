@@ -791,67 +791,68 @@ class CALL:
                 print("[WG WARNING] No sudo/doas found, trying without privileges")
                 sudo_command = ""  # Leerstring für direkte Ausführung
             
-            # ✅ Netzwerk-Tool erkennen (ip vs ifconfig)
-            ip_tool = None
-            for tool in ['ip', 'ifconfig']:
-                try:
-                    subprocess.run([tool, '--version'], capture_output=True)
-                    ip_tool = tool
-                    print(f"[WG] Using {ip_tool} for network configuration")
-                    break
-                except (subprocess.CalledProcessError, FileNotFoundError):
-                    continue
-            
-            if not ip_tool:
-                print("[WG ERROR] No network configuration tool found (ip/ifconfig)")
-                return False
-            
             def run_privileged(cmd, input_data=None):
                 """Hilfsfunktion für privilegierte Befehle"""
                 full_cmd = [sudo_command] + cmd if sudo_command else cmd
                 try:
                     if input_data:
-                        result = subprocess.run(full_cmd, input=input_data, capture_output=True, text=True, check=True)
+                        result = subprocess.run(full_cmd, input=input_data, capture_output=True, text=True)
                     else:
-                        result = subprocess.run(full_cmd, capture_output=True, text=True, check=True)
-                    return True
-                except subprocess.CalledProcessError as e:
-                    print(f"[WG ERROR] Command failed: {e.stderr}")
-                    return False
+                        result = subprocess.run(full_cmd, capture_output=True, text=True)
+                    
+                    if result.returncode == 0:
+                        return True
+                    else:
+                        print(f"[WG ERROR] Command failed: {result.stderr}")
+                        return False
+                        
                 except Exception as e:
                     print(f"[WG ERROR] Command execution failed: {e}")
                     return False
             
-            # Interface erstellen (unterschiedliche Befehle für ip/ifconfig)
-            if ip_tool == 'ip':
-                if not run_privileged(['ip', 'link', 'add', 'dev', interface, 'type', 'wireguard']):
-                    return False
-            else:  # ifconfig
-                if not run_privileged(['ifconfig', interface, 'create']):
-                    return False
+            # ✅ Auf OpenBSD wird das WireGuard-Interface automatisch beim ersten wg-set-Befehl erstellt
+            # Zuerst WireGuard konfigurieren, dann Interface konfigurieren
             
-            # Private Key setzen (wg-Befehl ist gleich)
+            # Private Key setzen (erstellt automatisch das Interface auf OpenBSD)
             if not run_privileged(['wg', 'set', interface, 'private-key'], input_data=private_key):
+                print("[WG] Trying alternative interface creation...")
                 return False
             
             # Peer konfigurieren
             if not run_privileged(['wg', 'set', interface, 'peer', peer_public_key, 'endpoint', endpoint, 'allowed-ips', '0.0.0.0/0']):
                 return False
             
-            # IP Adresse setzen (unterschiedliche Befehle)
-            if ip_tool == 'ip':
+            # ✅ Interface-Erkennung und Konfiguration
+            # Prüfen ob das Interface existiert, falls nicht, versuchen es zu erstellen
+            interface_exists = False
+            try:
+                # Prüfen ob Interface existiert
+                if sudo_command:
+                    check_cmd = [sudo_command, 'ifconfig', interface]
+                else:
+                    check_cmd = ['ifconfig', interface]
+                
+                result = subprocess.run(check_cmd, capture_output=True, text=True)
+                interface_exists = (result.returncode == 0)
+            except:
+                pass
+            
+            if not interface_exists:
+                print(f"[WG] Interface {interface} does not exist, trying to create...")
+                # Versuche Interface mit ifconfig zu erstellen (nur auf OpenBSD nötig)
+                if not run_privileged(['ifconfig', interface, 'create']):
+                    print("[WG] Interface creation failed, but continuing...")
+            
+            # IP Adresse setzen
+            if not run_privileged(['ifconfig', interface, 'inet', my_ip, 'netmask', '255.255.255.0']):
+                # Fallback: ip-Befehl versuchen
                 if not run_privileged(['ip', 'addr', 'add', f'{my_ip}/24', 'dev', interface]):
-                    return False
-            else:  # ifconfig
-                if not run_privileged(['ifconfig', interface, 'inet', my_ip, 'netmask', '255.255.255.0']):
                     return False
             
             # Interface aktivieren
-            if ip_tool == 'ip':
+            if not run_privileged(['ifconfig', interface, 'up']):
+                # Fallback: ip-Befehl versuchen
                 if not run_privileged(['ip', 'link', 'set', 'up', 'dev', interface]):
-                    return False
-            else:  # ifconfig
-                if not run_privileged(['ifconfig', interface, 'up']):
                     return False
             
             print(f"[WG] WireGuard tunnel setup successful: {my_ip} -> {endpoint}")
