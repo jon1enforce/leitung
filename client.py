@@ -696,28 +696,256 @@ class CALL:
         self.relay_server_ip = None
         self.relay_server_port = 51822
 
-    # ✅ ENTFERNT: Alle WireGuard-related Methoden
-    # _generate_wireguard_keypair(), _setup_wireguard_tunnel(), etc.
+    def handle_message(self, raw_message):
+        """Zentrale Message-Handling Methode - VEREINFACHT OHNE WIREGUARD"""
+        try:
+            print(f"[CALL] Handling raw message type: {type(raw_message)}")
+            
+            # ✅ Nachricht parsen
+            if isinstance(raw_message, str):
+                if hasattr(self.client, 'parse_sip_message'):
+                    msg = self.client.parse_sip_message(raw_message)
+                else:
+                    if raw_message.strip().startswith('{'):
+                        try:
+                            msg = json.loads(raw_message)
+                        except json.JSONDecodeError:
+                            msg = {'custom_data': {}}
+                    else:
+                        msg = {'custom_data': {}}
+            elif isinstance(raw_message, dict):
+                msg = raw_message
+            else:
+                print(f"[CALL WARNING] Unsupported message type: {type(raw_message)}")
+                return
+            
+            if not msg:
+                print("[CALL WARNING] Failed to parse message")
+                return
+                
+            # ✅ Message-Type extrahieren
+            message_type = self._extract_message_type(msg)
+            print(f"[CALL] Handling message type: {message_type}")
+            
+            # ✅ Message Routing
+            if message_type == 'INCOMING_CALL':
+                self.handle_incoming_call(msg)
+            elif message_type == 'SESSION_KEY':
+                self._handle_session_key(msg)
+            elif message_type == 'CALL_RESPONSE':
+                self.handle_call_response(msg)
+            elif message_type == 'PUBLIC_KEY_RESPONSE':
+                print("[CALL] Received PUBLIC_KEY_RESPONSE, processing...")
+                self.handle_public_key_response(msg)
+            elif message_type == 'CALL_CONFIRMED':
+                self.handle_call_confirmed(msg)
+            elif message_type == 'CALL_TIMEOUT':
+                self.cleanup_call_resources()
+                if hasattr(self.client, 'after'):
+                    self.client.after(0, lambda: messagebox.showinfo("Call Failed", "Timeout - Keine Antwort vom Empfänger"))
+            elif message_type == 'CALL_END':
+                self.cleanup_call_resources()
+            elif message_type == 'PONG':
+                print("[CALL] Pong received")
+            else:
+                print(f"[CALL WARNING] Unknown message type: {message_type}")
+                
+        except Exception as e:
+            print(f"[CALL MSG ERROR] Failed to handle message: {str(e)}")
+            import traceback
+            traceback.print_exc()
+
+    def _extract_message_type(self, parsed_msg):
+        """EINHEITLICHE MESSAGE-TYPE EXTRAKTION"""
+        try:
+            if not parsed_msg:
+                return "UNKNOWN"
+            
+            custom_data = parsed_msg.get('custom_data', {})
+            message_type = custom_data.get('MESSAGE_TYPE')
+            
+            if message_type:
+                return message_type
+            
+            message_type = parsed_msg.get('MESSAGE_TYPE')
+            if message_type:
+                return message_type
+                
+            body = parsed_msg.get('body', '')
+            if body.strip().startswith('{'):
+                try:
+                    body_data = json.loads(body)
+                    return body_data.get('MESSAGE_TYPE', 'UNKNOWN')
+                except json.JSONDecodeError:
+                    pass
+            
+            headers = parsed_msg.get('headers', {})
+            message_type = headers.get('MESSAGE_TYPE')
+            if message_type:
+                return message_type
+                
+            return "UNKNOWN"
+            
+        except Exception as e:
+            print(f"[EXTRACT ERROR] {str(e)}")
+            return "UNKNOWN"
+
+    def set_connection_state(self, state):
+        """Thread-safe connection state management"""
+        with self.connection_lock:
+            old_state = self.connection_state
+            self.connection_state = state
+            print(f"[CONNECTION] State changed: {old_state} -> {state}")
+
+    def update_call_ui(self, active, status=None, caller_name=None):
+        """Delegate UI updates to the main client instance"""
+        try:
+            if hasattr(self.client, 'update_call_ui'):
+                self.client.update_call_ui(active, status, caller_name)
+        except Exception as e:
+            print(f"[UI UPDATE ERROR] {str(e)}")
+
+    def on_call_click(self, selected_entry=None):
+        """Hauptmethode für Call-Initiation - wird von UI aufgerufen"""
+        try:
+            if hasattr(self, '_in_call_click') and self._in_call_click:
+                return
+            self._in_call_click = True
+            
+            if selected_entry is None and hasattr(self.client, 'selected_entry'):
+                selected_entry = self.client.selected_entry
+                
+            if not selected_entry:
+                messagebox.showerror("Error", "Bitte Kontakt auswählen")
+                self._in_call_click = False
+                return
+
+            print(f"[CALL] Starte Anruf zu {selected_entry.get('name', 'Unknown')}")
+
+            if self.active_call or self.pending_call:
+                messagebox.showwarning("Warning", "Bereits in einem Anruf aktiv")
+                self._in_call_click = False
+                return
+
+            if 'id' not in selected_entry:
+                messagebox.showerror("Error", "Ungültiger Kontakt (fehlende ID)")
+                self._in_call_click = False
+                return
+
+            self.initiate_call(selected_entry)
+            
+            try:
+                if hasattr(self.client, 'update_call_ui'):
+                    self.client.update_call_ui(True, "requesting", selected_entry.get('name', 'Unknown'))
+            except Exception as e:
+                print(f"[UI WARNING] Failed to update UI: {str(e)}")
+            
+            print(f"[CALL] Anruf initiiert zu {selected_entry.get('name', 'Unknown')}")
+
+        except Exception as e:
+            print(f"[CALL ERROR] on_call_click failed: {str(e)}")
+            messagebox.showerror("Error", f"Anruf fehlgeschlagen: {str(e)}")
+            self.cleanup_call_resources()
+        finally:
+            if hasattr(self, '_in_call_click'):
+                self._in_call_click = False
+
+    def initiate_call(self, recipient):
+        """Initiiert Anruf mit EINHEITLICHEM Format - KORRIGIERT"""
+        try:
+            print(f"[CALL] Starting call to {recipient.get('name', 'Unknown')}")
+
+            if not recipient or 'id' not in recipient:
+                raise ValueError("Ungültiger Empfänger (fehlende ID)")
+
+            if self.active_call or self.pending_call:
+                raise RuntimeError("Bereits in einem Anruf aktiv")
+
+            # EINHEITLICHE GET_PUBLIC_KEY Nachricht
+            key_request_data = {
+                "MESSAGE_TYPE": "GET_PUBLIC_KEY",
+                "TARGET_CLIENT_ID": recipient['id'],
+                "CALLER_NAME": self.client._client_name,
+                "CALLER_CLIENT_ID": self.client._find_my_client_id()
+            }
+            
+            key_request_msg = self.client.build_sip_message(
+                "MESSAGE", 
+                "server", 
+                key_request_data
+            )
+
+            if not self.client._send_message(key_request_msg):
+                raise ConnectionError("Konnte Key-Request nicht senden")
+
+            self.pending_call = {
+                'recipient': recipient,
+                'status': 'requesting_key',
+                'start_time': time.time(),
+                'timeout': 120
+            }
+
+            if hasattr(self.client, 'update_call_ui'):
+                self.client.update_call_ui(True, "requesting", recipient.get('name', 'Unknown'))
+
+            print(f"[CALL] Call initiated to {recipient.get('name', 'Unknown')}")
+
+            threading.Thread(target=self._call_timeout_watchdog, daemon=True).start()
+
+        except Exception as e:
+            print(f"[CALL ERROR] Initiation failed: {str(e)}")
+            self.cleanup_call_resources()
+            if hasattr(self.client, 'show_error'):
+                self.client.show_error(f"Anruf fehlgeschlagen: {str(e)}")
+            raise
 
     def handle_public_key_response(self, msg):
-        """Vereinfacht - nur noch AES Session Key Exchange"""
+        """Verarbeitet Public-Key-Antwort - VEREINFACHT OHNE WIREGUARD"""
         try:
             if not self.pending_call or self.pending_call.get('status') != 'requesting_key':
+                print("[CALL WARNING] Unexpected public key response - no pending call or wrong status")
+                return False
+                
+            print(f"[CALL] Processing public key response...")
+            
+            if not isinstance(msg, dict):
+                print(f"[CALL ERROR] Expected dict but got {type(msg)}")
                 return False
                 
             custom_data = msg.get('custom_data', {})
             target_id = custom_data.get('TARGET_CLIENT_ID')
             public_key = custom_data.get('PUBLIC_KEY')
+            caller_name = custom_data.get('CALLER_NAME')
             
             if not public_key:
+                public_key = msg.get('PUBLIC_KEY')
+            if not target_id:
+                target_id = msg.get('TARGET_CLIENT_ID')
+            if not caller_name:
+                caller_name = msg.get('CALLER_NAME')
+                
+            if not public_key:
+                print("[CALL ERROR] No public key received in any field")
                 raise Exception("No public key received from server")
+                
+            if not target_id:
+                print("[CALL WARNING] No target ID in response")
+                target_id = self.pending_call['recipient'].get('id', 'unknown')
+                
+            print(f"[CALL] Received public key for client {target_id} (length: {len(public_key)})")
+            
+            public_key = self._ensure_pem_format(public_key)
+            if not public_key:
+                raise Exception("Invalid public key format - cannot convert to PEM")
+                
+            print(f"[CALL] Formatted public key (PEM): {public_key[:100]}...")
             
             # ✅ NUR NOCH AES SESSION KEY GENERIEREN
             session_secret = os.urandom(48)  # 16 IV + 32 AES Key
             iv = session_secret[:16]
             aes_key = session_secret[16:48]
             
-            # Call-Daten vorbereiten (vereinfacht)
+            # ✅ VEREINFACHTE CALL-DATEN OHNE WIREGUARD
             call_data = {
                 "caller_name": self.client._client_name,
                 "caller_client_id": self.client._find_my_client_id(),
@@ -727,15 +955,32 @@ class CALL:
                 "call_type": "aes_audio"  # ✅ Geändert von "wireguard_audio"
             }
             
-            # ✅ MIT PUBLIC KEY DES EMPFÄNGERS VERSCHLÜSSELN (RSA)
-            public_key = self._ensure_pem_format(public_key)
-            recipient_key = self._load_public_key(public_key)
-                
-            call_data_json = json.dumps(call_data).encode('utf-8')
-            encrypted_data = recipient_key.public_encrypt(call_data_json, RSA.pkcs1_padding)
-            encrypted_b64 = base64.b64encode(encrypted_data).decode('utf-8')
+            print(f"[CALL] Prepared call data for encryption")
             
-            # CALL_REQUEST an Server senden
+            # ✅ MIT PUBLIC KEY DES EMPFÄNGERS VERSCHLÜSSELN (RSA)
+            try:
+                print("[CALL] Loading recipient public key...")
+                recipient_key = self._load_public_key(public_key)
+                if not recipient_key:
+                    raise Exception("Failed to load recipient public key")
+                    
+                call_data_json = json.dumps(call_data).encode('utf-8')
+                print(f"[CALL] Call data JSON length: {len(call_data_json)}")
+                
+                max_length = 512 - 11  # RSA PKCS#1 Padding
+                if len(call_data_json) > max_length:
+                    raise Exception(f"Call data too large for RSA encryption: {len(call_data_json)} > {max_length}")
+                    
+                encrypted_data = recipient_key.public_encrypt(call_data_json, RSA.pkcs1_padding)
+                encrypted_b64 = base64.b64encode(encrypted_data).decode('utf-8')
+                
+                print(f"[CALL] Call data encrypted successfully (size: {len(encrypted_b64)} chars)")
+                
+            except Exception as e:
+                print(f"[CALL ERROR] Encryption failed: {str(e)}")
+                raise Exception(f"Verschlüsselung fehlgeschlagen: {str(e)}")
+            
+            # ✅ CALL_REQUEST an Server senden
             call_request_data = {
                 "MESSAGE_TYPE": "CALL_REQUEST",
                 "TARGET_CLIENT_ID": target_id,
@@ -746,25 +991,148 @@ class CALL:
             }
             
             call_request_msg = self.client.build_sip_message("MESSAGE", "server", call_request_data)
-            self.client._send_message(call_request_msg)
             
-            # Call-Status aktualisieren
+            if not self.client._send_message(call_request_msg):
+                raise Exception("Failed to send CALL_REQUEST to server")
+                
+            print("[CALL] CALL_REQUEST sent to server")
+            
+            # ✅ Call-Status aktualisieren (OHNE WIREGUARD)
             self.pending_call.update({
                 'status': 'request_sent',
                 'session_secret': session_secret,  # ✅ Nur AES Session
                 'target_id': target_id
             })
             
-            print("[CALL] Call request sent with AES encryption only")
+            print("[CALL] Waiting for callee response...")
+            
+            recipient_name = self.pending_call['recipient'].get('name', 'Unknown')
+            if hasattr(self.client, 'update_call_ui'):
+                self.client.update_call_ui(True, "ringing", recipient_name)
+                
             return True
             
         except Exception as e:
             print(f"[CALL ERROR] Public key response handling failed: {str(e)}")
+            
+            if hasattr(self.client, 'after'):
+                self.client.after(0, lambda: messagebox.showerror(
+                    "Call Failed", 
+                    f"Verbindungsaufbau fehlgeschlagen: {str(e)}"
+                ))
+            
             self.cleanup_call_resources()
             return False
 
+    def _ensure_pem_format(self, key_data):
+        """Stellt sicher dass der Schlüssel im korrekten PEM-Format vorliegt"""
+        try:
+            if not key_data:
+                return None
+                
+            key_str = key_data.strip()
+            
+            if key_str.startswith('-----BEGIN PUBLIC KEY-----') and key_str.endswith('-----END PUBLIC KEY-----'):
+                print("[PEM] Key is already in valid PEM format")
+                return key_str
+            
+            if 'BEGIN PUBLIC KEY' not in key_str and 'END PUBLIC KEY' not in key_str:
+                print("[PEM] Adding PEM headers to base64 key")
+                key_content = re.sub(r'\s+', '', key_str)
+                try:
+                    base64.b64decode(key_content)
+                    key_str = f"-----BEGIN PUBLIC KEY-----\n{key_content}\n-----END PUBLIC KEY-----"
+                    print("[PEM] Successfully converted to PEM format")
+                except Exception as e:
+                    print(f"[PEM ERROR] Invalid base64: {e}")
+                    return None
+            
+            try:
+                bio = BIO.MemoryBuffer(key_str.encode())
+                key = RSA.load_pub_key_bio(bio)
+                if key:
+                    print("[PEM] Key validation successful")
+                    return key_str
+            except Exception as e:
+                print(f"[PEM ERROR] Key validation failed: {e}")
+                
+            return None
+            
+        except Exception as e:
+            print(f"[PEM ERROR] Formatting failed: {e}")
+            return None
+
+    def _load_public_key(self, pem_key):
+        """Lädt einen öffentlichen Schlüssel mit Fehlerbehandlung"""
+        try:
+            if not pem_key:
+                return None
+                
+            pem_key = pem_key.strip()
+            pem_key = pem_key.replace('\\\\n', '\n').replace('\\n', '\n')
+            
+            print(f"[KEY LOAD] Loading key: {pem_key[:100]}...")
+            
+            bio = BIO.MemoryBuffer(pem_key.encode())
+            key = RSA.load_pub_key_bio(bio)
+            
+            if key:
+                print("[KEY LOAD] Successfully loaded public key")
+                return key
+            else:
+                print("[KEY LOAD] Failed to load key")
+                return None
+                
+        except Exception as e:
+            print(f"[KEY LOAD ERROR] {str(e)}")
+            return None
+
+    def handle_incoming_call(self, msg):
+        """Verarbeitet eingehende Anrufe"""
+        try:
+            headers = msg.get('headers', {})
+            custom_data = msg.get('custom_data', {})
+            
+            caller_name = headers.get('CALLER_NAME') or custom_data.get('CALLER_NAME')
+            caller_id = headers.get('CALLER_CLIENT_ID') or custom_data.get('CALLER_CLIENT_ID')
+            encrypted_data = headers.get('ENCRYPTED_CALL_DATA') or custom_data.get('ENCRYPTED_CALL_DATA')
+            
+            if not all([caller_name, caller_id, encrypted_data]):
+                print("[CALL ERROR] Missing call information")
+                self._send_call_response("rejected", caller_id)
+                return
+                
+            print(f"[CALL] Incoming call from {caller_name}")
+            
+            if hasattr(self.client, 'after'):
+                self.client.after(0, lambda: self._ask_call_acceptance(
+                    caller_name, caller_id, encrypted_data))
+            else:
+                self._ask_call_acceptance(caller_name, caller_id, encrypted_data)
+                
+        except Exception as e:
+            print(f"[CALL ERROR] Incoming call handling failed: {str(e)}")
+            self._send_call_response("error", caller_id)
+
+    def _ask_call_acceptance(self, caller_name, caller_id, encrypted_data):
+        """Fragt Benutzer nach Annahme des Anrufs"""
+        try:
+            accept = messagebox.askyesno(
+                "Eingehender Anruf",
+                f"Eingehender Anruf von {caller_name}.\nAnnehmen?"
+            )
+            
+            if accept:
+                self._accept_incoming_call(caller_name, caller_id, encrypted_data)
+            else:
+                self._reject_incoming_call(caller_id)
+                
+        except Exception as e:
+            print(f"[CALL ERROR] Acceptance dialog failed: {str(e)}")
+            self._reject_incoming_call(caller_id)
+
     def _accept_incoming_call(self, caller_name, caller_id, encrypted_data):
-        """Nimmt eingehenden Anruf an - vereinfacht ohne WireGuard"""
+        """Nimmt eingehenden Anruf an - VEREINFACHT OHNE WIREGUARD"""
         try:
             # Daten entschlüsseln (RSA mit privatem Schlüssel)
             private_key = load_privatekey()
@@ -796,6 +1164,14 @@ class CALL:
             self._send_call_response("error", caller_id)
             self.cleanup_call_resources()
 
+    def _reject_incoming_call(self, caller_id):
+        """Lehnt eingehenden Anruf ab"""
+        try:
+            self._send_call_response("rejected", caller_id)
+            print("[CALL] Call rejected")
+        except Exception as e:
+            print(f"[CALL ERROR] Rejection failed: {str(e)}")
+
     def _send_call_response(self, response, caller_id):
         """Vereinfachte Antwort ohne WireGuard Keys"""
         try:
@@ -814,9 +1190,10 @@ class CALL:
             print(f"[CALL ERROR] Failed to send response: {str(e)}")
 
     def handle_call_response(self, msg):
-        """Verarbeitet Antwort - vereinfacht ohne WireGuard"""
+        """Verarbeitet Antwort auf eigenen Anruf - VEREINFACHT OHNE WIREGUARD"""
         try:
             if not self.pending_call:
+                print("[CALL WARNING] No pending call for response")
                 return
                 
             custom_data = msg.get('custom_data', {})
@@ -842,18 +1219,359 @@ class CALL:
                         self._start_audio_streams()
                     
                     self.pending_call['status'] = 'connected'
-                    self._update_ui_wrapper(active=True, status="connected")
+                    self._update_ui_wrapper(active=True, status="connected", 
+                                          caller_name=self.pending_call['recipient'].get('name', 'Unknown'))
                     
             elif response == "rejected":
                 print("[CALL] Call rejected by recipient")
+                if hasattr(self.client, 'after'):
+                    self.client.after(0, lambda: messagebox.showinfo("Call Rejected", "Der Empfänger hat den Anruf abgelehnt"))
                 self.cleanup_call_resources()
             elif response == "timeout":
                 print("[CALL] Call timeout")
+                if hasattr(self.client, 'after'):
+                    self.client.after(0, lambda: messagebox.showinfo("Call Failed", "Der Empfänger hat nicht geantwortet"))
+                self.cleanup_call_resources()
+            else:
+                print(f"[CALL] Unknown response: {response}")
                 self.cleanup_call_resources()
                 
         except Exception as e:
             print(f"[CALL ERROR] Response handling failed: {str(e)}")
             self.cleanup_call_resources()
+
+    def handle_call_confirmed(self, msg):
+        """Verarbeitet Call-Bestätigung für Angerufene - JETZT MIT UDP RELAY"""
+        try:
+            custom_data = msg.get('custom_data', {})
+            
+            # ✅ UDP Relay Konfiguration
+            use_relay = custom_data.get('USE_AUDIO_RELAY', False)
+            relay_ip = custom_data.get('AUDIO_RELAY_IP')
+            relay_port = custom_data.get('AUDIO_RELAY_PORT', 51822)
+            
+            if use_relay and relay_ip:
+                print(f"[CALL] Call confirmed with UDP Relay: {relay_ip}:{relay_port}")
+                self.use_udp_relay = True
+                self.relay_server_ip = relay_ip
+                self.relay_server_port = relay_port
+                
+                # Audio streams starten
+                if 'session_secret' in self.pending_call:
+                    self.current_secret = self.pending_call['session_secret']
+                    self._start_audio_streams()
+                    
+                self.pending_call['status'] = 'connected'
+                print("[CALL] UDP Relay call established successfully")
+            else:
+                print("[CALL ERROR] No relay configuration in confirmation")
+                
+        except Exception as e:
+            print(f"[CALL ERROR] Call confirmation handling failed: {str(e)}")
+
+    def _handle_session_key(self, msg):
+        """Verarbeitet Session Key vom Server"""
+        try:
+            custom_data = msg.get('custom_data', {})
+            encrypted_session = custom_data.get('ENCRYPTED_SESSION')
+            
+            if encrypted_session:
+                private_key = load_privatekey()
+                priv_key = RSA.load_key_string(private_key.encode())
+                
+                encrypted_bytes = base64.b64decode(encrypted_session)
+                decrypted = priv_key.private_decrypt(encrypted_bytes, RSA.pkcs1_padding)
+                
+                if decrypted.startswith(b"+++session_key+++"):
+                    session_secret = decrypted[17:65]
+                    self.current_secret = session_secret
+                    print("[CALL] Session key received and stored")
+                    
+                    if hasattr(self, 'pending_call') and self.pending_call.get('status') == 'accepted':
+                        self._start_audio_streams()
+                        
+        except Exception as e:
+            print(f"[CALL ERROR] Session key handling failed: {str(e)}")
+
+    # === AUDIO STREAMS === (Unverändert)
+    def _start_audio_streams(self):
+        """Startet bidirektionale Audio-Streams - JETZT MIT UDP RELAY"""
+        if not self.current_secret:
+            print("[AUDIO] No session key available")
+            return
+            
+        try:
+            # Extrahiere AES-Parameter
+            iv = self.current_secret[:16]
+            key = self.current_secret[16:48]
+            
+            # ✅ NEU: Ziel-IP basierend auf Relay oder direkt
+            if self.use_udp_relay and self.relay_server_ip:
+                # Zum Relay Server senden
+                target_ip = self.relay_server_ip
+                target_port = self.relay_server_port
+                print(f"[AUDIO] Using UDP Relay: {target_ip}:{target_port}")
+            else:
+                # Fallback: Direkte Verbindung
+                if self.pending_call and 'recipient' in self.pending_call:
+                    target_ip = "10.8.0.2"  # Callee IP
+                else:
+                    target_ip = "10.8.0.1"  # Caller IP
+                target_port = self.PORT
+                print(f"[AUDIO] Using direct connection: {target_ip}:{target_port}")
+            
+            # Beende bestehende Audio-Threads
+            self._stop_audio_streams()
+            
+            # Starte Sende-Thread
+            send_thread = threading.Thread(
+                target=self.audio_stream_out, 
+                args=(target_ip, target_port, iv, key),
+                daemon=True
+            )
+            
+            # Starte Empfangs-Thread  
+            recv_thread = threading.Thread(
+                target=self.audio_stream_in,
+                args=(iv, key),
+                daemon=True
+            )
+            
+            send_thread.start()
+            recv_thread.start()
+            
+            self.audio_threads = [send_thread, recv_thread]
+            self.active_call = True
+            print(f"[AUDIO] Bidirectional audio streams started")
+            
+        except Exception as e:
+            print(f"[AUDIO ERROR] Failed to start streams: {e}")
+
+    def _stop_audio_streams(self):
+        """Stoppt alle Audio-Streams"""
+        self.active_call = False
+        time.sleep(0.1)
+        
+        for thread in self.audio_threads:
+            try:
+                if thread.is_alive():
+                    thread.join(timeout=1.0)
+            except:
+                pass
+        self.audio_threads = []
+
+    def audio_stream_out(self, target_ip, target_port, iv, key):
+        """Sendet Audio an Ziel-IP - JETZT MIT RELAY UNTERSTÜTZUNG"""
+        audio = None
+        stream = None
+        audio_socket = None
+        
+        try:
+            audio = pyaudio.PyAudio()
+            stream = audio.open(
+                format=self.FORMAT,
+                channels=self.CHANNELS,
+                rate=self.RATE,
+                input=True,
+                frames_per_buffer=self.CHUNK
+            )
+            
+            audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            audio_socket.settimeout(0.1)
+            
+            print(f"[AUDIO OUT] Streaming to {target_ip}:{target_port}")
+            
+            while self.active_call:
+                try:
+                    data = stream.read(self.CHUNK, exception_on_overflow=False)
+                    
+                    # Verschlüsseln
+                    cipher = EVP.Cipher("aes_256_cbc", key, iv, 1)
+                    encrypted_data = cipher.update(data) + cipher.final()
+                    
+                    audio_socket.sendto(encrypted_data, (target_ip, target_port))
+                    
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    if self.active_call:
+                        print(f"[AUDIO OUT ERROR] {str(e)}")
+                    break
+                    
+        except Exception as e:
+            print(f"[AUDIO OUT SETUP ERROR] {str(e)}")
+        finally:
+            try:
+                if stream:
+                    stream.stop_stream()
+                    stream.close()
+                if audio:
+                    audio.terminate()
+                if audio_socket:
+                    audio_socket.close()
+            except:
+                pass
+
+    def audio_stream_in(self, iv, key):
+        """Empfängt Audio (unverändert - hört auf lokalem Port)"""
+        audio = None
+        stream = None
+        audio_socket = None
+        
+        try:
+            audio = pyaudio.PyAudio()
+            stream = audio.open(
+                format=self.FORMAT,
+                channels=self.CHANNELS,
+                rate=self.RATE,
+                output=True,
+                frames_per_buffer=self.CHUNK
+            )
+            
+            audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            audio_socket.bind(('0.0.0.0', self.PORT))
+            audio_socket.settimeout(0.1)
+            
+            print("[AUDIO IN] Listening for audio...")
+            
+            while self.active_call:
+                try:
+                    encrypted_data, addr = audio_socket.recvfrom(4096)
+                    
+                    # Entschlüsseln
+                    cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
+                    decrypted_data = cipher.update(encrypted_data) + cipher.final()
+                    
+                    stream.write(decrypted_data)
+                    
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    if self.active_call:
+                        print(f"[AUDIO IN ERROR] {str(e)}")
+                    break
+                    
+        except Exception as e:
+            print(f"[AUDIO IN SETUP ERROR] {str(e)}")
+        finally:
+            try:
+                if stream:
+                    stream.stop_stream()
+                    stream.close()
+                if audio:
+                    audio.terminate()
+                if audio_socket:
+                    audio_socket.close()
+            except:
+                pass
+
+    # === TIMEOUT & CLEANUP ===
+    def _call_timeout_watchdog(self):
+        """Überwacht Call-Timeout"""
+        timeout = 120
+        start_time = time.time()
+        
+        while (hasattr(self, 'pending_call') and self.pending_call and 
+               self.pending_call.get('status') in ['requesting_key', 'request_sent']):
+            if time.time() - start_time > timeout:
+                print("[CALL] Timeout waiting for call response")
+                self.cleanup_call_resources()
+                if hasattr(self.client, 'after'):
+                    self.client.after(0, lambda: messagebox.showinfo("Call Failed", "Keine Antwort vom Empfänger"))
+                break
+            time.sleep(1)
+
+    def cleanup_call_resources(self):
+        """Bereinigt alle Call-Ressourcen"""
+        print("[CALL] Cleaning up call resources...")
+        self.active_call = False
+        
+        # Audio-Threads stoppen
+        self._stop_audio_streams()
+        
+        # ✅ KEIN WIREGUARD CLEANUP MEHR NOTWENDIG
+        
+        # Variablen zurücksetzen
+        self.pending_call = None
+        self.incoming_call = None
+        self.current_secret = None
+        self.use_udp_relay = False
+        self.relay_server_ip = None
+        
+        # UI zurücksetzen
+        try:
+            self._update_ui_wrapper(active=False)
+        except:
+            pass
+            
+        print("[CALL] Cleanup complete")
+
+    def hangup_call(self):
+        """Beendet aktiven Anruf"""
+        try:
+            if self.active_call or self.pending_call:
+                print("[CALL] Hanging up call")
+                
+                # Hangup-Nachricht an Server
+                hangup_msg = self.client.build_sip_message("MESSAGE", "server", {
+                    "MESSAGE_TYPE": "CALL_END",
+                    "TIMESTAMP": int(time.time()),
+                    "REASON": "user_hangup"
+                })
+                
+                self.client._send_message(hangup_msg)
+                
+            self.cleanup_call_resources()
+            print("[CALL] Hangup complete")
+            
+        except Exception as e:
+            print(f"[CALL ERROR] Hangup failed: {str(e)}")
+            self.cleanup_call_resources()
+
+    def _update_ui_wrapper(self, active, status=None, caller_name=None):
+        """Wrapper für UI-Updates mit Fallback"""
+        try:
+            self.update_call_ui(active, status, caller_name)
+        except Exception as e:
+            print(f"[UI WRAPPER WARNING] Failed to update UI: {str(e)}")
+            try:
+                if hasattr(self.client, 'status_label') and self.client.status_label.winfo_exists():
+                    if active:
+                        self.client.status_label.configure(text="Aktiver Anruf")
+                    else:
+                        self.client.status_label.configure(text="Bereit")
+            except:
+                pass
+
+    def _get_public_ip(self):
+        """Ermittelt die öffentliche IP"""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except:
+            return "127.0.0.1"
+
+    def _get_local_ip(self):
+        """Ermittelt die lokale IP"""
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            ip = s.getsockname()[0]
+            s.close()
+            return ip
+        except:
+            return "127.0.0.1"
+
+    def on_entry_click(self, entry):
+        """Handler für Klicks auf Telefonbucheinträge"""
+        try:
+            self.client.selected_entry = entry
+            print(f"[CALL] Selected entry: {entry.get('name', 'Unknown')}")
+        except Exception as e:
+            print(f"[CALL ERROR] Entry click failed: {str(e)}")
 class SecureVault:
     IV_SIZE = 16      # initialisation vector (first 16 bytes)
     KEY_SIZE = 32     # aes key (last 32 bytes)
