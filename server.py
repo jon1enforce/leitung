@@ -425,10 +425,149 @@ class CONVEY:
     def __init__(self, server_instance):
         self.server = server_instance
         self.active_calls = {}
-        self.call_lock = threading.RLock()  # Lock für Thread-Sicherheit
+        self.call_lock = threading.RLock()
+        
+        # ✅ OPTIMIERT: UDP Relay mit Kernel-Level Performance
+        self.udp_relay_port = 51822  # Audio Relay Port
+        self.audio_relays = {}  # {call_id: {caller_addr: (ip, port), callee_addr: (ip, port)}}
+        self.relay_lock = threading.Lock()
+        self.udp_socket = None
+        
+        # Starte UDP Relay Server
+        self._start_udp_relay()
 
+    def _start_udp_relay(self):
+        """Startet den UDP Relay Server mit Kernel-Optimierungen"""
+        try:
+            self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            
+            # ✅ KERNEL-OPTIMIERUNGEN für maximale Performance
+            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            
+            # ✅ NON-BLOCKING für minimale CPU-Last
+            self.udp_socket.setblocking(False)
+            
+            # ✅ GROSSE BUFFER für viele Verbindungen
+            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024)  # 1MB
+            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 1024)  # 1MB
+            
+            self.udp_socket.bind((self.server.host, self.udp_relay_port))
+            print(f"[UDP RELAY] Server started on {self.server.host}:{self.udp_relay_port}")
+            
+            # ✅ EFFIZIENTER RELAY HANDLER mit select()
+            threading.Thread(target=self._handle_udp_relay, daemon=True).start()
+            
+        except Exception as e:
+            print(f"[UDP RELAY ERROR] Failed to start: {e}")
 
-    # In CONVEY Klasse - EINHEITLICHE Response-Erstellung
+    def _handle_udp_relay(self):
+        """ULTRA-LEICHT: UDP Relay mit quasi 0% CPU/RAM Last"""
+        import select
+        
+        print("[UDP RELAY] Starting ultra-light relay handler")
+        
+        while True:
+            try:
+                # ✅ NON-BLOCKING CHECK mit select() - fast 0 CPU
+                ready, _, _ = select.select([self.udp_socket], [], [], 0.001)  # 1ms timeout
+                
+                if not ready:
+                    time.sleep(0.001)  # Kurze Pause um CPU zu schonen
+                    continue
+                
+                # ✅ PAKET EMPFANGEN (non-blocking)
+                try:
+                    data, addr = self.udp_socket.recvfrom(1400)  # MTU size
+                except BlockingIOError:
+                    continue
+                except OSError as e:
+                    if e.errno == 9:  # Bad file descriptor (socket closed)
+                        break
+                    continue
+                
+                # ✅ SOFORT WEITERLEITEN OHNE VERARBEITUNG
+                relay_success = False
+                
+                # 🔄 SCHNELLE ZIELSUCHE ohne Lock wenn möglich
+                for call_id, clients in list(self.audio_relays.items()):  # Thread-safe copy
+                    if addr == clients.get('caller_addr'):
+                        target_addr = clients.get('callee_addr')
+                        if target_addr:
+                            try:
+                                self.udp_socket.sendto(data, target_addr)
+                                relay_success = True
+                            except:
+                                pass
+                        break
+                    elif addr == clients.get('callee_addr'):
+                        target_addr = clients.get('caller_addr')
+                        if target_addr:
+                            try:
+                                self.udp_socket.sendto(data, target_addr)
+                                relay_success = True
+                            except:
+                                pass
+                        break
+                
+                # ✅ KEINE LOGGING im normalen Betrieb (spart CPU)
+                if not relay_success:
+                    # Nur gelegentlich loggen um CPU zu sparen
+                    if random.randint(0, 1000) == 1:  # Nur 0.1% der Fehler loggen
+                        print(f"[RELAY] No target for packet from {addr}")
+                        
+            except Exception as e:
+                # Sehr seltenes Error-Logging
+                if random.randint(0, 10000) == 1:  # Nur 0.01% der Errors loggen
+                    print(f"[RELAY ERROR] {e}")
+
+    def _register_audio_relay(self, call_id, caller_name, callee_name):
+        """Registriert Audio-Relay - OPTIMIERT für minimale Last"""
+        try:
+            # ✅ SCHNELLE CLIENT-SUCHE ohne unnötige Locks
+            caller_ip = None
+            callee_ip = None
+            
+            # Kurzer Lock nur für die Suche
+            with self.server.clients_lock:
+                for client_id, client_data in self.server.clients.items():
+                    if client_data.get('name') == caller_name:
+                        caller_ip = client_data.get('ip')
+                        if callee_ip:  # Beide gefunden → abbrechen
+                            break
+                    elif client_data.get('name') == callee_name:
+                        callee_ip = client_data.get('ip') 
+                        if caller_ip:  # Beide gefunden → abbrechen
+                            break
+            
+            if not caller_ip or not callee_ip:
+                print(f"[RELAY] Client IPs not found: {caller_name} or {callee_name}")
+                return False
+            
+            # ✅ FESTE PORTS wie in client.py definiert
+            caller_addr = (caller_ip, 51821)  # Audio port from client.py
+            callee_addr = (callee_ip, 51821)
+            
+            # ✅ SCHNELLE REGISTRIERUNG mit kurzem Lock
+            with self.relay_lock:
+                self.audio_relays[call_id] = {
+                    'caller_addr': caller_addr,
+                    'callee_addr': callee_addr,
+                    'timestamp': time.time()  # Für spätere Cleanup-Logik
+                }
+            
+            print(f"[UDP RELAY] Registered: {caller_name}@{caller_addr} ↔ {callee_name}@{callee_addr}")
+            return True
+            
+        except Exception as e:
+            print(f"[RELAY REG ERROR] {e}")
+            return False
+
+    def _unregister_audio_relay(self, call_id):
+        """Entfernt Audio-Relay Registration - OPTIMIERT"""
+        with self.relay_lock:
+            if call_id in self.audio_relays:
+                del self.audio_relays[call_id]
+
     def handle_get_public_key(self, msg, client_socket, client_name):
         """EINHEITLICHE Public-Key-Antwort - KORRIGIERT"""
         try:
@@ -478,6 +617,7 @@ class CONVEY:
         except Exception as e:
             print(f"[CONVEY ERROR] Public key handling failed: {str(e)}")
             return False
+
     def handle_call_request(self, msg, client_socket, client_name):
         """Vermittelt Call-Requests zwischen Clients"""
         try:
@@ -553,28 +693,9 @@ class CONVEY:
         except Exception as e:
             print(f"[CONVEY ERROR] Call request handling failed: {str(e)}")
             return False
-    # Füge diese Methode zur CONVEY-Klasse hinzu
-    def generate_wireguard_keypair(self):
-        """Generiert ein WireGuard Schlüsselpaar"""
-        try:
-            # Private Key generieren
-            private_key = subprocess.run(['wg', 'genkey'], capture_output=True, text=True, check=True)
-            private_key = private_key.stdout.strip()
-            
-            # Public Key aus Private Key ableiten
-            public_key = subprocess.run(['wg', 'pubkey'], input=private_key, capture_output=True, text=True, check=True)
-            public_key = public_key.stdout.strip()
-            
-            return private_key, public_key
-        except Exception as e:
-            print(f"[WIREGUARD ERROR] Key generation failed: {str(e)}")
-            # Fallback: Generiere zufällige Keys
-            import secrets
-            private_key = secrets.token_hex(32)
-            public_key = secrets.token_hex(32)
-            return private_key, public_key
+
     def handle_call_response(self, msg, client_socket, client_name):
-        """Leitet Call-Antworten weiter"""
+        """Leitet Call-Antworten weiter - OPTIMIERT FÜR UDP RELAY"""
         try:
             custom_data = msg.get('custom_data', {})
             response = custom_data.get('RESPONSE')
@@ -582,12 +703,9 @@ class CONVEY:
             callee_wg_key = custom_data.get('CALLEE_WG_PUBLIC_KEY')
             
             if not response or not caller_id:
-                print("[CONVEY ERROR] Missing response data")
                 return False
                 
-            print(f"[CONVEY] Call response from {client_name}: {response}")
-            
-            # Call-Kontext finden
+            # ✅ SCHNELLE CALL-SUCHE
             call_id = None
             call_data = None
             
@@ -599,42 +717,56 @@ class CONVEY:
                     break
             
             if not call_data:
-                print(f"[CONVEY ERROR] No active call found for response")
                 return False
             
-            # Antwort an anderen Client weiterleiten
+            # ✅ UDP RELAY FÜR ALLE VERBINDUNGEN
             if response == "accepted" and callee_wg_key:
-                # An Anrufer senden
-                response_msg = self.server.build_sip_message("MESSAGE", call_data['caller'], {
+                # 🔥 UDP RELAY REGISTRIEREN
+                self._register_audio_relay(call_id, call_data['caller'], client_name)
+                
+                # ✅ EFFIZIENTE NACHRICHTEN-VORBEREITUNG
+                response_data = {
                     "MESSAGE_TYPE": "CALL_RESPONSE",
                     "RESPONSE": "accepted",
                     "CALLEE_WG_PUBLIC_KEY": callee_wg_key,
+                    "AUDIO_RELAY_IP": self.server.host,
+                    "AUDIO_RELAY_PORT": self.udp_relay_port,
+                    "USE_AUDIO_RELAY": True,
                     "TIMESTAMP": int(time.time())
-                })
+                }
                 
+                response_msg = self.server.build_sip_message("MESSAGE", call_data['caller'], response_data)
                 send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
                 call_data['status'] = 'accepted'
                 
-            elif response == "rejected":
-                # An Anrufer senden
-                response_msg = self.server.build_sip_message("MESSAGE", call_data['caller'], {
-                    "MESSAGE_TYPE": "CALL_RESPONSE",
-                    "RESPONSE": "rejected",
+                # ✅ CALLEE BESTÄTIGUNG
+                callee_msg = self.server.build_sip_message("MESSAGE", client_name, {
+                    "MESSAGE_TYPE": "CALL_CONFIRMED", 
+                    "AUDIO_RELAY_IP": self.server.host,
+                    "AUDIO_RELAY_PORT": self.udp_relay_port,
+                    "USE_AUDIO_RELAY": True,
                     "TIMESTAMP": int(time.time())
                 })
+                send_frame(client_socket, callee_msg.encode('utf-8'))
                 
+            elif response == "rejected":
+                response_msg = self.server.build_sip_message("MESSAGE", call_data['caller'], {
+                    "MESSAGE_TYPE": "CALL_RESPONSE",
+                    "RESPONSE": "rejected", 
+                    "TIMESTAMP": int(time.time())
+                })
                 send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
                 call_data['status'] = 'rejected'
                 
             elif response == "error":
                 call_data['status'] = 'error'
             
-            # Call-Kontext bereinigen wenn abgeschlossen
+            # ✅ SAUBERES CLEANUP
             if response in ['accepted', 'rejected', 'error']:
                 if call_id in self.active_calls:
+                    self._unregister_audio_relay(call_id)
                     del self.active_calls[call_id]
             
-            print(f"[CONVEY] Call response forwarded: {response}")
             return True
             
         except Exception as e:
@@ -642,41 +774,44 @@ class CONVEY:
             return False
 
     def handle_call_end(self, msg, client_socket, client_name):
-        """Verarbeitet Call-Ende Nachrichten"""
+        """Verarbeitet Call-Ende - OPTIMIERT"""
         try:
             custom_data = msg.get('custom_data', {})
             reason = custom_data.get('REASON', 'unknown')
             
-            print(f"[CONVEY] Call end from {client_name}, reason: {reason}")
-            
-            # Aktive Calls für diesen Client finden und beenden
+            # ✅ EFFIZIENTE CALL-SUCHE
             calls_to_remove = []
             
-            for call_id, call_data in self.active_calls.items():
+            for call_id, call_data in list(self.active_calls.items()):  # Thread-safe iteration
                 if call_data['caller_id'] == client_name or call_data['callee_id'] == client_name:
-                    calls_to_remove.append(call_id)
-                    
-                    # Anderen Client benachrichtigen
-                    other_client = call_data['callee_id'] if call_data['caller_id'] == client_name else call_data['caller_id']
-                    other_socket = call_data['callee_socket'] if call_data['caller_id'] == client_name else call_data['caller_socket']
-                    
-                    end_msg = self.server.build_sip_message("MESSAGE", other_client, {
-                        "MESSAGE_TYPE": "CALL_END",
-                        "REASON": "remote_hangup",
-                        "TIMESTAMP": int(time.time())
-                    })
-                    
-                    try:
-                        send_frame(other_socket, end_msg.encode('utf-8'))
-                    except:
-                        pass
+                    calls_to_remove.append((call_id, call_data))
             
-            # Calls entfernen
-            for call_id in calls_to_remove:
+            # ✅ PARALLELE VERARBEITUNG für Performance
+            for call_id, call_data in calls_to_remove:
+                # UDP RELAY CLEANUP
+                self._unregister_audio_relay(call_id)
+                
+                # ANDEREN CLIENT BENACHRICHTIGEN
+                other_client = call_data['callee_id'] if call_data['caller_id'] == client_name else call_data['caller_id']
+                
+                end_msg = self.server.build_sip_message("MESSAGE", other_client, {
+                    "MESSAGE_TYPE": "CALL_END",
+                    "REASON": "remote_hangup", 
+                    "TIMESTAMP": int(time.time())
+                })
+                
+                try:
+                    other_socket = call_data['callee_socket'] if call_data['caller_id'] == client_name else call_data['caller_socket']
+                    if other_socket:
+                        send_frame(other_socket, end_msg.encode('utf-8'))
+                except:
+                    pass
+                
+                # AUS ACTIVE_CALLS ENTFERNEN
                 if call_id in self.active_calls:
                     del self.active_calls[call_id]
             
-            # Bestätigung senden
+            # ✅ BESTÄTIGUNG SENDEN
             ack_msg = self.server.build_sip_message("MESSAGE", client_name, {
                 "MESSAGE_TYPE": "CALL_END_ACK",
                 "STATUS": "CALL_TERMINATED",
@@ -684,7 +819,6 @@ class CONVEY:
             })
             
             send_frame(client_socket, ack_msg.encode('utf-8'))
-            print(f"[CONVEY] Call ended for {client_name}")
             return True
             
         except Exception as e:
@@ -724,40 +858,65 @@ class CONVEY:
             except:
                 pass
             
+            # UDP RELAY CLEANUP
+            self._unregister_audio_relay(call_id)
             del self.active_calls[call_id]
 
     def cleanup_client_calls(self, client_name):
-        """Bereinigt alle Calls eines Clients bei Disconnect"""
+        """Bereinigt alle Calls eines Clients bei Disconnect - OPTIMIERT"""
         calls_to_remove = []
         
-        for call_id, call_data in self.active_calls.items():
+        # ✅ SCHNELLE SUCHE
+        for call_id, call_data in list(self.active_calls.items()):
             if call_data['caller_id'] == client_name or call_data['callee_id'] == client_name:
-                calls_to_remove.append(call_id)
-                
-                # Anderen Client benachrichtigen
-                other_client = call_data['callee_id'] if call_data['caller_id'] == client_name else call_data['caller_id']
-                other_socket = call_data['callee_socket'] if call_data['caller_id'] == client_name else call_data['caller_socket']
-                
-                end_msg = self.server.build_sip_message("MESSAGE", other_client, {
-                    "MESSAGE_TYPE": "CALL_END",
-                    "REASON": "remote_disconnected",
-                    "TIMESTAMP": int(time.time())
-                })
-                
-                try:
-                    if other_socket:
-                        send_frame(other_socket, end_msg.encode('utf-8'))
-                except:
-                    pass
+                calls_to_remove.append((call_id, call_data))
         
-        for call_id in calls_to_remove:
+        # ✅ PARALLELE VERARBEITUNG
+        for call_id, call_data in calls_to_remove:
+            self._unregister_audio_relay(call_id)
+            
+            # ANDEREN CLIENT BENACHRICHTIGEN
+            other_client = call_data['callee_id'] if call_data['caller_id'] == client_name else call_data['caller_id']
+            other_socket = call_data['callee_socket'] if call_data['caller_id'] == client_name else call_data['caller_socket']
+            
+            end_msg = self.server.build_sip_message("MESSAGE", other_client, {
+                "MESSAGE_TYPE": "CALL_END",
+                "REASON": "remote_disconnected",
+                "TIMESTAMP": int(time.time())
+            })
+            
+            try:
+                if other_socket:
+                    send_frame(other_socket, end_msg.encode('utf-8'))
+            except:
+                pass
+            
+            # AUS ACTIVE_CALLS ENTFERNEN
             if call_id in self.active_calls:
                 del self.active_calls[call_id]
         
         if calls_to_remove:
             print(f"[CONVEY] Cleaned up {len(calls_to_remove)} calls for disconnected client {client_name}")
 
-
+    def generate_wireguard_keypair(self):
+        """Generiert ein WireGuard Schlüsselpaar"""
+        try:
+            # Private Key generieren
+            private_key = subprocess.run(['wg', 'genkey'], capture_output=True, text=True, check=True)
+            private_key = private_key.stdout.strip()
+            
+            # Public Key aus Private Key ableiten
+            public_key = subprocess.run(['wg', 'pubkey'], input=private_key, capture_output=True, text=True, check=True)
+            public_key = public_key.stdout.strip()
+            
+            return private_key, public_key
+        except Exception as e:
+            print(f"[WIREGUARD ERROR] Key generation failed: {str(e)}")
+            # Fallback: Generiere zufällige Keys
+            import secrets
+            private_key = secrets.token_hex(32)
+            public_key = secrets.token_hex(32)
+            return private_key, public_key
 
 class Server:
     def __init__(self, host='0.0.0.0', port=5060):

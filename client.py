@@ -689,14 +689,21 @@ class CALL:
         self.RATE = 16000
         self.CHUNK = 1024
         self.PORT = 51821  # Audio port
-        self.connection_state = "disconnected"  # disconnected, connecting, connected
+        self.connection_state = "disconnected"
         self.connection_lock = threading.Lock()
+        
+        # ✅ NEU: UDP Relay Konfiguration
+        self.use_udp_relay = False
+        self.relay_server_ip = None
+        self.relay_server_port = 51822  # Standard Relay Port
+
     def set_connection_state(self, state):
         """Thread-safe connection state management"""
         with self.connection_lock:
             old_state = self.connection_state
             self.connection_state = state
-            print(f"[CONNECTION] State changed: {old_state} -> {state}")        
+            print(f"[CONNECTION] State changed: {old_state} -> {state}")
+
     def update_call_ui(self, active, status=None, caller_name=None):
         """Delegate UI updates to the main client instance"""
         try:
@@ -704,15 +711,14 @@ class CALL:
                 self.client.update_call_ui(active, status, caller_name)
         except Exception as e:
             print(f"[UI UPDATE ERROR] {str(e)}")
+
     def on_call_click(self, selected_entry=None):
         """Hauptmethode für Call-Initiation - wird von UI aufgerufen"""
         try:
-            # VERBESSERT: Explizite Prüfung auf Rekursion vermeiden
             if hasattr(self, '_in_call_click') and self._in_call_click:
                 return
             self._in_call_click = True
             
-            # Verwende übergebenen Eintrag oder falls None, versuche self.client.selected_entry
             if selected_entry is None and hasattr(self.client, 'selected_entry'):
                 selected_entry = self.client.selected_entry
                 
@@ -723,22 +729,18 @@ class CALL:
 
             print(f"[CALL] Starte Anruf zu {selected_entry.get('name', 'Unknown')}")
 
-            # Prüfe ob bereits ein aktiver Call läuft
             if self.active_call or self.pending_call:
                 messagebox.showwarning("Warning", "Bereits in einem Anruf aktiv")
                 self._in_call_click = False
                 return
 
-            # Validiere dass required fields vorhanden sind
             if 'id' not in selected_entry:
                 messagebox.showerror("Error", "Ungültiger Kontakt (fehlende ID)")
                 self._in_call_click = False
                 return
 
-            # Schritt 1: Anruf initiieren
             self.initiate_call(selected_entry)
             
-            # UI auf "Warten" setzen - VERBESSERT: Direkter Aufruf ohne Wrapper
             try:
                 if hasattr(self.client, 'update_call_ui'):
                     self.client.update_call_ui(True, "requesting", selected_entry.get('name', 'Unknown'))
@@ -752,17 +754,15 @@ class CALL:
             messagebox.showerror("Error", f"Anruf fehlgeschlagen: {str(e)}")
             self.cleanup_call_resources()
         finally:
-            # Sicherstellen dass Flag zurückgesetzt wird
             if hasattr(self, '_in_call_click'):
                 self._in_call_click = False
+
     def _generate_wireguard_keypair(self):
         """Generiert ein WireGuard Schlüsselpaar"""
         try:
-            # Private Key generieren
             private_key = subprocess.run(['wg', 'genkey'], capture_output=True, text=True, check=True)
             private_key = private_key.stdout.strip()
             
-            # Public Key aus Private Key ableiten
             public_key = subprocess.run(['wg', 'pubkey'], input=private_key, capture_output=True, text=True, check=True)
             public_key = public_key.stdout.strip()
             
@@ -771,171 +771,31 @@ class CALL:
             print(f"[WIREGUARD ERROR] Key generation failed: {str(e)}")
             raise
 
-    def _setup_wireguard_tunnel(self, private_key, peer_public_key, endpoint, my_ip):
-        """Richtet einen WireGuard Tunnel ein - KORRIGIERT FÜR NAMENSKONVENTIONEN"""
+    # ✅ ENTFERNT: WireGuard Tunnel Setup Methoden (nicht mehr benötigt)
+    # _setup_wireguard_tunnel, _setup_wireguard_openbsd, _setup_wireguard_linux, etc.
+
+    def _setup_outgoing_call(self, callee_wg_key, callee_ip=None, use_relay=False, relay_ip=None, relay_port=None):
+        """Richtet ausgehenden Call ein - JETZT MIT UDP RELAY"""
         try:
-            # ✅ Platform-Erkennung
-            is_openbsd = sys.platform.startswith('openbsd')
-            is_linux = sys.platform.startswith('linux')
-            
-            print(f"[WG] Platform: {sys.platform}")
-            
-            if not is_openbsd and not is_linux:
-                print(f"[WG ERROR] Unsupported platform: {sys.platform}")
-                return None
-            
-            # ✅ Privilegien-Tool erkennen
-            sudo_command = None
-            for cmd in ['doas', 'sudo']:
-                try:
-                    subprocess.run([cmd, 'echo', 'test'], capture_output=True, check=True)
-                    sudo_command = cmd
-                    break
-                except:
-                    continue
-            
-            sudo_prefix = f"{sudo_command} " if sudo_command else ""
-            
-            # ✅ Platform-spezifische Konfiguration mit korrekten Interface-Namen
-            if is_openbsd:
-                interface = self._setup_wireguard_openbsd(sudo_prefix, private_key, peer_public_key, endpoint, my_ip)
+            # ✅ NEU: UDP Relay Konfiguration
+            if use_relay and relay_ip:
+                self.use_udp_relay = True
+                self.relay_server_ip = relay_ip
+                self.relay_server_port = relay_port or 51822
+                print(f"[CALL] Using UDP Relay: {relay_ip}:{relay_port}")
+                
+                # ✅ KEIN WIREGUARD TUNNEL MEHR NOTWENDIG!
+                # Audio streams direkt zum Relay Server
+                success = True
             else:
-                interface = self._setup_wireguard_linux(sudo_prefix, "wg-phonebook", private_key, peer_public_key, endpoint, my_ip)
-                
-            return interface
-                
-        except Exception as e:
-            print(f"[WIREGUARD ERROR] Tunnel setup failed: {str(e)}")
-            return None
-
-    def _setup_wireguard_openbsd(self, sudo_prefix, private_key, peer_public_key, endpoint, my_ip):
-        """OpenBSD mit korrekten wg0, wg1, ... Interface-Namen"""
-        try:
-            # ✅ Freien Interface-Namen finden (wg0, wg1, ...)
-            interface = None
-            for i in range(10):
-                test_interface = f"wg{i}"
-                check_cmd = f"{sudo_prefix}ifconfig {test_interface}"
-                result = subprocess.run(check_cmd, shell=True, capture_output=True, text=True)
-                if result.returncode != 0:  # Interface existiert nicht
-                    interface = test_interface
-                    break
-            
-            if not interface:
-                print("[WG ERROR] No available WireGuard interface found")
-                return None
-                
-            print(f"[WG] Using OpenBSD interface: {interface}")
-            
-            # ✅ Rest der Konfiguration (wie vorher)...
-            endpoint_ip, endpoint_port = endpoint.split(':')
-            
-            # 1. Interface erstellen
-            create_cmd = f"{sudo_prefix}ifconfig {interface} create"
-            result = subprocess.run(create_cmd, shell=True, capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"[WG ERROR] Interface creation failed: {result.stderr}")
-                return None
-            
-            # 2. Private Key setzen
-            key_cmd = f"echo '{private_key}' | {sudo_prefix}wg set {interface} private-key /dev/stdin"
-            result = subprocess.run(key_cmd, shell=True, capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"[WG ERROR] Private key setup failed: {result.stderr}")
-                return None
-            
-            # 3. Peer konfigurieren
-            peer_cmd = f"{sudo_prefix}wg set {interface} peer {peer_public_key} endpoint {endpoint} allowed-ips 0.0.0.0/0"
-            result = subprocess.run(peer_cmd, shell=True, capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"[WG ERROR] Peer configuration failed: {result.stderr}")
-                return None
-            
-            # 4. IP Adresse setzen
-            ip_cmd = f"{sudo_prefix}ifconfig {interface} inet {my_ip} netmask 255.255.255.0"
-            result = subprocess.run(ip_cmd, shell=True, capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"[WG ERROR] IP configuration failed: {result.stderr}")
-                return None
-            
-            # 5. Interface aktivieren
-            up_cmd = f"{sudo_prefix}ifconfig {interface} up"
-            result = subprocess.run(up_cmd, shell=True, capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"[WG ERROR] Interface activation failed: {result.stderr}")
-                return None
-            
-            print(f"[WG] OpenBSD WireGuard setup successful: {interface} -> {my_ip}")
-            return interface
-            
-        except Exception as e:
-            print(f"[WG ERROR] OpenBSD setup failed: {str(e)}")
-            return None
-
-    def _setup_wireguard_linux(self, sudo_prefix, interface, private_key, peer_public_key, endpoint, my_ip):
-        """Linux mit beliebigen Interface-Namen"""
-        try:
-            print(f"[WG] Using Linux interface: {interface}")
-            
-            # 1. Interface erstellen
-            create_cmd = f"{sudo_prefix}ip link add dev {interface} type wireguard"
-            result = subprocess.run(create_cmd, shell=True, capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"[WG ERROR] Interface creation failed: {result.stderr}")
-                return None
-            
-            # 2. Private Key setzen
-            key_cmd = f"echo '{private_key}' | {sudo_prefix}wg set {interface} private-key /dev/stdin"
-            result = subprocess.run(key_cmd, shell=True, capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"[WG ERROR] Private key setup failed: {result.stderr}")
-                return None
-            
-            # 3. Peer konfigurieren
-            peer_cmd = f"{sudo_prefix}wg set {interface} peer {peer_public_key} endpoint {endpoint} allowed-ips 0.0.0.0/0"
-            result = subprocess.run(peer_cmd, shell=True, capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"[WG ERROR] Peer configuration failed: {result.stderr}")
-                return None
-            
-            # 4. IP Adresse setzen
-            ip_cmd = f"{sudo_prefix}ip addr add {my_ip}/24 dev {interface}"
-            result = subprocess.run(ip_cmd, shell=True, capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"[WG ERROR] IP configuration failed: {result.stderr}")
-                return None
-            
-            # 5. Interface aktivieren
-            up_cmd = f"{sudo_prefix}ip link set up dev {interface}"
-            result = subprocess.run(up_cmd, shell=True, capture_output=True, text=True)
-            if result.returncode != 0:
-                print(f"[WG ERROR] Interface activation failed: {result.stderr}")
-                return None
-            
-            print(f"[WG] Linux WireGuard setup successful: {interface} -> {my_ip}")
-            return interface
-            
-        except Exception as e:
-            print(f"[WG ERROR] Linux setup failed: {str(e)}")
-            return None
-
-    # KORREKTE VERSION von _setup_outgoing_call:
-    def _setup_outgoing_call(self, callee_wg_key, callee_ip=None):
-        try:
-            public_ip = callee_ip or self._get_public_ip()
-            my_wg_ip = "10.8.0.1"  # Caller ist .1
-            
-            # ✅ Direktes Setup ohne wg_manager
-            success = self._setup_wireguard_tunnel(
-                self.pending_call['wg_private_key'],
-                callee_wg_key,
-                f"{public_ip}:51820", 
-                my_wg_ip
-            )
+                # Fallback: Alte WireGuard Methode (falls noch benötigt)
+                print("[CALL] Using direct WireGuard connection (fallback)")
+                success = self._setup_direct_connection(callee_wg_key, callee_ip)
             
             if success:
                 self.pending_call['status'] = 'connected'
                 self.pending_call['wg_peer_key'] = callee_wg_key
+                self.pending_call['use_relay'] = use_relay
                 
                 if 'session_secret' in self.pending_call:
                     self.current_secret = self.pending_call['session_secret']
@@ -950,14 +810,23 @@ class CALL:
             print(f"[CALL ERROR] {e}")
             self.cleanup_call_resources()
             return False
-    def _update_ui_wrapper(self, active, status=None, caller_name=None):
-        """Wrapper für UI-Updates mit Fallback - VERBESSERT: Vereinfacht"""
+
+    def _setup_direct_connection(self, callee_wg_key, callee_ip):
+        """Fallback für direkte Verbindung (falls noch benötigt)"""
         try:
-            # VERBESSERT: Direkter Aufruf ohne Rekursion
+            # Alte WireGuard Logik hier (falls du sie behalten willst)
+            print("[CALL] Direct connection not implemented - using relay only")
+            return False
+        except Exception as e:
+            print(f"[DIRECT CONNECTION ERROR] {e}")
+            return False
+
+    def _update_ui_wrapper(self, active, status=None, caller_name=None):
+        """Wrapper für UI-Updates mit Fallback"""
+        try:
             self.update_call_ui(active, status, caller_name)
         except Exception as e:
             print(f"[UI WRAPPER WARNING] Failed to update UI: {str(e)}")
-            # Fallback: Einfache Status-Änderung
             try:
                 if hasattr(self.client, 'status_label') and self.client.status_label.winfo_exists():
                     if active:
@@ -966,8 +835,6 @@ class CALL:
                         self.client.status_label.configure(text="Bereit")
             except:
                 pass
-    
-
 
     def _handle_session_key(self, msg):
         """Verarbeitet Session Key vom Server"""
@@ -976,37 +843,32 @@ class CALL:
             encrypted_session = custom_data.get('ENCRYPTED_SESSION')
             
             if encrypted_session:
-                # Entschlüssele Session Key mit privatem Schlüssel
                 private_key = load_privatekey()
                 priv_key = RSA.load_key_string(private_key.encode())
                 
                 encrypted_bytes = base64.b64decode(encrypted_session)
                 decrypted = priv_key.private_decrypt(encrypted_bytes, RSA.pkcs1_padding)
                 
-                # Erwartetes Format: b"+++session_key+++" + 48 Bytes
                 if decrypted.startswith(b"+++session_key+++"):
-                    session_secret = decrypted[17:65]  # 48 Bytes
+                    session_secret = decrypted[17:65]
                     self.current_secret = session_secret
                     print("[CALL] Session key received and stored")
                     
-                    # Starte Audio wenn Call pending
                     if hasattr(self, 'pending_call') and self.pending_call.get('status') == 'accepted':
                         self._start_audio_streams()
                         
         except Exception as e:
             print(f"[CALL ERROR] Session key handling failed: {str(e)}")
+
     def handle_message(self, raw_message):
-        """Zentrale Message-Handling Methode - KORRIGIERT FÜR MESSAGE-TYPE ERKENNUNG"""
+        """Zentrale Message-Handling Methode - ERWEITERT FÜR UDP RELAY"""
         try:
             print(f"[CALL] Handling raw message type: {type(raw_message)}")
             
-            # ✅ Zuerst die Nachricht korrekt parsen
             if isinstance(raw_message, str):
-                # Verwende den SIP-Parser des Clients
                 if hasattr(self.client, 'parse_sip_message'):
                     msg = self.client.parse_sip_message(raw_message)
                 else:
-                    # Fallback: Versuche JSON zu parsen
                     if raw_message.strip().startswith('{'):
                         try:
                             msg = json.loads(raw_message)
@@ -1024,7 +886,6 @@ class CALL:
                 print("[CALL WARNING] Failed to parse message")
                 return
                 
-            # ✅ Jetzt den Message-Type aus der geparsten Nachricht extrahieren
             message_type = self._extract_message_type(msg)
             print(f"[CALL] Handling message type: {message_type}")
             
@@ -1037,6 +898,8 @@ class CALL:
             elif message_type == 'PUBLIC_KEY_RESPONSE':
                 print("[CALL] Received PUBLIC_KEY_RESPONSE, processing...")
                 self.handle_public_key_response(msg)
+            elif message_type == 'CALL_CONFIRMED':
+                self.handle_call_confirmed(msg)
             elif message_type == 'CALL_TIMEOUT':
                 self.cleanup_call_resources()
                 if hasattr(self.client, 'after'):
@@ -1044,7 +907,7 @@ class CALL:
             elif message_type == 'CALL_END':
                 self.cleanup_call_resources()
             elif message_type == 'PONG':
-                print("[CALL] Pong received")  # Ignorieren
+                print("[CALL] Pong received")
             else:
                 print(f"[CALL WARNING] Unknown message type: {message_type}")
                 
@@ -1054,24 +917,21 @@ class CALL:
             traceback.print_exc()
 
     def _extract_message_type(self, parsed_msg):
-        """EINHEITLICHE MESSAGE-TYPE EXTRAKTION - KORRIGIERT FÜR GEPARSTE NACHRICHTEN"""
+        """EINHEITLICHE MESSAGE-TYPE EXTRAKTION"""
         try:
             if not parsed_msg:
                 return "UNKNOWN"
             
-            # ✅ PRIORITÄT 1: custom_data aus geparster SIP-Nachricht
             custom_data = parsed_msg.get('custom_data', {})
             message_type = custom_data.get('MESSAGE_TYPE')
             
             if message_type:
                 return message_type
             
-            # ✅ PRIORITÄT 2: Direkt aus dem Dictionary (falls bereits geparst)
             message_type = parsed_msg.get('MESSAGE_TYPE')
             if message_type:
                 return message_type
                 
-            # ✅ PRIORITÄT 3: Body als JSON parsen
             body = parsed_msg.get('body', '')
             if body.strip().startswith('{'):
                 try:
@@ -1080,7 +940,6 @@ class CALL:
                 except json.JSONDecodeError:
                     pass
             
-            # ✅ PRIORITÄT 4: Headers durchsuchen
             headers = parsed_msg.get('headers', {})
             message_type = headers.get('MESSAGE_TYPE')
             if message_type:
@@ -1092,21 +951,17 @@ class CALL:
             print(f"[EXTRACT ERROR] {str(e)}")
             return "UNKNOWN"
 
-
     def initiate_call(self, recipient):
-        """Initiiert Anruf mit EINHEITLICHEM Format - KORRIGIERT"""
+        """Initiiert Anruf mit EINHEITLICHEM Format"""
         try:
             print(f"[CALL] Starting call to {recipient.get('name', 'Unknown')}")
 
-            # 1. Validiere Eingabe
             if not recipient or 'id' not in recipient:
                 raise ValueError("Ungültiger Empfänger (fehlende ID)")
 
-            # 2. Prüfe aktive Calls
             if self.active_call or self.pending_call:
                 raise RuntimeError("Bereits in einem Anruf aktiv")
 
-            # 3. EINHEITLICHE GET_PUBLIC_KEY Nachricht
             key_request_data = {
                 "MESSAGE_TYPE": "GET_PUBLIC_KEY",
                 "TARGET_CLIENT_ID": recipient['id'],
@@ -1120,11 +975,9 @@ class CALL:
                 key_request_data
             )
 
-            # 4. EINHEITLICHES Framing verwenden
             if not self.client._send_message(key_request_msg):
                 raise ConnectionError("Konnte Key-Request nicht senden")
 
-            # 5. Call-Status setzen
             self.pending_call = {
                 'recipient': recipient,
                 'status': 'requesting_key',
@@ -1132,13 +985,11 @@ class CALL:
                 'timeout': 120
             }
 
-            # 6. UI aktualisieren
             if hasattr(self.client, 'update_call_ui'):
                 self.client.update_call_ui(True, "requesting", recipient.get('name', 'Unknown'))
 
             print(f"[CALL] Call initiated to {recipient.get('name', 'Unknown')}")
 
-            # 7. Timeout-Überwachung starten
             threading.Thread(target=self._call_timeout_watchdog, daemon=True).start()
 
         except Exception as e:
@@ -1149,27 +1000,23 @@ class CALL:
             raise
 
     def handle_public_key_response(self, msg):
-        """Verarbeitet Public-Key-Antwort - KORRIGIERT FÜR PEM-FORMAT"""
+        """Verarbeitet Public-Key-Antwort - ERWEITERT FÜR UDP RELAY"""
         try:
-            # ✅ VALIDIERE: Prüfe ob wir auf eine Key-Anfrage warten
             if not self.pending_call or self.pending_call.get('status') != 'requesting_key':
                 print("[CALL WARNING] Unexpected public key response - no pending call or wrong status")
                 return False
                 
             print(f"[CALL] Processing public key response...")
             
-            # ✅ SICHERSTELLEN: msg ist ein Dictionary
             if not isinstance(msg, dict):
                 print(f"[CALL ERROR] Expected dict but got {type(msg)}")
                 return False
                 
-            # ✅ KORREKT: Daten aus CUSTOM_DATA extrahieren
             custom_data = msg.get('custom_data', {})
             target_id = custom_data.get('TARGET_CLIENT_ID')
             public_key = custom_data.get('PUBLIC_KEY')
             caller_name = custom_data.get('CALLER_NAME')
             
-            # ✅ FALLBACK: Direkte Felder prüfen
             if not public_key:
                 public_key = msg.get('PUBLIC_KEY')
             if not target_id:
@@ -1187,24 +1034,19 @@ class CALL:
                 
             print(f"[CALL] Received public key for client {target_id} (length: {len(public_key)})")
             
-            # ✅ KRITISCHE KORREKTUR: PEM-FORMAT SICHERSTELLEN
-            print("[CALL] Formatting public key for PEM...")
             public_key = self._ensure_pem_format(public_key)
             if not public_key:
                 raise Exception("Invalid public key format - cannot convert to PEM")
                 
             print(f"[CALL] Formatted public key (PEM): {public_key[:100]}...")
             
-            # ✅ WireGuard Schlüsselpaar generieren
             wg_private_key, wg_public_key = self._generate_wireguard_keypair()
             print(f"[CALL] Generated WireGuard keys (pub: {wg_public_key[:20]}...)")
             
-            # ✅ Session Key generieren (48 Bytes: 16 IV + 32 AES Key)
             session_secret = os.urandom(48)
             iv = session_secret[:16]
             aes_key = session_secret[16:48]
             
-            # ✅ Call-Daten vorbereiten
             call_data = {
                 "caller_name": self.client._client_name,
                 "caller_client_id": self.client._find_my_client_id(),
@@ -1220,20 +1062,16 @@ class CALL:
             
             print(f"[CALL] Prepared call data for encryption")
             
-            # ✅ Mit Public Key des Empfängers verschlüsseln
             try:
-                # Public Key laden mit PEM-Validierung
                 print("[CALL] Loading recipient public key...")
                 recipient_key = self._load_public_key(public_key)
                 if not recipient_key:
                     raise Exception("Failed to load recipient public key")
                     
-                # Daten serialisieren und verschlüsseln
                 call_data_json = json.dumps(call_data).encode('utf-8')
                 print(f"[CALL] Call data JSON length: {len(call_data_json)}")
                 
-                # Prüfe ob Daten zu lang für RSA sind
-                max_length = 512 - 11  # RSA PKCS#1 Padding
+                max_length = 512 - 11
                 if len(call_data_json) > max_length:
                     raise Exception(f"Call data too large for RSA encryption: {len(call_data_json)} > {max_length}")
                     
@@ -1246,7 +1084,6 @@ class CALL:
                 print(f"[CALL ERROR] Encryption failed: {str(e)}")
                 raise Exception(f"Verschlüsselung fehlgeschlagen: {str(e)}")
             
-            # ✅ CALL_REQUEST an Server senden
             call_request_data = {
                 "MESSAGE_TYPE": "CALL_REQUEST",
                 "TARGET_CLIENT_ID": target_id,
@@ -1263,7 +1100,6 @@ class CALL:
                 
             print("[CALL] CALL_REQUEST sent to server")
             
-            # ✅ Call-Status aktualisieren
             self.pending_call.update({
                 'status': 'request_sent',
                 'wg_private_key': wg_private_key,
@@ -1272,16 +1108,8 @@ class CALL:
                 'target_id': target_id
             })
             
-            # ✅ WireGuard Server vorbereiten (als Caller)
-            print("[CALL] Setting up WireGuard tunnel as caller...")
-            success = self._setup_caller_wireguard(wg_private_key, wg_public_key)
+            print("[CALL] Waiting for callee response...")
             
-            if not success:
-                raise Exception("WireGuard tunnel setup failed")
-                
-            print("[CALL] WireGuard tunnel setup complete - waiting for callee...")
-            
-            # ✅ UI aktualisieren
             recipient_name = self.pending_call['recipient'].get('name', 'Unknown')
             if hasattr(self.client, 'update_call_ui'):
                 self.client.update_call_ui(True, "ringing", recipient_name)
@@ -1291,7 +1119,6 @@ class CALL:
         except Exception as e:
             print(f"[CALL ERROR] Public key response handling failed: {str(e)}")
             
-            # ✅ Fehler an UI melden
             if hasattr(self.client, 'after'):
                 self.client.after(0, lambda: messagebox.showerror(
                     "Call Failed", 
@@ -1309,17 +1136,13 @@ class CALL:
                 
             key_str = key_data.strip()
             
-            # Falls bereits korrektes PEM, zurückgeben
             if key_str.startswith('-----BEGIN PUBLIC KEY-----') and key_str.endswith('-----END PUBLIC KEY-----'):
                 print("[PEM] Key is already in valid PEM format")
                 return key_str
             
-            # Falls Base64 ohne PEM-Header, Header hinzufügen
             if 'BEGIN PUBLIC KEY' not in key_str and 'END PUBLIC KEY' not in key_str:
                 print("[PEM] Adding PEM headers to base64 key")
-                # Entferne alle Leerzeichen und Zeilenumbrüche
                 key_content = re.sub(r'\s+', '', key_str)
-                # Validiere Base64
                 try:
                     base64.b64decode(key_content)
                     key_str = f"-----BEGIN PUBLIC KEY-----\n{key_content}\n-----END PUBLIC KEY-----"
@@ -1328,7 +1151,6 @@ class CALL:
                     print(f"[PEM ERROR] Invalid base64: {e}")
                     return None
             
-            # Validiere den PEM-Key
             try:
                 bio = BIO.MemoryBuffer(key_str.encode())
                 key = RSA.load_pub_key_bio(bio)
@@ -1350,13 +1172,11 @@ class CALL:
             if not pem_key:
                 return None
                 
-            # Bereinige den Key
             pem_key = pem_key.strip()
             pem_key = pem_key.replace('\\\\n', '\n').replace('\\n', '\n')
             
             print(f"[KEY LOAD] Loading key: {pem_key[:100]}...")
             
-            # Versuche den Key zu laden
             bio = BIO.MemoryBuffer(pem_key.encode())
             key = RSA.load_pub_key_bio(bio)
             
@@ -1371,86 +1191,14 @@ class CALL:
             print(f"[KEY LOAD ERROR] {str(e)}")
             return None
 
-    def _setup_caller_wireguard(self, private_key, public_key):
-        """Richtet WireGuard als Caller (Server) ein - KORRIGIERT FÜR OPENBSD/LINUX"""
-        try:
-            interface = "wg-phonebook"
-            
-            # ✅ Privilegien-Eskalations-Tool erkennen
-            sudo_command = None
-            for cmd in ['doas', 'sudo']:
-                try:
-                    subprocess.run([cmd, 'echo', 'test'], capture_output=True, check=True)
-                    sudo_command = cmd
-                    print(f"[WG] Using {sudo_command} for privileged commands")
-                    break
-                except (subprocess.CalledProcessError, FileNotFoundError):
-                    continue
-            
-            if not sudo_command:
-                print("[WG WARNING] No sudo/doas found, trying without privileges")
-                sudo_command = ""  # Leerstring für direkte Ausführung
-            
-            def run_privileged(cmd, input_data=None):
-                """Hilfsfunktion für privilegierte Befehle"""
-                full_cmd = [sudo_command] + cmd if sudo_command else cmd
-                try:
-                    if input_data:
-                        result = subprocess.run(full_cmd, input=input_data, capture_output=True, text=True)
-                    else:
-                        result = subprocess.run(full_cmd, capture_output=True, text=True)
-                    return result
-                except Exception as e:
-                    print(f"[WG ERROR] Command failed: {e}")
-                    return type('Result', (), {'returncode': 1, 'stderr': str(e)})()
-            
-            # ✅ Altes Interface bereinigen
-            run_privileged(['ip', 'link', 'del', 'dev', interface])
-            time.sleep(0.5)
-            
-            # ✅ Neues Interface erstellen
-            result = run_privileged(['ip', 'link', 'add', 'dev', interface, 'type', 'wireguard'])
-            if result.returncode != 0:
-                print(f"[WG ERROR] Interface creation failed: {result.stderr}")
-                return False
-            
-            # ✅ Private Key setzen
-            result = run_privileged(['wg', 'set', interface, 'private-key', '/dev/stdin'], input_data=private_key)
-            if result.returncode != 0:
-                print(f"[WG ERROR] Private key setup failed: {result.stderr}")
-                return False
-            
-            # ✅ Listen Port setzen
-            result = run_privileged(['wg', 'set', interface, 'listen-port', '51820'])
-            if result.returncode != 0:
-                print(f"[WG ERROR] Listen port setup failed: {result.stderr}")
-                return False
-            
-            # ✅ IP Adresse setzen (Caller bekommt .1)
-            result = run_privileged(['ip', 'addr', 'add', '10.8.0.1/24', 'dev', interface])
-            if result.returncode != 0:
-                print(f"[WG ERROR] IP assignment failed: {result.stderr}")
-                return False
-            
-            # ✅ Interface aktivieren
-            result = run_privileged(['ip', 'link', 'set', 'up', 'dev', interface])
-            if result.returncode != 0:
-                print(f"[WG ERROR] Interface activation failed: {result.stderr}")
-                return False
-            
-            print("[WG] WireGuard tunnel setup successful as caller (10.8.0.1)")
-            return True
-            
-        except Exception as e:
-            print(f"[WG ERROR] Tunnel setup failed: {str(e)}")
-            return False
+    # ✅ ENTFERNT: _setup_caller_wireguard (nicht mehr benötigt)
+
     def handle_incoming_call(self, msg):
         """Verarbeitet eingehende Anrufe"""
         try:
             headers = msg.get('headers', {})
             custom_data = msg.get('custom_data', {})
             
-            # Prüfe beide Quellen für Call-Informationen
             caller_name = headers.get('CALLER_NAME') or custom_data.get('CALLER_NAME')
             caller_id = headers.get('CALLER_CLIENT_ID') or custom_data.get('CALLER_CLIENT_ID')
             encrypted_data = headers.get('ENCRYPTED_CALL_DATA') or custom_data.get('ENCRYPTED_CALL_DATA')
@@ -1462,7 +1210,6 @@ class CALL:
                 
             print(f"[CALL] Incoming call from {caller_name}")
             
-            # In UI thread abfragen
             if hasattr(self.client, 'after'):
                 self.client.after(0, lambda: self._ask_call_acceptance(
                     caller_name, caller_id, encrypted_data))
@@ -1491,7 +1238,7 @@ class CALL:
             self._reject_incoming_call(caller_id)
 
     def _accept_incoming_call(self, caller_name, caller_id, encrypted_data):
-        """Nimmt eingehenden Anruf an"""
+        """Nimmt eingehenden Anruf an - JETZT MIT UDP RELAY"""
         try:
             # Daten entschlüsseln
             private_key = load_privatekey()
@@ -1501,18 +1248,12 @@ class CALL:
             decrypted_bytes = priv_key.private_decrypt(encrypted_bytes, RSA.pkcs1_padding)
             call_info = json.loads(decrypted_bytes.decode('utf-8'))
             
-            # WireGuard Schlüsselpaar generieren (direkt in CALL-Klasse)
+            # WireGuard Schlüsselpaar generieren
             wg_private_key, wg_public_key = self._generate_wireguard_keypair()
             
-            # WireGuard konfigurieren
-            caller_endpoint = f"{call_info.get('caller_public_ip', '')}:51820"
-            my_wg_ip = "10.8.0.2"
+            # ✅ KEIN WIREGUARD TUNNEL MEHR NOTWENDIG!
+            # Wir verwenden nur noch UDP Relay
             
-            success = self._setup_wireguard_tunnel(wg_private_key, call_info['caller_wg_public_key'], caller_endpoint, my_wg_ip)
-            
-            if not success:
-                raise Exception("WireGuard setup failed")
-                
             # Call-Daten speichern
             self.pending_call = {
                 'caller_name': caller_name,
@@ -1530,13 +1271,13 @@ class CALL:
             # Akzeptanz an Server senden
             self._send_call_response("accepted", caller_id, wg_public_key)
             
-            # Audio starten
-            self._start_audio_streams()
+            # Audio starten (wird durch CALL_CONFIRMED mit Relay-Info getriggert)
+            print("[CALL] Waiting for relay configuration from server...")
             
             # UI aktualisieren
-            self._update_ui_wrapper(active=True, status="connected", caller_name=caller_name)
+            self._update_ui_wrapper(active=True, status="accepted", caller_name=caller_name)
             
-            print("[CALL] Call accepted and setup complete")
+            print("[CALL] Call accepted - waiting for relay setup")
             
         except Exception as e:
             print(f"[CALL ERROR] Acceptance failed: {str(e)}")
@@ -1571,9 +1312,8 @@ class CALL:
         except Exception as e:
             print(f"[CALL ERROR] Failed to send response: {str(e)}")
 
-    # === CALL RESPONSE HANDLING ===
     def handle_call_response(self, msg):
-        """Verarbeitet Antwort auf eigenen Anruf"""
+        """Verarbeitet Antwort auf eigenen Anruf - JETZT MIT UDP RELAY"""
         try:
             if not self.pending_call:
                 print("[CALL WARNING] No pending call for response")
@@ -1584,9 +1324,29 @@ class CALL:
             callee_wg_key = custom_data.get('CALLEE_WG_PUBLIC_KEY')
             callee_ip = custom_data.get('CALLEE_IP')
             
+            # ✅ NEU: UDP Relay Konfiguration aus der Antwort
+            use_relay = custom_data.get('USE_AUDIO_RELAY', False)
+            relay_ip = custom_data.get('AUDIO_RELAY_IP')
+            relay_port = custom_data.get('AUDIO_RELAY_PORT', 51822)
+            
             if response == "accepted" and callee_wg_key:
                 print("[CALL] Call accepted by recipient")
-                self._setup_outgoing_call(callee_wg_key, callee_ip)
+                
+                # ✅ UDP RELAY VERWENDEN
+                if use_relay and relay_ip:
+                    print(f"[CALL] Setting up UDP Relay connection: {relay_ip}:{relay_port}")
+                    success = self._setup_outgoing_call(
+                        callee_wg_key, 
+                        callee_ip, 
+                        use_relay=True, 
+                        relay_ip=relay_ip, 
+                        relay_port=relay_port
+                    )
+                else:
+                    # Fallback: Direkte Verbindung
+                    print("[CALL] Using direct connection (fallback)")
+                    success = self._setup_outgoing_call(callee_wg_key, callee_ip, use_relay=False)
+                    
             elif response == "rejected":
                 print("[CALL] Call rejected by recipient")
                 if hasattr(self.client, 'after'):
@@ -1605,11 +1365,38 @@ class CALL:
             print(f"[CALL ERROR] Response handling failed: {str(e)}")
             self.cleanup_call_resources()
 
-
+    def handle_call_confirmed(self, msg):
+        """Verarbeitet Call-Bestätigung für Angerufene - JETZT MIT UDP RELAY"""
+        try:
+            custom_data = msg.get('custom_data', {})
+            
+            # ✅ NEU: UDP Relay Konfiguration
+            use_relay = custom_data.get('USE_AUDIO_RELAY', False)
+            relay_ip = custom_data.get('AUDIO_RELAY_IP')
+            relay_port = custom_data.get('AUDIO_RELAY_PORT', 51822)
+            
+            if use_relay and relay_ip:
+                print(f"[CALL] Call confirmed with UDP Relay: {relay_ip}:{relay_port}")
+                self.use_udp_relay = True
+                self.relay_server_ip = relay_ip
+                self.relay_server_port = relay_port
+                
+                # Audio streams starten
+                if 'session_secret' in self.pending_call:
+                    self.current_secret = self.pending_call['session_secret']
+                    self._start_audio_streams()
+                    
+                self.pending_call['status'] = 'connected'
+                print("[CALL] UDP Relay call established successfully")
+            else:
+                print("[CALL ERROR] No relay configuration in confirmation")
+                
+        except Exception as e:
+            print(f"[CALL ERROR] Call confirmation handling failed: {str(e)}")
 
     # === AUDIO STREAMS ===
     def _start_audio_streams(self):
-        """Startet bidirektionale Audio-Streams"""
+        """Startet bidirektionale Audio-Streams - JETZT MIT UDP RELAY"""
         if not self.current_secret:
             print("[AUDIO] No session key available")
             return
@@ -1619,13 +1406,20 @@ class CALL:
             iv = self.current_secret[:16]
             key = self.current_secret[16:48]
             
-            # Ziel-IP im WireGuard-Netzwerk basierend auf der Rolle
-            if self.pending_call and 'recipient' in self.pending_call:
-                # Wir sind der Anrufer -> Ziel ist 10.8.0.2
-                target_ip = "10.8.0.2"
+            # ✅ NEU: Ziel-IP basierend auf Relay oder direkt
+            if self.use_udp_relay and self.relay_server_ip:
+                # Zum Relay Server senden
+                target_ip = self.relay_server_ip
+                target_port = self.relay_server_port
+                print(f"[AUDIO] Using UDP Relay: {target_ip}:{target_port}")
             else:
-                # Wir sind der Angerufene -> Ziel ist 10.8.0.1
-                target_ip = "10.8.0.1"
+                # Fallback: Direkte Verbindung
+                if self.pending_call and 'recipient' in self.pending_call:
+                    target_ip = "10.8.0.2"  # Callee IP
+                else:
+                    target_ip = "10.8.0.1"  # Caller IP
+                target_port = self.PORT
+                print(f"[AUDIO] Using direct connection: {target_ip}:{target_port}")
             
             # Beende bestehende Audio-Threads
             self._stop_audio_streams()
@@ -1633,7 +1427,7 @@ class CALL:
             # Starte Sende-Thread
             send_thread = threading.Thread(
                 target=self.audio_stream_out, 
-                args=(target_ip, iv, key),
+                args=(target_ip, target_port, iv, key),
                 daemon=True
             )
             
@@ -1649,7 +1443,7 @@ class CALL:
             
             self.audio_threads = [send_thread, recv_thread]
             self.active_call = True
-            print(f"[AUDIO] Bidirectional audio streams started to {target_ip}")
+            print(f"[AUDIO] Bidirectional audio streams started")
             
         except Exception as e:
             print(f"[AUDIO ERROR] Failed to start streams: {e}")
@@ -1657,7 +1451,7 @@ class CALL:
     def _stop_audio_streams(self):
         """Stoppt alle Audio-Streams"""
         self.active_call = False
-        time.sleep(0.1)  # Kurze Pause für Threads zum Beenden
+        time.sleep(0.1)
         
         for thread in self.audio_threads:
             try:
@@ -1667,8 +1461,8 @@ class CALL:
                 pass
         self.audio_threads = []
 
-    def audio_stream_out(self, target_ip, iv, key):
-        """Sendet Audio an Ziel-IP"""
+    def audio_stream_out(self, target_ip, target_port, iv, key):
+        """Sendet Audio an Ziel-IP - JETZT MIT RELAY UNTERSTÜTZUNG"""
         audio = None
         stream = None
         audio_socket = None
@@ -1686,7 +1480,7 @@ class CALL:
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             audio_socket.settimeout(0.1)
             
-            print(f"[AUDIO OUT] Streaming to {target_ip}:{self.PORT}")
+            print(f"[AUDIO OUT] Streaming to {target_ip}:{target_port}")
             
             while self.active_call:
                 try:
@@ -1696,7 +1490,7 @@ class CALL:
                     cipher = EVP.Cipher("aes_256_cbc", key, iv, 1)
                     encrypted_data = cipher.update(data) + cipher.final()
                     
-                    audio_socket.sendto(encrypted_data, (target_ip, self.PORT))
+                    audio_socket.sendto(encrypted_data, (target_ip, target_port))
                     
                 except socket.timeout:
                     continue
@@ -1720,7 +1514,7 @@ class CALL:
                 pass
 
     def audio_stream_in(self, iv, key):
-        """Empfängt Audio"""
+        """Empfängt Audio (unverändert - hört auf lokalem Port)"""
         audio = None
         stream = None
         audio_socket = None
@@ -1796,17 +1590,14 @@ class CALL:
         # Audio-Threads stoppen
         self._stop_audio_streams()
         
-        # WireGuard herunterfahren
-        try:
-            if hasattr(self.client, 'wg_manager'):
-                self.client.wg_manager.cleanup()
-        except Exception as e:
-            print(f"[CLEANUP WARNING] WireGuard cleanup failed: {str(e)}")
+        # ✅ KEIN WIREGUARD CLEANUP MEHR NOTWENDIG
         
         # Variablen zurücksetzen
         self.pending_call = None
         self.incoming_call = None
         self.current_secret = None
+        self.use_udp_relay = False
+        self.relay_server_ip = None
         
         # UI zurücksetzen
         try:
@@ -1837,8 +1628,6 @@ class CALL:
         except Exception as e:
             print(f"[CALL ERROR] Hangup failed: {str(e)}")
             self.cleanup_call_resources()
-
-
 
     def _get_public_ip(self):
         """Ermittelt die öffentliche IP"""
