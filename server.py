@@ -421,6 +421,431 @@ def load_client_name():
     else:
         messagebox.showerror("Fehler", "Kein Name eingegeben. Abbruch.")
         return None
+import socket
+import json
+import time
+import threading
+import random
+from typing import Dict, List
+
+class AccurateRelayManager:
+    def __init__(self, server_instance):
+        self.server = server_instance
+        self.is_seed_server = False
+        
+        # ✅ KORRIGIERT: RLock statt data_lock
+        self.data_lock = threading.RLock()
+        
+        # Feste Seed-Server Liste - gleiche Ports wie SIP
+        self.SEED_SERVERS = [
+            ("sichereleitung.duckdns.org", 5060),  # Haupt-SIP Port
+            ("sichereleitung.duckdns.org", 5061),  # Alternativ-Port
+        ]
+        
+        # ✅ NEU: Echte Server-IP für Discovery
+        self._real_server_ip = self._get_real_server_ip()
+        
+        # Rest der Initialisierung...
+        self.known_servers = {}  # {server_ip: server_data}
+        self.server_load = 0  # Eigene Last in %
+        self.max_traffic_mbps = 100  # Default Wert
+        self.current_traffic = 0
+        
+        # Prüfe ob dieser Server ein Seed-Server ist
+        self._check_if_im_seed()
+        
+        # Starte Dienste
+        if self.is_seed_server:
+            self._start_seed_server()
+        else:
+            self._start_regular_server()
+    
+    def _get_real_server_ip(self):
+        """Ermittelt die echte Server-IP für Discovery-Antworten"""
+        try:
+            # Versuche die öffentliche IP zu ermitteln
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+            
+            # Wenn es eine private IP ist, verwende den Hostnamen
+            if local_ip.startswith('192.168.') or local_ip.startswith('10.') or local_ip == '127.0.0.1':
+                # Verwende den Hostnamen oder DuckDNS Name
+                return "sichereleitung.duckdns.org"
+            else:
+                return local_ip
+                
+        except Exception as e:
+            print(f"[RELAY] Could not determine real IP: {e}")
+            return "sichereleitung.duckdns.org"  # Fallback
+    
+    def _check_if_im_seed(self):
+        """Prüft ob dieser Server in der Seed-Liste ist - MIT FESTER SEED-LISTE"""
+        try:
+            if not hasattr(self.server, 'host') or not self.server.host:
+                print("⚠️  Server host not yet initialized, assuming regular server")
+                self.is_seed_server = False
+                return
+                
+            my_host = self.server.host
+            seed_hosts = [seed[0] for seed in self.SEED_SERVERS]
+            
+            # Prüfe auf Seed-Server (inklusive localhost/127.0.0.1 für lokale Tests)
+            self.is_seed_server = (my_host in seed_hosts or 
+                                  my_host == 'localhost' or 
+                                  my_host == '127.0.0.1' or
+                                  my_host == '0.0.0.0' or  # Auch 0.0.0.0 zählt als Seed
+                                  any(seed[0] in my_host for seed in self.SEED_SERVERS))
+            
+            print(f"🔍 Seed-Check: {my_host} → {'SEED-SERVER' if self.is_seed_server else 'Regular Server'}")
+            
+            # ✅ WENN WIR SEED SIND: Automatisch in known_servers eintragen
+            if self.is_seed_server:
+                self._register_self_as_seed()
+            
+        except Exception as e:
+            print(f"⚠️  Seed check failed: {e}, assuming regular server")
+            self.is_seed_server = False
+
+    def _register_self_as_seed(self):
+        """Registriert diesen Server automatisch als Seed in der known_servers Liste"""
+        try:
+            with self.data_lock:
+                server_data = {
+                    'ip': self._real_server_ip,  # ✅ ECHTE IP statt 0.0.0.0
+                    'port': self.server.port,
+                    'name': f"Seed-Server-{self._real_server_ip}",
+                    'max_traffic': self.max_traffic_mbps,
+                    'current_load': self.server_load,
+                    'last_seen': time.time(),
+                    'is_seed': True  # Markiere als Seed-Server
+                }
+                
+                self.known_servers[self._real_server_ip] = server_data
+                print(f"✅ Seed-Server automatisch registriert: {self._real_server_ip}:{self.server.port}")
+                
+        except Exception as e:
+            print(f"❌ Fehler bei Selbst-Registrierung als Seed: {e}")
+
+    def _start_regular_server(self):
+        """Startet den Regular-Server Modus - NUR für nicht-Seed Server"""
+        print("🚀 Starte als Regular Server...")
+        
+        # ✅ NUR für Regular Server: Bei Seeds registrieren
+        if not self.is_seed_server:
+            self._register_with_seeds()
+            self._discover_other_servers()
+        else:
+            print("✅ Seed-Server - keine externe Registration nötig")
+        
+        # Starte Monitoring
+        threading.Thread(target=self._load_monitoring_loop, daemon=True).start()
+        threading.Thread(target=self._server_discovery_loop, daemon=True).start()
+    
+    def _start_seed_server(self):
+        """Startet den Seed-Server Modus"""
+        print("🌱 Starte als SEED-SERVER...")
+        
+        # Seed-Server läuft auf den gleichen Ports wie SIP
+        # Kein separater Port nötig!
+        
+        # Starte Load-Monitoring
+        threading.Thread(target=self._load_monitoring_loop, daemon=True).start()
+        
+        print("✅ Seed-Server bereit (verwendet SIP-Ports 5060/5061)")
+    
+    def _setup_traffic_limits(self):
+        """Einfaches Traffic-Setup"""
+        print("\n=== TRAFFIC SETUP ===")
+        
+        try:
+            traffic_input = input("Max traffic load in mbit/s: ").strip()
+            self.max_traffic_mbps = float(traffic_input)
+            print(f"✅ Traffic-Limit: {self.max_traffic_mbps} Mbit/s")
+        except:
+            self.max_traffic_mbps = 100
+            print(f"⚠️  Verwende Standard: {self.max_traffic_mbps} Mbit/s")
+    
+    def _register_with_seeds(self):
+        """Registriert diesen Server bei Seed-Servern - verwendet framed SIP"""
+        print("📝 Registriere bei Seed-Servern...")
+        
+        for seed_host, seed_port in self.SEED_SERVERS:
+            try:
+                # Verwende framed SIP für Seed-Kommunikation
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(10)
+                sock.connect((seed_host, seed_port))
+                
+                # Baue SIP-Nachricht für Registration
+                registration_data = {
+                    'type': 'register',
+                    'port': self.server.port,
+                    'name': f"Server-{self._real_server_ip}",
+                    'max_traffic': self.max_traffic_mbps,
+                    'current_load': self.server_load,
+                    'timestamp': time.time()
+                }
+                
+                # Sende als framed SIP
+                sip_message = self.server.build_sip_message(
+                    "REGISTER", 
+                    seed_host,
+                    registration_data
+                )
+                
+                from server import send_frame  # Framed SIP verwenden
+                if send_frame(sock, sip_message.encode()):
+                    # Empfange Response
+                    response_data = recv_frame(sock)
+                    if response_data:
+                        response = json.loads(response_data.decode())
+                        if response.get('status') == 'registered':
+                            print(f"✅ Bei Seed {seed_host}:{seed_port} registriert")
+                            break
+                    
+            except Exception as e:
+                print(f"❌ Registrierung bei {seed_host}:{seed_port} fehlgeschlagen: {e}")
+            finally:
+                try:
+                    sock.close()
+                except:
+                    pass
+    
+    def _discover_other_servers(self):
+        """Holt Server-Liste von Seed-Servern - verwendet framed SIP"""
+        print("🔍 Hole Server-Liste...")
+        
+        for seed_host, seed_port in self.SEED_SERVERS:
+            try:
+                # Framed SIP für Discovery
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(10)
+                sock.connect((seed_host, seed_port))
+                
+                request_data = {
+                    'type': 'get_servers',
+                    'requester_ip': self._real_server_ip,
+                    'timestamp': time.time()
+                }
+                
+                # Sende als framed SIP
+                sip_message = self.server.build_sip_message(
+                    "MESSAGE",
+                    seed_host, 
+                    request_data
+                )
+                
+                from server import send_frame, recv_frame
+                if send_frame(sock, sip_message.encode()):
+                    response_data = recv_frame(sock)
+                    if response_data:
+                        response = json.loads(response_data.decode())
+                        if response.get('status') == 'success':
+                            servers = response.get('servers', {})
+                            
+                            # ✅ BEREINIGE: Entferne 0.0.0.0 Einträge
+                            clean_servers = {}
+                            for server_ip, server_data in servers.items():
+                                if server_ip != '0.0.0.0':
+                                    clean_servers[server_ip] = server_data
+                            
+                            with self.data_lock:
+                                self.known_servers = clean_servers
+                            
+                            print(f"✅ {len(clean_servers)} Server in Liste von {seed_host}")
+                            break
+                    
+            except Exception as e:
+                print(f"❌ Discovery von {seed_host}:{seed_port} fehlgeschlagen: {e}")
+            finally:
+                try:
+                    sock.close()
+                except:
+                    pass
+    
+    def handle_seed_request(self, sip_message, client_socket, client_address):
+        """Verarbeitet Seed-Anfragen von anderen Servern - als framed SIP"""
+        if not self.is_seed_server:
+            return False
+            
+        try:
+            message = self.server.parse_sip_message(sip_message)
+            if not message:
+                return False
+                
+            custom_data = message.get('custom_data', {})
+            request_type = custom_data.get('type')
+            
+            response_data = {}
+            
+            if request_type == 'register':
+                response_data = self._handle_seed_register(custom_data, client_address[0])
+            elif request_type == 'get_servers':
+                response_data = self._handle_seed_get_servers(custom_data)
+            elif request_type == 'update_load':
+                response_data = self._handle_load_update(custom_data)
+            
+            # Sende Response als framed SIP
+            response_msg = self.server.build_sip_message(
+                "200 OK", 
+                client_address[0],
+                response_data
+            )
+            
+            from server import send_frame
+            return send_frame(client_socket, response_msg.encode())
+            
+        except Exception as e:
+            print(f"Seed Request Error: {e}")
+            return False
+    
+    def _handle_seed_register(self, request_data, client_ip):
+        """Verarbeitet Registrierungsanfragen"""
+        with self.data_lock:
+            server_data = {
+                'ip': client_ip,
+                'port': request_data['port'],
+                'name': request_data.get('name', 'Unnamed'),
+                'max_traffic': request_data.get('max_traffic', 100),
+                'current_load': request_data.get('current_load', 0),
+                'last_seen': time.time()
+            }
+            
+            self.known_servers[client_ip] = server_data
+            print(f"✅ Server registriert: {client_ip}:{request_data['port']}")
+            
+            return {
+                'status': 'registered', 
+                'server_count': len(self.known_servers),
+                'message': f"Welcome! {len(self.known_servers)} servers total"
+            }
+    
+    def _handle_seed_get_servers(self, request_data):
+        """Gibt komplette Server-Liste zurück"""
+        with self.data_lock:
+            # Aktualisiere Load für alle Server
+            current_time = time.time()
+            for server_ip, server_data in self.known_servers.items():
+                # Simuliere Load-Update falls älter als 2 Minuten
+                if current_time - server_data.get('last_load_update', 0) > 120:
+                    server_data['current_load'] = random.randint(0, 100)
+                    server_data['last_load_update'] = current_time
+            
+            # ✅ ENTFERNE 0.0.0.0 Einträge falls vorhanden
+            clean_servers = {}
+            for server_ip, server_data in self.known_servers.items():
+                if server_ip != '0.0.0.0':  # Filtere ungültige IPs
+                    clean_servers[server_ip] = server_data
+            
+            return {
+                'status': 'success',
+                'servers': clean_servers,
+                'total_servers': len(clean_servers),
+                'timestamp': time.time()
+            }
+    
+    def _handle_load_update(self, request_data):
+        """Verarbeitet Load-Updates von Servern"""
+        server_ip = request_data['server_ip']
+        new_load = request_data['current_load']
+        
+        with self.data_lock:
+            if server_ip in self.known_servers:
+                self.known_servers[server_ip]['current_load'] = new_load
+                self.known_servers[server_ip]['last_load_update'] = time.time()
+                print(f"📊 Load Update: {server_ip} → {new_load}%")
+        
+        return {'status': 'load_updated'}
+    
+    def _load_monitoring_loop(self):
+        """Überwacht und aktualisiert Server-Last"""
+        while True:
+            try:
+                # Aktuelle Last berechnen (simuliert)
+                traffic_ratio = self.current_traffic / self.max_traffic_mbps if self.max_traffic_mbps > 0 else 0
+                self.server_load = min(100, int(traffic_ratio * 100))
+                
+                # Aktualisiere Last bei Seed-Servern (wenn nicht selbst Seed)
+                if not self.is_seed_server:
+                    self._update_load_on_seeds()
+                
+                time.sleep(30)  # Alle 30 Sekunden
+                
+            except Exception as e:
+                print(f"Load Monitoring Error: {e}")
+                time.sleep(60)
+    
+    def _update_load_on_seeds(self):
+        """Aktualisiert eigene Last bei Seed-Servern - als framed SIP"""
+        for seed_host, seed_port in self.SEED_SERVERS:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(5)
+                sock.connect((seed_host, seed_port))
+                
+                update_data = {
+                    'type': 'update_load',
+                    'server_ip': self._real_server_ip,
+                    'current_load': self.server_load,
+                    'timestamp': time.time()
+                }
+                
+                # Sende als framed SIP
+                sip_message = self.server.build_sip_message(
+                    "MESSAGE",
+                    seed_host,
+                    update_data
+                )
+                
+                from server import send_frame
+                if send_frame(sock, sip_message.encode()):
+                    print(f"📈 Load update an {seed_host}: {self.server_load}%")
+                
+                sock.close()
+                break
+                
+            except:
+                continue
+    
+    def _server_discovery_loop(self):
+        """Updated regelmäßig die Server-Liste"""
+        while True:
+            time.sleep(1800)  # Alle 30 Minuten
+            print("🔄 Aktualisiere Server-Liste...")
+            self._discover_other_servers()
+    
+    def get_server_list_for_client(self):
+        """Gibt Server-Liste für Clients zurück - als framed SIP Message"""
+        with self.data_lock:
+            # Filtere Server mit Load < 100%
+            available_servers = {}
+            for server_ip, server_data in self.known_servers.items():
+                if server_data.get('current_load', 100) < 100:
+                    available_servers[server_ip] = server_data
+            
+            return {
+                'servers': available_servers,
+                'timestamp': time.time(),
+                'total_available': len(available_servers),
+                'total_servers': len(self.known_servers)
+            }
+    
+    def get_server_status(self):
+        """Gibt einfachen Status zurück"""
+        with self.data_lock:
+            available_count = sum(1 for s in self.known_servers.values() if s.get('current_load', 100) < 100)
+            
+            return {
+                'is_seed_server': self.is_seed_server,
+                'current_load': self.server_load,
+                'known_servers': len(self.known_servers),
+                'available_servers': available_count,
+                'max_traffic': self.max_traffic_mbps,
+                'current_traffic': self.current_traffic,
+                'real_server_ip': self._real_server_ip  # ✅ NEU: Für Debugging
+            }
 class CONVEY:
     def __init__(self, server_instance):
         self.server = server_instance
@@ -437,24 +862,22 @@ class CONVEY:
         self._start_udp_relay()
 
     def _start_udp_relay(self):
-        """Startet den UDP Relay Server mit Kernel-Optimierungen"""
+        """Startet den UDP Relay Server mit korrekter Adresse"""
         try:
             self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             
-            # ✅ KERNEL-OPTIMIERUNGEN für maximale Performance
+            # ✅ KORRIGIERT: Verwende 0.0.0.0 statt self.server.host
+            # So bindet es auf alle Interfaces, nicht nur auf den Hostnamen
+            bind_host = '0.0.0.0'  # Bind auf alle Netzwerk-Interfaces
+            
             self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            
-            # ✅ NON-BLOCKING für minimale CPU-Last
             self.udp_socket.setblocking(False)
+            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024)
+            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 1024)
             
-            # ✅ GROSSE BUFFER für viele Verbindungen
-            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024)  # 1MB
-            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 1024)  # 1MB
+            self.udp_socket.bind((bind_host, self.udp_relay_port))
+            print(f"[UDP RELAY] Server started on {bind_host}:{self.udp_relay_port}")
             
-            self.udp_socket.bind((self.server.host, self.udp_relay_port))
-            print(f"[UDP RELAY] Server started on {self.server.host}:{self.udp_relay_port}")
-            
-            # ✅ EFFIZIENTER RELAY HANDLER mit select()
             threading.Thread(target=self._handle_udp_relay, daemon=True).start()
             
         except Exception as e:
@@ -910,23 +1333,20 @@ class CONVEY:
 
 class Server:
     def __init__(self, host='0.0.0.0', port=5060):
+        # ✅ ZUERST Basis-Attribute setzen
+        self.host = host
+        self.port = port
+        
+        # ✅ DANN Relay Manager initialisieren
+        self.relay_manager = AccurateRelayManager(self)
         self.convey_manager = CONVEY(self)
-        # Interaktive Host-Abfrage
-        change_host = input("Set host-ip? y/n -> ").lower().strip()
-        if change_host == 'y':
-            new_host = input("New default host ip: ").strip()
-            if new_host:  # Nur ändern wenn nicht leer
-                host = new_host
-                print(f"Host changed to: {host}")
-            else:
-                print("Keeping default host")
+        
+        # Vorhandene Initialisierung...
         self.active_calls = {}  # Aktive Calls verwalten
         self.call_timeout = 30  # Timeout in Sekunden
         self._processing_client_queue = False
         # Lock für Thread-sicheren Zugriff auf active_calls
         self.call_lock = threading.RLock()
-        self.host = host
-        self.port = port
         self.all_public_keys = {}
         self.clients = {}
         self.client_secrets = {}
@@ -946,6 +1366,7 @@ class Server:
         self.clients_lock = threading.RLock()
         
         print(f"Server configured with: {self.host}:{self.port}")
+        print(f"🔧 Relay Manager: {'SEED-SERVER' if self.relay_manager.is_seed_server else 'Regular Server'}")
     def store_client_secret(self, client_id, encrypted_secret):
         """Speichert das entschlüsselte AES-Geheimnis für einen Client"""
         try:
@@ -1138,6 +1559,12 @@ class Server:
             alt_socket.listen(5)
             
             print(f"Server lauscht auf {self.host}:{self.port} (Haupt) und {alt_port} (Alternativ)")
+            print(f"🔧 Relay Manager: {'SEED-SERVER' if self.relay_manager.is_seed_server else 'Regular Server'}")
+            
+            # Zeige Relay-Status
+            relay_status = self.relay_manager.get_server_status()
+            print(f"📊 Relay Status: {relay_status}")
+            
             with self.clients_lock:
                 client_count = len(self.clients)
             print(f"Geladene Clients: {client_count}")
@@ -1172,44 +1599,51 @@ class Server:
             print(f"Kritischer Fehler: {e}")
             traceback.print_exc()
         finally:
-            print("\nSpeichere Client-Daten...")
+            self._cleanup_server(main_socket, alt_socket)
+
+    def _cleanup_server(self, main_socket=None, alt_socket=None):
+        """Bereinigt Server-Ressourcen sicher"""
+        print("\nSpeichere Client-Daten...")
+        
+        # Safe clients copy
+        try:
             with self.clients_lock:
                 clients_copy = self.clients.copy()
+        except:
+            clients_copy = {}
 
-            active_clients = {
-                cid: {k: v for k, v in data.items() if k != 'socket'} 
-                for cid, data in clients_copy.items() 
-                if data.get('socket') is not None
-            }
-            
-            try:
-                with open("active_clients.json", "w") as f:
-                    json.dump(active_clients, f, indent=2)
-                print(f"{len(active_clients)} Clients gespeichert")
-            except Exception as e:
-                print(f"Fehler beim Speichern: {e}")
-            
-            print("Schließe Verbindungen...")
-            with self.clients_lock:
-                clients_copy = self.clients.copy()
+        active_clients = {
+            cid: {k: v for k, v in data.items() if k != 'socket'} 
+            for cid, data in clients_copy.items() 
+            if data and data.get('socket') is not None
+        }
+        
+        try:
+            with open("active_clients.json", "w") as f:
+                json.dump(active_clients, f, indent=2)
+            print(f"{len(active_clients)} Clients gespeichert")
+        except Exception as e:
+            print(f"Fehler beim Speichern: {e}")
+        
+        print("Schließe Verbindungen...")
+        
+        # Safe client socket closing
+        for client_id, client_data in clients_copy.items():
+            if client_data and client_data.get('socket'):
+                try:
+                    client_data['socket'].close()
+                except:
+                    pass
 
-            # ✅ SICHER: Dann mit der Kopie arbeiten
-            for client_id, client_data in clients_copy.items():
-                if client_data.get('socket'):
-                    try:
-                        client_data['socket'].close()
-                    except:
-                        pass
-
-
-            
-            for sock in [main_socket, alt_socket]:
+        # Safe socket closing
+        for sock in [main_socket, alt_socket]:
+            if sock:
                 try:
                     sock.close()
                 except:
                     pass
-            
-            print("Server beendet")
+        
+        print("Server beendet")
 
 
 
@@ -1786,6 +2220,129 @@ class Server:
         
         with self.key_lock:
             self.all_public_keys = all_public_keys            
+    def _handle_relay_manager_request(self, register_data, client_socket, client_address):
+        """Verarbeitet Anfragen vom Relay-Manager (andere Server)"""
+        try:
+            if isinstance(register_data, bytes):
+                try:
+                    register_data = register_data.decode('utf-8')
+                except UnicodeDecodeError:
+                    return False
+            
+            message = self.parse_sip_message(register_data)
+            if not message:
+                return False
+            
+            custom_data = message.get('custom_data', {})
+            request_type = custom_data.get('type')
+            
+            # Prüfe ob es eine Relay-Manager Anfrage ist
+            if request_type in ['register', 'get_servers', 'update_load']:
+                print(f"[RELAY] Erhaltene Relay-Anfrage: {request_type} von {client_address}")
+                success = self.relay_manager.handle_seed_request(register_data, client_socket, client_address)
+                if success:
+                    print(f"[RELAY] Anfrage erfolgreich verarbeitet, schließe Verbindung")
+                    try:
+                        client_socket.close()
+                    except:
+                        pass
+                return success
+            
+            return False
+            
+        except Exception as e:
+            print(f"[RELAY ERROR] Fehler bei Relay-Anfrage: {e}")
+            return False
+
+    def _handle_relay_message_during_session(self, frame_data, client_socket, client_address, client_name):
+        """Verarbeitet Relay-Nachrichten während einer aktiven Session"""
+        try:
+            if isinstance(frame_data, bytes):
+                try:
+                    message_text = frame_data.decode('utf-8')
+                except UnicodeDecodeError:
+                    return False
+            else:
+                message_text = str(frame_data)
+                
+            message = self.parse_sip_message(message_text)
+            if not message:
+                return False
+                
+            custom_data = message.get('custom_data', {})
+            request_type = custom_data.get('type')
+            
+            # Prüfe auf Relay-Nachrichten
+            if request_type in ['register', 'get_servers', 'update_load']:
+                print(f"[RELAY] Relay-Nachricht während Session von {client_address}: {request_type}")
+                return self.relay_manager.handle_seed_request(message_text, client_socket, client_address)
+            
+            return False
+            
+        except Exception as e:
+            print(f"[RELAY ERROR] Fehler bei Relay-Nachricht: {e}")
+            return False
+    def get_relay_status(self):
+        """Gibt den Status des Relay-Managers zurück"""
+        if hasattr(self, 'relay_manager'):
+            return self.relay_manager.get_server_status()
+        return {'error': 'Relay manager not available'}
+
+    def get_available_servers(self):
+        """Gibt verfügbare Server für Clients zurück"""
+        if hasattr(self, 'relay_manager'):
+            return self.relay_manager.get_server_list_for_client()
+        return {'servers': {}, 'error': 'Relay manager not available'}
+
+    def update_traffic_stats(self, traffic_mbps):
+        """Aktualisiert Traffic-Statistiken"""
+        if hasattr(self, 'relay_manager'):
+            self.relay_manager.current_traffic = traffic_mbps
+            return True
+        return False
+    def _safe_remove_client(self, client_id):
+        """Thread-safe client removal"""
+        with self.clients_lock:
+            if client_id in self.clients:
+                del self.clients[client_id]
+                print(f"[SERVER] Client {client_id} entfernt")
+        
+        # Key-Liste aktualisieren
+        with self.clients_lock:
+            clients_copy = self.clients.copy()
+        
+        all_public_keys = [self.server_public_key]
+        for cid, client_info in clients_copy.items():
+            if 'public_key' in client_info:
+                all_public_keys.append(client_info['public_key'])
+        
+        with self.key_lock:
+            self.all_public_keys = all_public_keys
+
+    def _generate_client_id_locked(self):
+        """Private method - muss innerhalb von clients_lock aufgerufen werden!"""
+        if not self.clients:
+            return "0"
+        
+        numeric_ids = []
+        for key in self.clients.keys():
+            if key.isdigit():
+                try:
+                    numeric_ids.append(int(key))
+                except ValueError:
+                    continue
+        
+        if not numeric_ids:
+            return "0"
+        
+        numeric_ids.sort()
+        expected_id = 0
+        for existing_id in numeric_ids:
+            if expected_id < existing_id:
+                return str(expected_id)
+            expected_id = existing_id + 1
+        
+        return str(numeric_ids[-1] + 1)            
     def handle_client(self, client_socket, client_address):
         """Vollständige Client-Behandlung - Jede Session isoliert"""
         print(f"\n[Server] Neue Verbindung von {client_address}")
@@ -1812,7 +2369,12 @@ class Server:
 
             print(f"[SERVER] Empfangene Daten: {len(register_data)} bytes")
             
-            # 2. SIP-Nachricht parsen
+            # 2. Prüfe ob es eine Relay-Manager Anfrage ist (andere Server)
+            if self._handle_relay_manager_request(register_data, client_socket, client_address):
+                print("[RELAY] Relay-Manager Anfrage verarbeitet - Verbindung geschlossen")
+                return
+            
+            # 3. Normale Client-Registration verarbeiten
             if isinstance(register_data, bytes):
                 try:
                     register_data = register_data.decode('utf-8')
@@ -1821,13 +2383,13 @@ class Server:
                     print("[SERVER] Konnte Daten nicht als UTF-8 decodieren")
                     return
 
-            # 3. SIP-Nachricht parsen
+            # 4. SIP-Nachricht parsen
             sip_msg = self.parse_sip_message(register_data)
             if not sip_msg:
                 print("[SERVER] Ungültige SIP-Nachricht")
                 return
 
-            # 4. Client-Identifikation
+            # 5. Client-Identifikation
             from_header = sip_msg['headers'].get('From', sip_msg['headers'].get('FROM', ''))
             client_name_match = re.search(r'<sip:(.*?)@', from_header)
             if not client_name_match:
@@ -1837,7 +2399,7 @@ class Server:
             client_name = client_name_match.group(1)
             print(f"[SERVER] Client-Name: {client_name}")
 
-            # 5. Public Key extrahieren
+            # 6. Public Key extrahieren
             client_pubkey = None
             
             if 'content' in sip_msg and sip_msg['content']:
@@ -1853,7 +2415,7 @@ class Server:
                 print("[SERVER] Kein gültiger Public Key gefunden")
                 return
 
-            # 6. ✅ Client ATOMIC registrieren (THREAD-SAFE)
+            # 7. ✅ Client ATOMIC registrieren (THREAD-SAFE)
             client_data = {
                 'name': client_name,
                 'public_key': client_pubkey,
@@ -1889,11 +2451,11 @@ class Server:
             clients_count = len(clients_copy)
             print(f"[SERVER] Gesamte Keys: {len(all_public_keys)} (Server + {clients_count} Clients)")
 
-            # 7. Merkle Root berechnen
+            # 8. Merkle Root berechnen
             merkle_root = build_merkle_tree_from_keys(all_public_keys)
             print(f"[SERVER] Merkle Root: {merkle_root[:20]}...")
 
-            # 8. ERSTE ANTWORT: Server Public Key und Client ID
+            # 9. ERSTE ANTWORT: Server Public Key und Client ID
             first_response_data = {
                 "SERVER_PUBLIC_KEY": self.server_public_key,
                 "CLIENT_ID": client_id
@@ -1908,7 +2470,7 @@ class Server:
             # Kurze Pause für Client-Verarbeitung
             time.sleep(0.1)
 
-            # 9. ZWEITE ANTWORT: Merkle Root und alle Keys
+            # 10. ZWEITE ANTWORT: Merkle Root und alle Keys
             second_response_data = {
                 "MERKLE_ROOT": merkle_root,
                 "ALL_KEYS": all_public_keys  # ✅ Lokale Variable verwenden
@@ -1920,7 +2482,7 @@ class Server:
             send_frame(client_socket, second_response_msg.encode('utf-8'))
             print("[SERVER] Zweite Antwort erfolgreich gesendet")
             
-            # 10. KORRIGIERTE Hauptkommunikationsschleife
+            # 11. KORRIGIERTE Hauptkommunikationsschleife
             print(f"[SERVER] Starte Hauptloop für {client_name}")
             client_socket.settimeout(30.0)  # ✅ Höherer Timeout für normale Kommunikation
             
@@ -1938,6 +2500,10 @@ class Server:
                         continue
                     
                     print(f"[SERVER] Nachricht von {client_name} empfangen: {len(frame_data)} bytes")
+                    
+                    # ✅ Prüfe auf Relay-Manager Anfragen auch während der Session
+                    if self._handle_relay_message_during_session(frame_data, client_socket, client_address, client_name):
+                        continue
                     
                     # ✅ Nachricht zur Verarbeitung in die Queue stellen
                     if not hasattr(self, '_message_queue'):
@@ -3897,9 +4463,26 @@ if __name__ == "__main__":
                 print("LOW ENTROPY DETECTED!")
             print(f"Entropy level: {entropy}")
         
+        # Traffic limit abfragen
+        try:
+            traffic_input = input("Type MAX-TRAFFIC from this server in mbit/s: ").strip()
+            max_traffic = float(traffic_input)
+        except:
+            max_traffic = 100
+            print(f"Using default: {max_traffic} Mbit/s")
+        
         print("Starting server...")
-        server = Server()
+        
+        # ✅ KORRIGIERT: Verwende 0.0.0.0 für Binding, aber behalte Hostname für Identification
+        server = Server(host='0.0.0.0', port=5060)  # Bind auf alle Interfaces
+        
+        # Traffic Limit setzen
+        if hasattr(server, 'relay_manager'):
+            server.relay_manager.max_traffic_mbps = max_traffic
+            print(f"✅ Traffic-Limit gesetzt: {max_traffic} Mbit/s")
+        
         server.start()
+        
     except Exception as e:
         print(f"Critical error: {e}")
         import traceback

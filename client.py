@@ -671,7 +671,509 @@ def secure_del(var):
     elif hasattr(var, '__dict__'):
         var.__dict__.clear()  # Falls es ein Objekt ist
         del var
+class ClientRelayManager:
+    def __init__(self, client_instance):
+        self.client = client_instance
+        self.available_servers = {}  # {server_ip: server_data}
+        self.best_server = None
+        self.server_load_threshold = 80  # Server mit Load > 80% vermeiden
+        
+        # Feste Seed-Server Liste - gleiche wie im Server
+        self.SEED_SERVERS = [
+            ("sichereleitung.duckdns.org", 5060),  # Haupt-SIP Port
+            ("sichereleitung.duckdns.org", 5061),  # Alternativ-Port
+        ]
+        
+        # Status-Variablen
+        self.connection_status = "disconnected"
+        self.last_discovery = 0
+        self.discovery_interval = 300  # 5 Minuten
+        
+        print(f"[CLIENT RELAY] Initialized with {len(self.SEED_SERVERS)} seed servers")
+    def debug_server_discovery(self):
+        """Manuelle Debug-Methode für Server Discovery"""
+        try:
+            print("\n=== MANUAL SERVER DISCOVERY DEBUG ===")
+            
+            for seed_host, seed_port in self.relay_manager.SEED_SERVERS:
+                print(f"\nTrying {seed_host}:{seed_port}")
+                
+                try:
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(10)
+                    sock.connect((seed_host, seed_port))
+                    
+                    # Einfache Test-Nachricht
+                    test_data = {
+                        "MESSAGE_TYPE": "GET_SERVERS",
+                        "CLIENT_NAME": self._client_name,
+                        "TIMESTAMP": int(time.time())
+                    }
+                    
+                    test_msg = self.build_sip_message("MESSAGE", seed_host, test_data)
+                    
+                    print(f"Sending test message to {seed_host}:{seed_port}")
+                    if send_frame(sock, test_msg.encode()):
+                        response = recv_frame(sock)
+                        if response:
+                            print(f"Raw response ({len(response)} bytes):")
+                            if isinstance(response, bytes):
+                                response_str = response.decode('utf-8', errors='ignore')
+                            else:
+                                response_str = str(response)
+                            
+                            print(f"First 500 chars: {response_str[:500]}")
+                            
+                            # Versuche zu parsen
+                            try:
+                                parsed = self.parse_sip_message(response_str)
+                                if parsed:
+                                    print("✓ Successfully parsed as SIP")
+                                    print(f"Body: {parsed.get('body', 'No body')[:200]}...")
+                                else:
+                                    print("✗ Failed to parse as SIP")
+                            except Exception as e:
+                                print(f"✗ Parse error: {e}")
+                        else:
+                            print("✗ No response received")
+                    else:
+                        print("✗ Failed to send message")
+                        
+                    sock.close()
+                    
+                except Exception as e:
+                    print(f"✗ Connection failed: {e}")
+            
+            print("\n=== END DEBUG ===")
+            
+        except Exception as e:
+            print(f"Debug failed: {e}")
+    def discover_servers(self):
+        """Entdeckt verfügbare Server von Seed-Servern - verwendet framed SIP"""
+        print("[CLIENT RELAY] Starting server discovery...")
+        
+        discovered_servers = {}
+        
+        for seed_host, seed_port in self.SEED_SERVERS:
+            try:
+                print(f"[CLIENT RELAY] Trying {seed_host}:{seed_port}")
+                
+                # Framed SIP für Discovery
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(10)
+                sock.connect((seed_host, seed_port))
+                
+                # Baue SIP-Nachricht für Server-Liste Anfrage
+                request_data = {
+                    'type': 'get_servers',
+                    'requester_type': 'client',
+                    'client_name': getattr(self.client, '_client_name', 'Unknown'),
+                    'timestamp': time.time()
+                }
+                
+                # Sende als framed SIP
+                sip_message = self.client.build_sip_message(
+                    "MESSAGE",
+                    seed_host, 
+                    request_data
+                )
+                
+                print(f"[CLIENT RELAY] Sending discovery request to {seed_host}:{seed_port}")
+                
+                if send_frame(sock, sip_message.encode()):
+                    # Empfange Response
+                    print(f"[CLIENT RELAY] Waiting for response from {seed_host}:{seed_port}")
+                    response_data = recv_frame(sock)
+                    
+                    if response_data:
+                        print(f"[CLIENT RELAY] Received {len(response_data)} bytes from {seed_host}")
+                        
+                        try:
+                            # Versuche zuerst als String zu decodieren
+                            if isinstance(response_data, bytes):
+                                response_str = response_data.decode('utf-8')
+                            else:
+                                response_str = str(response_data)
+                            
+                            print(f"[CLIENT RELAY] Raw response: {response_str[:200]}...")
+                            
+                            # Parse die SIP Nachricht
+                            sip_data = self.client.parse_sip_message(response_str)
+                            if not sip_data:
+                                print(f"[CLIENT RELAY] Failed to parse SIP message from {seed_host}")
+                                continue
+                            
+                            # Extrahiere den Body
+                            body = sip_data.get('body', '')
+                            if not body:
+                                print(f"[CLIENT RELAY] No body in response from {seed_host}")
+                                continue
+                            
+                            print(f"[CLIENT RELAY] Response body: {body[:200]}...")
+                            
+                            # Parse JSON Body
+                            try:
+                                response = json.loads(body)
+                                print(f"[CLIENT RELAY] JSON parsed successfully from {seed_host}")
+                                
+                                if response.get('status') == 'success':
+                                    servers = response.get('servers', {})
+                                    print(f"[CLIENT RELAY] Found {len(servers)} servers from {seed_host}")
+                                    
+                                    # Füge gefundene Server hinzu
+                                    for server_ip, server_data in servers.items():
+                                        if server_ip not in discovered_servers:
+                                            discovered_servers[server_ip] = server_data
+                                            print(f"[CLIENT RELAY] Added server: {server_ip} - {server_data.get('name', 'Unknown')}")
+                                    
+                                else:
+                                    print(f"[CLIENT RELAY] Server returned error: {response.get('error', 'Unknown error')}")
+                                    
+                            except json.JSONDecodeError as e:
+                                print(f"[CLIENT RELAY] JSON decode error from {seed_host}: {e}")
+                                print(f"[CLIENT RELAY] Body content that failed: {body}")
+                                continue
+                                
+                        except Exception as e:
+                            print(f"[CLIENT RELAY] Response processing error from {seed_host}: {e}")
+                            continue
+                        
+                    else:
+                        print(f"[CLIENT RELAY] No response data from {seed_host}")
+                else:
+                    print(f"[CLIENT RELAY] Failed to send request to {seed_host}")
+                    
+                sock.close()
+                
+            except socket.timeout:
+                print(f"[CLIENT RELAY] Timeout connecting to {seed_host}:{seed_port}")
+                continue
+            except ConnectionRefusedError:
+                print(f"[CLIENT RELAY] Connection refused by {seed_host}:{seed_port}")
+                continue
+            except Exception as e:
+                print(f"[CLIENT RELAY ERROR] Discovery from {seed_host}:{seed_port} failed: {e}")
+                import traceback
+                traceback.print_exc()
+                continue
+        
+        # Aktualisiere verfügbare Server
+        self.available_servers = discovered_servers
+        self.last_discovery = time.time()
+        
+        # Wähle besten Server aus
+        self._select_best_server()
+        
+        print(f"[CLIENT RELAY] Discovery complete - {len(self.available_servers)} servers available")
+        return self.best_server
 
+    def _select_best_server(self):
+        """Wählt besten Server aus - KORRIGIERT für beide Ports"""
+        if not self.available_servers:
+            self.best_server = None
+            return
+        
+        print("[CLIENT RELAY] Testing server pings on all available ports...")
+        
+        server_pings = {}
+        local_ips = self._get_local_ips()
+        
+        # Ping alle Server
+        threads = []
+        for server_ip, server_data in self.available_servers.items():
+            # Überspringe Self-Ping
+            if server_ip in local_ips:
+                print(f"[RELAY] Skipping self-server: {server_ip}")
+                continue
+                
+            thread = threading.Thread(
+                target=self._ping_server,
+                args=(server_ip, server_data, server_pings),
+                daemon=True
+            )
+            threads.append(thread)
+            thread.start()
+        
+        # Warte auf Threads
+        for thread in threads:
+            thread.join(timeout=15.0)  # Höheres Timeout für beide Ports
+        
+        # ✅ FALLBACK: Wenn Ping fehlschlägt aber Server verfügbar ist
+        # (kann passieren wenn Firewall Pings blockiert aber Verbindung möglich ist)
+        available_servers = []
+        for server_ip, server_data in self.available_servers.items():
+            current_load = server_data.get('current_load', 100)
+            ping_time = server_pings.get(server_ip, float('inf'))
+            
+            if current_load > self.server_load_threshold:
+                print(f"[RELAY] Skipping {server_ip} - load too high: {current_load}%")
+                continue
+            
+            # ✅ KORREKTUR: Auch Server ohne erfolgreichen Ping berücksichtigen
+            # (können trotzdem funktionieren, Ping könnte blockiert sein)
+            if ping_time == float('inf'):
+                print(f"[RELAY] {server_ip}: Ping failed, but server might still be reachable")
+                # Simuliere einen mittleren Ping-Wert für Fallback
+                simulated_ping = 100.0  # 100ms als Fallback
+                available_servers.append({
+                    'server_data': server_data,
+                    'ping_time': simulated_ping,
+                    'load': current_load,
+                    'fallback': True  # Markiere als Fallback
+                })
+                print(f"[RELAY] {server_ip}: Using fallback ping: {simulated_ping}ms")
+            else:
+                available_servers.append({
+                    'server_data': server_data,
+                    'ping_time': ping_time,
+                    'load': current_load,
+                    'fallback': False
+                })
+                print(f"[RELAY] {server_ip}: ping={ping_time:.2f}ms, load={current_load}%")
+        
+        if not available_servers:
+            print("[RELAY] No suitable servers found")
+            self.best_server = None
+            return
+        
+        # Sortiere: Zuerst Server mit echten Pings, dann Fallbacks
+        available_servers.sort(key=lambda x: (x.get('fallback', False), x['ping_time']))
+        
+        # Wähle besten Server
+        best_server_info = available_servers[0]
+        self.best_server = best_server_info['server_data']
+        
+        if best_server_info.get('fallback', False):
+            print(f"[RELAY] Best server (FALLBACK): {self.best_server.get('name', 'Unknown')} "
+                  f"(simulated ping: {best_server_info['ping_time']:.2f}ms, load: {best_server_info['load']}%)")
+        else:
+            print(f"[RELAY] Best server: {self.best_server.get('name', 'Unknown')} "
+                  f"(ping: {best_server_info['ping_time']:.2f}ms, load: {best_server_info['load']}%)")
+
+    def get_detailed_server_info(self):
+        """Gibt detaillierte Informationen über alle verfügbaren Server zurück"""
+        if not self.available_servers:
+            return {"error": "No servers available"}
+        
+        # Führe erneutes Ping durch für aktuelle Daten
+        server_pings = {}
+        for server_ip, server_data in self.available_servers.items():
+            self._ping_server(server_ip, server_data, server_pings)
+        
+        # Erstelle detaillierte Liste
+        server_list = []
+        for server_ip, server_data in self.available_servers.items():
+            ping_time = server_pings.get(server_ip, float('inf'))
+            current_load = server_data.get('current_load', 100)
+            
+            server_list.append({
+                'name': server_data.get('name', 'Unknown'),
+                'ip': server_ip,
+                'port': server_data.get('port', 5060),
+                'ping_ms': round(ping_time, 2) if ping_time != float('inf') else 'timeout',
+                'load_percent': current_load,
+                'max_traffic': server_data.get('max_traffic', 100),
+                'status': 'available' if current_load <= self.server_load_threshold and ping_time != float('inf') else 'unavailable'
+            })
+        
+        # Sortiere nach Ping-Zeit
+        server_list.sort(key=lambda x: x['ping_ms'] if isinstance(x['ping_ms'], (int, float)) else float('inf'))
+        
+        return {
+            'total_servers': len(server_list),
+            'available_servers': len([s for s in server_list if s['status'] == 'available']),
+            'best_server': server_list[0] if server_list else None,
+            'servers': server_list
+        }
+
+    def _ping_server(self, server_ip, server_data, results_dict):
+        """VERBESSERTES Ping das beide Ports 5060 und 5061 testet"""
+        try:
+            reported_port = server_data.get('port', 5060)
+            
+            # ✅ KORREKTUR: Teste beide Ports für DuckDNS
+            if "duckdns.org" in server_ip:
+                ports_to_test = [5061, 5060]  # ✅ Zuerst 5061, dann 5060 testen
+                print(f"[PING] DuckDNS detected, testing ports: {ports_to_test}")
+            else:
+                ports_to_test = [reported_port]
+            
+            best_ping = float('inf')
+            successful_port = None
+            
+            for port in ports_to_test:
+                try:
+                    print(f"[PING] Testing {server_ip}:{port}")
+                    
+                    # Erstelle temporären Socket
+                    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                    sock.settimeout(3.0)  # Kürzeres Timeout für schnelleres Testen
+                    
+                    start_time = time.time()
+                    sock.connect((server_ip, port))
+                    
+                    # Baue Ping-Nachricht
+                    ping_data = {
+                        "MESSAGE_TYPE": "PING",
+                        "TIMESTAMP": int(start_time),
+                        "CLIENT_NAME": "ping_tester"
+                    }
+                    
+                    ping_msg = self.client.build_sip_message("MESSAGE", server_ip, ping_data)
+                    
+                    # Sende Ping mit Frame
+                    if send_frame(sock, ping_msg.encode('utf-8')):
+                        # Warte auf Pong mit Frame
+                        response = recv_frame(sock, timeout=2.0)
+                        if response:
+                            end_time = time.time()
+                            ping_time = (end_time - start_time) * 1000
+                            
+                            if ping_time < best_ping:
+                                best_ping = ping_time
+                                successful_port = port
+                                
+                            print(f"[PING] {server_ip}:{port}: {ping_time:.2f}ms - SUCCESS")
+                        else:
+                            print(f"[PING] {server_ip}:{port}: No response")
+                    else:
+                        print(f"[PING] {server_ip}:{port}: Send failed")
+                        
+                    sock.close()
+                    
+                except socket.timeout:
+                    print(f"[PING] {server_ip}:{port}: Timeout")
+                    continue
+                except ConnectionRefusedError:
+                    print(f"[PING] {server_ip}:{port}: Connection refused")
+                    continue
+                except Exception as e:
+                    print(f"[PING] {server_ip}:{port}: Error - {e}")
+                    continue
+            
+            # Ergebnis speichern
+            if best_ping != float('inf'):
+                results_dict[server_ip] = best_ping
+                print(f"[PING] {server_ip}: Best ping {best_ping:.2f}ms on port {successful_port}")
+            else:
+                results_dict[server_ip] = float('inf')
+                print(f"[PING] {server_ip}: All ports failed")
+            
+        except Exception as e:
+            results_dict[server_ip] = float('inf')
+            print(f"[PING] {server_ip}: Overall error - {e}")
+
+    def _get_local_ips(self):
+        """Ermittelt alle lokalen IP-Adressen für Self-Ping-Erkennung"""
+        local_ips = set()
+        try:
+            # Lokale IP
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ips.add(s.getsockname()[0])
+            s.close()
+            
+            # Hostname
+            hostname = socket.gethostname()
+            local_ips.add(hostname)
+            try:
+                local_ips.add(socket.gethostbyname(hostname))
+            except:
+                pass
+                
+            # Alle Netzwerk-Interfaces
+            for interface in socket.getaddrinfo(socket.gethostname(), None):
+                local_ips.add(interface[4][0])
+                
+        except Exception as e:
+            print(f"[PING] Local IP detection failed: {e}")
+        
+        # Standard-IPs hinzufügen
+        local_ips.update(['127.0.0.1', 'localhost', '0.0.0.0'])
+        
+        print(f"[PING] Local IPs detected: {local_ips}")
+        return local_ips
+            
+    def get_server_recommendation(self):
+        """Gibt Server-Empfehlung für den Client zurück"""
+        # Wenn keine aktuelle Discovery oder zu alt, neue durchführen
+        if (not self.available_servers or 
+            time.time() - self.last_discovery > self.discovery_interval):
+            self.discover_servers()
+        
+        if self.best_server:
+            return {
+                'recommended': self.best_server,
+                'alternatives': len(self.available_servers) - 1,
+                'total_servers': len(self.available_servers)
+            }
+        else:
+            return {
+                'recommended': None,
+                'alternatives': 0,
+                'total_servers': 0,
+                'error': 'No servers available'
+            }
+
+    def get_server_status(self):
+        """Gibt Status des Relay-Managers zurück"""
+        return {
+            'connection_status': self.connection_status,
+            'available_servers': len(self.available_servers),
+            'best_server': self.best_server.get('name', 'None') if self.best_server else 'None',
+            'last_discovery': time.strftime('%H:%M:%S', time.localtime(self.last_discovery)),
+            'seed_servers': len(self.SEED_SERVERS)
+        }
+
+    def manual_server_selection(self, server_ip, server_port):
+        """Erlaubt manuelle Server-Auswahl (Fallback)"""
+        manual_server = {
+            'ip': server_ip,
+            'port': server_port,
+            'name': f"Manual-{server_ip}",
+            'current_load': 0,  # Unbekannt
+            'max_traffic': 100,  # Standard
+            'last_seen': time.time()
+        }
+        
+        self.available_servers[server_ip] = manual_server
+        self.best_server = manual_server
+        
+        print(f"[CLIENT RELAY] Manual server selected: {server_ip}:{server_port}")
+        return manual_server
+
+    def update_connection_status(self, status):
+        """Aktualisiert den Verbindungsstatus"""
+        self.connection_status = status
+        print(f"[CLIENT RELAY] Connection status: {status}")
+
+    def force_discovery(self):
+        """Erzwingt eine neue Server-Discovery"""
+        print("[CLIENT RELAY] Forcing new server discovery...")
+        self.last_discovery = 0  # Setze zurück um neue Discovery zu erzwingen
+        return self.discover_servers()
+
+    def select_specific_server(self, server_ip):
+        """Wählt einen spezifischen Server manuell aus (überschreibt Auto-Auswahl)"""
+        if server_ip in self.available_servers:
+            server_data = self.available_servers[server_ip]
+            
+            # Prüfe ob Server erreichbar ist
+            server_pings = {}
+            self._ping_server(server_ip, server_data, server_pings)
+            ping_time = server_pings.get(server_ip, float('inf'))
+            
+            if ping_time != float('inf'):
+                self.best_server = server_data
+                print(f"[CLIENT RELAY] Manually selected: {server_data.get('name', 'Unknown')} "
+                      f"(ping: {ping_time:.2f}ms)")
+                return True
+            else:
+                print(f"[CLIENT RELAY] Manual selection failed - server {server_ip} not reachable")
+                return False
+        else:
+            print(f"[CLIENT RELAY] Manual selection failed - server {server_ip} not in available servers")
+            return False
 
 
 
@@ -1923,6 +2425,9 @@ class PHONEBOOK(ctk.CTk):
         
         # UI setup NACH der Initialisierung aller Attribute
         self.setup_ui()
+        self.relay_manager = ClientRelayManager(self)
+        self.available_servers = {}
+        self.best_server = None
         
     def setup_ui(self):
         # Stile für die UI-Elemente
@@ -1957,6 +2462,13 @@ class PHONEBOOK(ctk.CTk):
         self.phonebook_tab = ctk.CTkFrame(self.notebook, fg_color='black')
         self.notebook.add(self.phonebook_tab, text="Telefonbuch")
         self.create_phonebook_tab()
+        self.relay_status_label = ctk.CTkLabel(
+            self.phonebook_tab, 
+            text="Bereit für Verbindung",
+            font=("Arial", 12),
+            text_color="white"
+        )
+        
 
     def create_phonebook_tab(self):
         # Frame für das Telefonbuch mit Scrollbar
@@ -2596,7 +3108,7 @@ class PHONEBOOK(ctk.CTk):
         # Unverändert beibehalten
         self.connection_window = ctk.CTkToplevel(self.phonebook_tab)
         self.connection_window.title("Connecting...")
-        self.connection_window.geometry("300x300")
+        self.connection_window.geometry("400x400")  # Größer gemacht für neue Buttons
         self.connection_window.configure(fg_color='darkgrey')
 
         # Schriftarten definieren
@@ -2605,6 +3117,16 @@ class PHONEBOOK(ctk.CTk):
 
         self.status_label = ctk.CTkLabel(self.connection_window, text="Connecting...", font=label_font)
         self.status_label.pack(pady=20)
+
+        # ✅ NEU: Server-Auswahl Button
+        self.server_selection_button = ctk.CTkButton(
+            self.connection_window, 
+            text="🔍 Server Auswahl", 
+            command=self.show_server_selection_dialog,
+            fg_color="#2b2b2b",
+            hover_color="#3b3b3b"
+        )
+        self.server_selection_button.pack(pady=10)
 
         # Server-IP Frame
         self.server_frame = ctk.CTkFrame(self.connection_window, fg_color="red")
@@ -2630,16 +3152,56 @@ class PHONEBOOK(ctk.CTk):
 
         # Verbinden Button
         self.button_frame = ctk.CTkFrame(self.connection_window, fg_color="grey")
-        self.button_frame.pack(pady=40)
+        self.button_frame.pack(pady=20)
 
         self.connect_button = ctk.CTkButton(self.button_frame, text="Verbinden", command=self.on_connect_click)
         self.connect_button.pack(side='left', fill="x", expand=True, padx=10)
 
     def on_connect_click(self):
+        # Sicherstellen, dass update_relay_status verfügbar ist
+        if not hasattr(self, 'update_relay_status'):
+            # Fallback: Definiere eine einfache Version
+            def update_relay_status(message, color="white"):
+                print(f"[RELAY STATUS] {message}")
+                try:
+                    if hasattr(self, 'relay_status_label') and self.relay_status_label.winfo_exists():
+                        self.relay_status_label.configure(text=message, text_color=color)
+                except:
+                    pass
+            self.update_relay_status = update_relay_status
+
         if hasattr(self, 'client_socket') and self.client_socket:
             messagebox.showerror("Fehler", "Bereits verbunden")
             return
 
+        # ✅ NEU: Server-Discovery vor manueller Eingabe
+        discovered_server = None
+        try:
+            if hasattr(self, 'relay_manager'):
+                self.update_relay_status("🔍 Suche beste Server...", "yellow")
+                discovered_server = self.relay_manager.discover_servers()
+                
+                if discovered_server:
+                    server_ip = discovered_server['ip']
+                    server_port = discovered_server['port']
+                    print(f"[RELAY] Gefundener Server: {server_ip}:{server_port}")
+                    
+                    # Auto-fill die Eingabefelder
+                    if hasattr(self, 'server_ip_input') and self.server_ip_input.winfo_exists():
+                        self.server_ip_input.delete(0, tk.END)
+                        self.server_ip_input.insert(0, server_ip)
+                    if hasattr(self, 'server_port_input') and self.server_port_input.winfo_exists():
+                        self.server_port_input.delete(0, tk.END)  
+                        self.server_port_input.insert(0, str(server_port))
+                        
+                    self.update_relay_status(f"✅ Server gefunden: {server_ip}:{server_port}", "green")
+                else:
+                    self.update_relay_status("⚠️ Keine Server gefunden - verwende manuelle Eingabe", "orange")
+        except Exception as e:
+            print(f"[RELAY DISCOVERY ERROR] {e}")
+            self.update_relay_status("⚠️ Server-Suche fehlgeschlagen", "orange")
+
+        # ✅ REST DER METHODE UNVERÄNDERT - verwendet jetzt auto-gefüllte Werte
         server_ip = self.server_ip_input.get()
         server_port = self.server_port_input.get()
 
@@ -2743,7 +3305,8 @@ class PHONEBOOK(ctk.CTk):
                 ).start()
                 
                 print("[DEBUG 21] Closing connection window")
-                self.connection_window.destroy()
+                if hasattr(self, 'connection_window') and self.connection_window:
+                    self.connection_window.destroy()
                 print("[DEBUG 22] Connection process completed successfully!")
 
             except socket.timeout:
@@ -4432,7 +4995,109 @@ class PHONEBOOK(ctk.CTk):
             # Flag immer zurücksetzen
             if hasattr(self, '_updating_ui'):
                 self._updating_ui = False
+    def _perform_connection(self, server_ip=None, server_port=None):
+        """Führt die eigentliche Verbindung durch"""
+        try:
+            # Wenn keine Parameter, verwende manuelle Eingabe
+            if server_ip is None and hasattr(self, 'server_ip_input'):
+                server_ip = self.server_ip_input.get()
+            if server_port is None and hasattr(self, 'server_port_input'):
+                server_port = self.server_port_input.get()
+            
+            # Rest der vorhandenen Verbindungslogik...
+            if not server_ip or not server_port:
+                messagebox.showerror("Fehler", "Server-IP und Port benötigt")
+                return
+            
+            # Socket erstellen und verbinden (vorhandener Code)
+            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.client_socket.settimeout(15)
+            self.client_socket.connect((server_ip, int(server_port)))
+            
+            # Verbindung erfolgreich
+            self.relay_status_label.configure(
+                text=f"✅ Verbunden mit {server_ip}:{server_port}", 
+                text_color="green"
+            )
+            
+            # Starte Verbindungsthread (vorhandener Code)
+            threading.Thread(
+                target=self.start_connection_wrapper,
+                args=(self.status_label, server_ip, server_port, self._client_name),
+                daemon=True
+            ).start()
+            
+            if hasattr(self, 'connection_window'):
+                self.connection_window.destroy()
+                
+        except Exception as e:
+            print(f"[CONNECTION ERROR] {str(e)}")
+            self.relay_status_label.configure(text="❌ Verbindung fehlgeschlagen", text_color="red")
+            self.cleanup_connection()
+            raise
+    # Beispiel für die Verwendung in Ihrer PHONEBOOK Klasse:
 
+    def show_server_selection_dialog(self):
+        """Zeigt einen Dialog zur Server-Auswahl an"""
+        try:
+            # Hole detaillierte Server-Informationen
+            server_info = self.relay_manager.get_detailed_server_info()
+            
+            if 'error' in server_info:
+                messagebox.showerror("Server Info", server_info['error'])
+                return
+            
+            # Erstelle Auswahl-Dialog
+            dialog = tk.Toplevel(self)
+            dialog.title("Server Auswahl")
+            dialog.geometry("600x400")
+            
+            # Besten Server anzeigen
+            if server_info['best_server']:
+                best = server_info['best_server']
+                tk.Label(dialog, text=f"Empfohlener Server: {best['name']}", 
+                        font=("Arial", 12, "bold"), fg="green").pack(pady=10)
+                tk.Label(dialog, text=f"IP: {best['ip']}:{best['port']} | Ping: {best['ping_ms']}ms | Last: {best['load_percent']}%").pack()
+            
+            # Alle Server in einer Liste anzeigen
+            tk.Label(dialog, text="\nVerfügbare Server:", font=("Arial", 10, "bold")).pack(pady=10)
+            
+            for server in server_info['servers']:
+                status_color = "green" if server['status'] == 'available' else "red"
+                server_text = f"{server['name']} - {server['ip']}:{server['port']} | Ping: {server['ping_ms']}ms | Last: {server['load_percent']}%"
+                
+                frame = tk.Frame(dialog)
+                frame.pack(fill="x", padx=20, pady=2)
+                
+                tk.Label(frame, text=server_text, fg=status_color).pack(side="left")
+                
+                if server['status'] == 'available':
+                    tk.Button(frame, text="Auswählen", 
+                             command=lambda s=server: self._select_server(s['ip'])).pack(side="right")
+            
+        except Exception as e:
+            messagebox.showerror("Fehler", f"Server-Auswahl fehlgeschlagen: {str(e)}")
+
+    def _select_server(self, server_ip):
+        """Wählt einen spezifischen Server aus"""
+        if self.relay_manager.select_specific_server(server_ip):
+            messagebox.showinfo("Server Auswahl", f"Server {server_ip} wurde ausgewählt")
+        else:
+            messagebox.showerror("Fehler", f"Server {server_ip} ist nicht erreichbar")      
+    def update_server_status(self, message, color="white"):
+        """Aktualisiert den Server-Status (nicht in der Kontaktliste)"""
+        try:
+            def safe_update():
+                if hasattr(self, 'server_status_label') and self.server_status_label.winfo_exists():
+                    self.server_status_label.configure(text=message, text_color=color)
+            
+            if threading.current_thread() == threading.main_thread():
+                safe_update()
+            else:
+                self.after(0, safe_update)
+                
+        except Exception as e:
+            print(f"[SERVER STATUS ERROR] {str(e)}")              
 def is_linux():
     return sys.platform.startswith("linux")
 def main():
