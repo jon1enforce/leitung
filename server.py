@@ -619,7 +619,7 @@ class CONVEY:
             return False
 
     def handle_call_request(self, msg, client_socket, client_name):
-        """Vermittelt Call-Requests zwischen Clients"""
+        """Vermittelt Call-Requests zwischen Clients - VEREINFACHT"""
         try:
             custom_data = msg.get('custom_data', {})
             target_id = custom_data.get('TARGET_CLIENT_ID')
@@ -695,13 +695,13 @@ class CONVEY:
             return False
 
     def handle_call_response(self, msg, client_socket, client_name):
-        """Leitet Call-Antworten weiter - OPTIMIERT FÜR UDP RELAY"""
+        """Leitet Call-Antworten weiter - VEREINFACHT OHNE WIREGUARD"""
         try:
             custom_data = msg.get('custom_data', {})
             response = custom_data.get('RESPONSE')
             caller_id = custom_data.get('CALLER_CLIENT_ID')
-            callee_wg_key = custom_data.get('CALLEE_WG_PUBLIC_KEY')
             
+            # ✅ ENTFERNT: callee_wg_key nicht mehr benötigt
             if not response or not caller_id:
                 return False
                 
@@ -719,16 +719,16 @@ class CONVEY:
             if not call_data:
                 return False
             
-            # ✅ UDP RELAY FÜR ALLE VERBINDUNGEN
-            if response == "accepted" and callee_wg_key:
+            # ✅ UDP RELAY FÜR ALLE VERBINDUNGEN (OHNE WIREGUARD)
+            if response == "accepted":
                 # 🔥 UDP RELAY REGISTRIEREN
                 self._register_audio_relay(call_id, call_data['caller'], client_name)
                 
-                # ✅ EFFIZIENTE NACHRICHTEN-VORBEREITUNG
+                # ✅ VEREINFACHTE NACHRICHT OHNE WIREGUARD KEYS
                 response_data = {
                     "MESSAGE_TYPE": "CALL_RESPONSE",
                     "RESPONSE": "accepted",
-                    "CALLEE_WG_PUBLIC_KEY": callee_wg_key,
+                    # ✅ KEINE WIREGUARD KEYS MEHR
                     "AUDIO_RELAY_IP": self.server.host,
                     "AUDIO_RELAY_PORT": self.udp_relay_port,
                     "USE_AUDIO_RELAY": True,
@@ -749,6 +749,8 @@ class CONVEY:
                 })
                 send_frame(client_socket, callee_msg.encode('utf-8'))
                 
+                print(f"[CONVEY] Call {call_id} accepted with UDP Relay")
+                
             elif response == "rejected":
                 response_msg = self.server.build_sip_message("MESSAGE", call_data['caller'], {
                     "MESSAGE_TYPE": "CALL_RESPONSE",
@@ -757,14 +759,17 @@ class CONVEY:
                 })
                 send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
                 call_data['status'] = 'rejected'
+                print(f"[CONVEY] Call {call_id} rejected")
                 
             elif response == "error":
                 call_data['status'] = 'error'
+                print(f"[CONVEY] Call {call_id} error")
             
             # ✅ SAUBERES CLEANUP
             if response in ['accepted', 'rejected', 'error']:
                 if call_id in self.active_calls:
-                    self._unregister_audio_relay(call_id)
+                    if response == 'rejected' or response == 'error':
+                        self._unregister_audio_relay(call_id)
                     del self.active_calls[call_id]
             
             return True
@@ -778,6 +783,8 @@ class CONVEY:
         try:
             custom_data = msg.get('custom_data', {})
             reason = custom_data.get('REASON', 'unknown')
+            
+            print(f"[CONVEY] Call end from {client_name}, reason: {reason}")
             
             # ✅ EFFIZIENTE CALL-SUCHE
             calls_to_remove = []
@@ -819,6 +826,7 @@ class CONVEY:
             })
             
             send_frame(client_socket, ack_msg.encode('utf-8'))
+            print(f"[CONVEY] Call ended for {client_name}")
             return True
             
         except Exception as e:
@@ -898,25 +906,7 @@ class CONVEY:
         if calls_to_remove:
             print(f"[CONVEY] Cleaned up {len(calls_to_remove)} calls for disconnected client {client_name}")
 
-    def generate_wireguard_keypair(self):
-        """Generiert ein WireGuard Schlüsselpaar"""
-        try:
-            # Private Key generieren
-            private_key = subprocess.run(['wg', 'genkey'], capture_output=True, text=True, check=True)
-            private_key = private_key.stdout.strip()
-            
-            # Public Key aus Private Key ableiten
-            public_key = subprocess.run(['wg', 'pubkey'], input=private_key, capture_output=True, text=True, check=True)
-            public_key = public_key.stdout.strip()
-            
-            return private_key, public_key
-        except Exception as e:
-            print(f"[WIREGUARD ERROR] Key generation failed: {str(e)}")
-            # Fallback: Generiere zufällige Keys
-            import secrets
-            private_key = secrets.token_hex(32)
-            public_key = secrets.token_hex(32)
-            return private_key, public_key
+    # ✅ ENTFERNT: generate_wireguard_keypair() nicht mehr benötigt
 
 class Server:
     def __init__(self, host='0.0.0.0', port=5060):
