@@ -695,6 +695,129 @@ class CALL:
         self.use_udp_relay = False
         self.relay_server_ip = None
         self.relay_server_port = 51822
+        
+        # ✅ NEU: Audio Device Management
+        self.audio = pyaudio.PyAudio()
+        self.selected_input_device = None
+        self.selected_output_device = None
+        self.call_start_time = None
+        self.call_timer_running = False
+        self.call_timer_after_id = None
+        
+        # Lock für Thread-Safety
+        self.connection_lock = threading.Lock()
+        self.connection_state = "disconnected"
+
+    def show_audio_devices_popup(self):
+        """Zeigt Popup zur Auswahl der Audio-Geräte"""
+        try:
+            # Erstelle neues Fenster
+            popup = tk.Toplevel(self.client.root)
+            popup.title("Audio-Geräte Auswahl")
+            popup.geometry("500x400")
+            popup.transient(self.client.root)
+            popup.grab_set()
+            
+            # Zentriere das Fenster
+            popup.update_idletasks()
+            x = (popup.winfo_screenwidth() // 2) - (500 // 2)
+            y = (popup.winfo_screenheight() // 2) - (400 // 2)
+            popup.geometry(f"+{x}+{y}")
+            
+            # Eingabegeräte (Mikrofone)
+            tk.Label(popup, text="Eingabegerät (Mikrofon):", font=("Arial", 10, "bold")).pack(pady=(10, 5))
+            input_devices = self._get_input_devices()
+            input_combo = ttk.Combobox(popup, values=input_devices, width=60)
+            input_combo.pack(pady=5)
+            
+            if self.selected_input_device and self.selected_input_device in input_devices:
+                input_combo.set(self.selected_input_device)
+            elif input_devices:
+                input_combo.set(input_devices[0])
+            
+            # Ausgabegeräte (Lautsprecher/Kopfhörer)
+            tk.Label(popup, text="Ausgabegerät (Lautsprecher):", font=("Arial", 10, "bold")).pack(pady=(10, 5))
+            output_devices = self._get_output_devices()
+            output_combo = ttk.Combobox(popup, values=output_devices, width=60)
+            output_combo.pack(pady=5)
+            
+            if self.selected_output_device and self.selected_output_device in output_devices:
+                output_combo.set(self.selected_output_device)
+            elif output_devices:
+                output_combo.set(output_devices[0])
+            
+            # Info Text
+            info_label = tk.Label(popup, text="Hinweis: Es reicht ein bidirektionales Gerät (z.B. Headset) aus.\nWählen Sie für Eingabe und Ausgabe dasselbe Gerät.", 
+                                font=("Arial", 9), justify=tk.LEFT, fg="blue")
+            info_label.pack(pady=10)
+            
+            # Buttons
+            button_frame = tk.Frame(popup)
+            button_frame.pack(pady=20)
+            
+            def apply_selection():
+                self.selected_input_device = input_combo.get()
+                self.selected_output_device = output_combo.get()
+                popup.destroy()
+                messagebox.showinfo("Audio-Geräte", 
+                                  f"Eingabegerät: {self.selected_input_device}\n"
+                                  f"Ausgabegerät: {self.selected_output_device}")
+            
+            def use_same_device():
+                selected = input_combo.get()
+                input_combo.set(selected)
+                output_combo.set(selected)
+            
+            def use_default():
+                self.selected_input_device = None
+                self.selected_output_device = None
+                popup.destroy()
+                messagebox.showinfo("Audio-Geräte", "Standard-Geräte werden verwendet")
+            
+            ttk.Button(button_frame, text="Gleiches Gerät verwenden", command=use_same_device).pack(side=tk.LEFT, padx=5)
+            ttk.Button(button_frame, text="Übernehmen", command=apply_selection).pack(side=tk.LEFT, padx=5)
+            ttk.Button(button_frame, text="Standard verwenden", command=use_default).pack(side=tk.LEFT, padx=5)
+            
+            popup.mainloop()
+            
+        except Exception as e:
+            print(f"[AUDIO DEVICE POPUP ERROR] {str(e)}")
+            messagebox.showerror("Fehler", f"Audio-Geräte Auswahl fehlgeschlagen: {str(e)}")
+
+    def _get_input_devices(self):
+        """Gibt Liste aller Eingabegeräte (Mikrofone) zurück"""
+        devices = []
+        try:
+            for i in range(self.audio.get_device_count()):
+                device_info = self.audio.get_device_info_by_index(i)
+                if device_info.get('maxInputChannels', 0) > 0:
+                    device_name = device_info.get('name', f'Device {i}')
+                    devices.append(f"{i}: {device_name} (Input)")
+        except Exception as e:
+            print(f"[INPUT DEVICES ERROR] {str(e)}")
+        return devices
+
+    def _get_output_devices(self):
+        """Gibt Liste aller Ausgabegeräte (Lautsprecher) zurück"""
+        devices = []
+        try:
+            for i in range(self.audio.get_device_count()):
+                device_info = self.audio.get_device_info_by_index(i)
+                if device_info.get('maxOutputChannels', 0) > 0:
+                    device_name = device_info.get('name', f'Device {i}')
+                    devices.append(f"{i}: {device_name} (Output)")
+        except Exception as e:
+            print(f"[OUTPUT DEVICES ERROR] {str(e)}")
+        return devices
+
+    def _get_device_index(self, device_string):
+        """Extrahiert Device-Index aus dem Auswahl-String"""
+        try:
+            if device_string and ":" in device_string:
+                return int(device_string.split(":")[0])
+        except:
+            pass
+        return None
 
     def handle_message(self, raw_message):
         """Zentrale Message-Handling Methode - VEREINFACHT OHNE WIREGUARD"""
@@ -826,6 +949,13 @@ class CALL:
                 messagebox.showwarning("Warning", "Bereits in einem Anruf aktiv")
                 self._in_call_click = False
                 return
+
+            # ✅ NEU: Audio-Geräte Auswahl anzeigen
+            if not self.selected_input_device or not self.selected_output_device:
+                if hasattr(self.client, 'after'):
+                    self.client.after(0, self.show_audio_devices_popup)
+                else:
+                    self.show_audio_devices_popup()
 
             if 'id' not in selected_entry:
                 messagebox.showerror("Error", "Ungültiger Kontakt (fehlende ID)")
@@ -1293,9 +1423,8 @@ class CALL:
         except Exception as e:
             print(f"[CALL ERROR] Session key handling failed: {str(e)}")
 
-    # === AUDIO STREAMS === (Unverändert)
     def _start_audio_streams(self):
-        """Startet bidirektionale Audio-Streams - JETZT MIT UDP RELAY"""
+        """Startet bidirektionale Audio-Streams mit Timer"""
         if not self.current_secret:
             print("[AUDIO] No session key available")
             return
@@ -1305,23 +1434,24 @@ class CALL:
             iv = self.current_secret[:16]
             key = self.current_secret[16:48]
             
-            # ✅ NEU: Ziel-IP basierend auf Relay oder direkt
+            # Ziel-IP basierend auf Relay oder direkt
             if self.use_udp_relay and self.relay_server_ip:
-                # Zum Relay Server senden
                 target_ip = self.relay_server_ip
                 target_port = self.relay_server_port
                 print(f"[AUDIO] Using UDP Relay: {target_ip}:{target_port}")
             else:
-                # Fallback: Direkte Verbindung
                 if self.pending_call and 'recipient' in self.pending_call:
-                    target_ip = "10.8.0.2"  # Callee IP
+                    target_ip = "10.8.0.2"
                 else:
-                    target_ip = "10.8.0.1"  # Caller IP
+                    target_ip = "10.8.0.1"
                 target_port = self.PORT
                 print(f"[AUDIO] Using direct connection: {target_ip}:{target_port}")
             
             # Beende bestehende Audio-Threads
             self._stop_audio_streams()
+            
+            # Starte Timer-Anzeige
+            self._start_call_timer()
             
             # Starte Sende-Thread
             send_thread = threading.Thread(
@@ -1342,44 +1472,39 @@ class CALL:
             
             self.audio_threads = [send_thread, recv_thread]
             self.active_call = True
+            self.call_start_time = time.time()
             print(f"[AUDIO] Bidirectional audio streams started")
             
         except Exception as e:
             print(f"[AUDIO ERROR] Failed to start streams: {e}")
 
-    def _stop_audio_streams(self):
-        """Stoppt alle Audio-Streams"""
-        self.active_call = False
-        time.sleep(0.1)
-        
-        for thread in self.audio_threads:
-            try:
-                if thread.is_alive():
-                    thread.join(timeout=1.0)
-            except:
-                pass
-        self.audio_threads = []
-
     def audio_stream_out(self, target_ip, target_port, iv, key):
-        """Sendet Audio an Ziel-IP - JETZT MIT RELAY UNTERSTÜTZUNG"""
+        """Sendet Audio an Ziel-IP mit ausgewähltem Gerät"""
         audio = None
         stream = None
         audio_socket = None
         
         try:
             audio = pyaudio.PyAudio()
+            
+            # Device Index für Eingabe
+            input_device_index = None
+            if self.selected_input_device:
+                input_device_index = self._get_device_index(self.selected_input_device)
+            
             stream = audio.open(
                 format=self.FORMAT,
                 channels=self.CHANNELS,
                 rate=self.RATE,
                 input=True,
-                frames_per_buffer=self.CHUNK
+                frames_per_buffer=self.CHUNK,
+                input_device_index=input_device_index
             )
             
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             audio_socket.settimeout(0.1)
             
-            print(f"[AUDIO OUT] Streaming to {target_ip}:{target_port}")
+            print(f"[AUDIO OUT] Streaming to {target_ip}:{target_port} (Device: {input_device_index})")
             
             while self.active_call:
                 try:
@@ -1413,26 +1538,33 @@ class CALL:
                 pass
 
     def audio_stream_in(self, iv, key):
-        """Empfängt Audio (unverändert - hört auf lokalem Port)"""
+        """Empfängt Audio mit ausgewähltem Ausgabegerät"""
         audio = None
         stream = None
         audio_socket = None
         
         try:
             audio = pyaudio.PyAudio()
+            
+            # Device Index für Ausgabe
+            output_device_index = None
+            if self.selected_output_device:
+                output_device_index = self._get_device_index(self.selected_output_device)
+            
             stream = audio.open(
                 format=self.FORMAT,
                 channels=self.CHANNELS,
                 rate=self.RATE,
                 output=True,
-                frames_per_buffer=self.CHUNK
+                frames_per_buffer=self.CHUNK,
+                output_device_index=output_device_index
             )
             
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             audio_socket.bind(('0.0.0.0', self.PORT))
             audio_socket.settimeout(0.1)
             
-            print("[AUDIO IN] Listening for audio...")
+            print(f"[AUDIO IN] Listening for audio... (Device: {output_device_index})")
             
             while self.active_call:
                 try:
@@ -1465,7 +1597,65 @@ class CALL:
             except:
                 pass
 
-    # === TIMEOUT & CLEANUP ===
+    def _start_call_timer(self):
+        """Startet die Call-Timer-Anzeige auf beiden Clients"""
+        try:
+            self.call_timer_running = True
+            self.call_start_time = time.time()
+            
+            # Timer in der UI aktualisieren
+            if hasattr(self.client, 'start_call_timer'):
+                self.client.start_call_timer()
+            else:
+                self._update_call_timer_ui()
+                
+        except Exception as e:
+            print(f"[TIMER ERROR] Failed to start timer: {str(e)}")
+
+    def _update_call_timer_ui(self):
+        """Aktualisiert die Timer-Anzeige in der UI"""
+        if not self.call_timer_running or not self.active_call:
+            return
+            
+        try:
+            elapsed = int(time.time() - self.call_start_time)
+            minutes = elapsed // 60
+            seconds = elapsed % 60
+            timer_text = f"Call: {minutes:02d}:{seconds:02d}"
+            
+            # UI Update - verschiedene mögliche Implementierungen
+            if hasattr(self.client, 'status_label'):
+                self.client.status_label.configure(text=timer_text)
+            elif hasattr(self.client, 'call_timer_label'):
+                self.client.call_timer_label.configure(text=timer_text)
+            
+            # Nächste Aktualisierung in 1 Sekunde
+            if hasattr(self.client, 'after'):
+                self.call_timer_after_id = self.client.after(1000, self._update_call_timer_ui)
+                
+        except Exception as e:
+            print(f"[TIMER UI ERROR] {str(e)}")
+
+    def stop_call_timer(self):
+        """Stoppt die Timer-Anzeige"""
+        self.call_timer_running = False
+        if self.call_timer_after_id and hasattr(self.client, 'after'):
+            self.client.after_cancel(self.call_timer_after_id)
+            self.call_timer_after_id = None
+
+    def _stop_audio_streams(self):
+        """Stoppt alle Audio-Streams"""
+        self.active_call = False
+        time.sleep(0.1)
+        
+        for thread in self.audio_threads:
+            try:
+                if thread.is_alive():
+                    thread.join(timeout=1.0)
+            except:
+                pass
+        self.audio_threads = []
+
     def _call_timeout_watchdog(self):
         """Überwacht Call-Timeout"""
         timeout = 120
@@ -1482,14 +1672,16 @@ class CALL:
             time.sleep(1)
 
     def cleanup_call_resources(self):
-        """Bereinigt alle Call-Ressourcen"""
+        """Bereinigt alle Call-Ressourcen inklusive Timer"""
         print("[CALL] Cleaning up call resources...")
         self.active_call = False
+        self.call_timer_running = False
+        
+        # Timer stoppen
+        self.stop_call_timer()
         
         # Audio-Threads stoppen
         self._stop_audio_streams()
-        
-        # ✅ KEIN WIREGUARD CLEANUP MEHR NOTWENDIG
         
         # Variablen zurücksetzen
         self.pending_call = None
@@ -1497,10 +1689,16 @@ class CALL:
         self.current_secret = None
         self.use_udp_relay = False
         self.relay_server_ip = None
+        self.call_start_time = None
         
         # UI zurücksetzen
         try:
             self._update_ui_wrapper(active=False)
+            # Timer-Text zurücksetzen
+            if hasattr(self.client, 'status_label'):
+                self.client.status_label.configure(text="Bereit")
+            elif hasattr(self.client, 'call_timer_label'):
+                self.client.call_timer_label.configure(text="")
         except:
             pass
             
@@ -1572,6 +1770,14 @@ class CALL:
             print(f"[CALL] Selected entry: {entry.get('name', 'Unknown')}")
         except Exception as e:
             print(f"[CALL ERROR] Entry click failed: {str(e)}")
+
+    def __del__(self):
+        """Destruktor für Ressourcen-Cleanup"""
+        try:
+            if hasattr(self, 'audio'):
+                self.audio.terminate()
+        except:
+            pass
 class SecureVault:
     IV_SIZE = 16      # initialisation vector (first 16 bytes)
     KEY_SIZE = 32     # aes key (last 32 bytes)
