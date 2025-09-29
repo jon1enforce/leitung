@@ -1357,11 +1357,11 @@ class CALL:
         return None
 
     def handle_message(self, raw_message):
-        """Zentrale Message-Handling Methode - VEREINFACHT OHNE WIREGUARD"""
+        """Zentrale Message-Handling Methode - VOLLSTÄNDIG KORRIGIERT"""
         try:
             print(f"[CALL] Handling raw message type: {type(raw_message)}")
             
-            # ✅ Nachricht parsen
+            # 1. Nachricht parsen
             if isinstance(raw_message, str):
                 if hasattr(self.client, 'parse_sip_message'):
                     msg = self.client.parse_sip_message(raw_message)
@@ -1383,22 +1383,31 @@ class CALL:
                 print("[CALL WARNING] Failed to parse message")
                 return
                 
-            # ✅ Message-Type extrahieren
+            # 2. Message-Type extrahieren
             message_type = self._extract_message_type(msg)
             print(f"[CALL] Handling message type: {message_type}")
             
-            # ✅ Message Routing
+            # 3. Custom Data extrahieren (für alle Handler)
+            custom_data = msg.get('custom_data', {})
+            if not custom_data and isinstance(msg, dict):
+                # Fallback: Wenn keine custom_data, verwende msg direkt
+                custom_data = {k: v for k, v in msg.items() if k != 'headers'}
+            
+            print(f"[CALL DEBUG] custom_data keys: {list(custom_data.keys())}")
+            
+            # 4. Message Routing MIT KORREKTEN PARAMETERN
             if message_type == 'INCOMING_CALL':
-                self.handle_incoming_call(msg)
+                self.handle_incoming_call(custom_data)
             elif message_type == 'SESSION_KEY':
-                self._handle_session_key(msg)
+                self._handle_session_key(custom_data)
             elif message_type == 'CALL_RESPONSE':
-                self.handle_call_response(msg)
+                self.handle_call_response(custom_data)
             elif message_type == 'PUBLIC_KEY_RESPONSE':
                 print("[CALL] Received PUBLIC_KEY_RESPONSE, processing...")
-                self.handle_public_key_response(msg)
+                # ✅ KORREKT: custom_data übergeben, nicht msg!
+                self.handle_public_key_response(custom_data)
             elif message_type == 'CALL_CONFIRMED':
-                self.handle_call_confirmed(msg)
+                self.handle_call_confirmed(custom_data)
             elif message_type == 'CALL_TIMEOUT':
                 self.cleanup_call_resources()
                 if hasattr(self.client, 'after'):
@@ -1409,6 +1418,7 @@ class CALL:
                 print("[CALL] Pong received")
             else:
                 print(f"[CALL WARNING] Unknown message type: {message_type}")
+                print(f"[CALL DEBUG] Full message: {msg}")
                 
         except Exception as e:
             print(f"[CALL MSG ERROR] Failed to handle message: {str(e)}")
@@ -1566,88 +1576,97 @@ class CALL:
                 self.client.show_error(f"Anruf fehlgeschlagen: {str(e)}")
             raise
 
-    def handle_public_key_response(self, msg):
-        """Verarbeitet Public-Key-Antwort - VEREINFACHT OHNE WIREGUARD"""
+    def handle_public_key_response(self, custom_data, raw_data=None):
+        """Verarbeitet Public-Key-Antwort - VOLLSTÄNDIG KORRIGIERT"""
         try:
-            if not self.pending_call or self.pending_call.get('status') != 'requesting_key':
-                print("[CALL WARNING] Unexpected public key response - no pending call or wrong status")
+            print(f"\n🎯 [CALL DEBUG] handle_public_key_response CALLED!")
+            print(f"[CALL DEBUG] custom_data type: {type(custom_data)}")
+            print(f"[CALL DEBUG] custom_data keys: {list(custom_data.keys())}")
+            
+            # 1. Prüfe ob ein Call ansteht
+            if not self.pending_call:
+                print("[CALL WARNING] Unexpected public key response - no pending call")
+                return False
+                
+            if self.pending_call.get('status') != 'requesting_key':
+                print(f"[CALL WARNING] Unexpected public key response - wrong status: {self.pending_call.get('status')}")
                 return False
                 
             print(f"[CALL] Processing public key response...")
             
-            if not isinstance(msg, dict):
-                print(f"[CALL ERROR] Expected dict but got {type(msg)}")
-                return False
-                
-            custom_data = msg.get('custom_data', {})
+            # 2. Extrahiere Daten AUS custom_data (nicht aus msg['custom_data'])
             target_id = custom_data.get('TARGET_CLIENT_ID')
             public_key = custom_data.get('PUBLIC_KEY')
             caller_name = custom_data.get('CALLER_NAME')
             
+            # 3. Fallback für verschiedene Feldnamen
             if not public_key:
-                public_key = msg.get('PUBLIC_KEY')
+                public_key = custom_data.get('public_key')
             if not target_id:
-                target_id = msg.get('TARGET_CLIENT_ID')
+                target_id = custom_data.get('target_client_id')
             if not caller_name:
-                caller_name = msg.get('CALLER_NAME')
-                
+                caller_name = custom_data.get('caller_name')
+                    
             if not public_key:
                 print("[CALL ERROR] No public key received in any field")
+                print(f"[CALL DEBUG] Available fields: {list(custom_data.keys())}")
                 raise Exception("No public key received from server")
-                
+                    
             if not target_id:
                 print("[CALL WARNING] No target ID in response")
                 target_id = self.pending_call['recipient'].get('id', 'unknown')
-                
+                    
             print(f"[CALL] Received public key for client {target_id} (length: {len(public_key)})")
             
+            # 4. Public Key Formatierung
             public_key = self._ensure_pem_format(public_key)
             if not public_key:
                 raise Exception("Invalid public key format - cannot convert to PEM")
-                
+                    
             print(f"[CALL] Formatted public key (PEM): {public_key[:100]}...")
-            
-            # ✅ NUR NOCH AES SESSION KEY GENERIEREN
+                
+            # 5. Session Key generieren (AES)
             session_secret = os.urandom(48)  # 16 IV + 32 AES Key
             iv = session_secret[:16]
             aes_key = session_secret[16:48]
-            
-            # ✅ VEREINFACHTE CALL-DATEN OHNE WIREGUARD
+                
+            # 6. Call-Daten vorbereiten
             call_data = {
                 "caller_name": self.client._client_name,
                 "caller_client_id": self.client._find_my_client_id(),
                 "aes_iv": base64.b64encode(iv).decode('utf-8'),
                 "aes_key": base64.b64encode(aes_key).decode('utf-8'),
                 "timestamp": time.time(),
-                "call_type": "aes_audio"  # ✅ Geändert von "wireguard_audio"
+                "call_type": "aes_audio"
             }
-            
+                
             print(f"[CALL] Prepared call data for encryption")
-            
-            # ✅ MIT PUBLIC KEY DES EMPFÄNGERS VERSCHLÜSSELN (RSA)
+            print(f"[CALL DEBUG] Call data: {call_data}")
+                
+            # 7. Mit Public Key des Empfängers verschlüsseln (RSA)
             try:
                 print("[CALL] Loading recipient public key...")
                 recipient_key = self._load_public_key(public_key)
                 if not recipient_key:
                     raise Exception("Failed to load recipient public key")
-                    
+                        
                 call_data_json = json.dumps(call_data).encode('utf-8')
                 print(f"[CALL] Call data JSON length: {len(call_data_json)}")
-                
+                    
                 max_length = 512 - 11  # RSA PKCS#1 Padding
                 if len(call_data_json) > max_length:
                     raise Exception(f"Call data too large for RSA encryption: {len(call_data_json)} > {max_length}")
-                    
+                        
                 encrypted_data = recipient_key.public_encrypt(call_data_json, RSA.pkcs1_padding)
                 encrypted_b64 = base64.b64encode(encrypted_data).decode('utf-8')
-                
+                    
                 print(f"[CALL] Call data encrypted successfully (size: {len(encrypted_b64)} chars)")
-                
+                    
             except Exception as e:
                 print(f"[CALL ERROR] Encryption failed: {str(e)}")
                 raise Exception(f"Verschlüsselung fehlgeschlagen: {str(e)}")
-            
-            # ✅ CALL_REQUEST an Server senden
+                
+            # 8. CALL_REQUEST an Server senden
             call_request_data = {
                 "MESSAGE_TYPE": "CALL_REQUEST",
                 "TARGET_CLIENT_ID": target_id,
@@ -1656,38 +1675,48 @@ class CALL:
                 "CALLER_CLIENT_ID": self.client._find_my_client_id(),
                 "TIMESTAMP": int(time.time())
             }
-            
+                
             call_request_msg = self.client.build_sip_message("MESSAGE", "server", call_request_data)
             
+            print(f"[CALL] Sending CALL_REQUEST to server...")
+            print(f"[CALL DEBUG] Call request data: {call_request_data}")
+                
             if not self.client._send_message(call_request_msg):
                 raise Exception("Failed to send CALL_REQUEST to server")
-                
+                    
             print("[CALL] CALL_REQUEST sent to server")
-            
-            # ✅ Call-Status aktualisieren (OHNE WIREGUARD)
+                
+            # 9. Call-Status aktualisieren
             self.pending_call.update({
                 'status': 'request_sent',
-                'session_secret': session_secret,  # ✅ Nur AES Session
-                'target_id': target_id
+                'session_secret': session_secret,
+                'target_id': target_id,
+                'encrypted_call_data': encrypted_b64
             })
-            
+                
             print("[CALL] Waiting for callee response...")
-            
+                
+            # 10. UI aktualisieren
             recipient_name = self.pending_call['recipient'].get('name', 'Unknown')
             if hasattr(self.client, 'update_call_ui'):
                 self.client.update_call_ui(True, "ringing", recipient_name)
-                
+                    
+            print("✅ [CALL SUCCESS] Public key response processed successfully!")
             return True
-            
+                
         except Exception as e:
-            print(f"[CALL ERROR] Public key response handling failed: {str(e)}")
-            
+            print(f"❌ [CALL ERROR] Public key response handling failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+                
+            # Fehler-UI anzeigen
             if hasattr(self.client, 'after'):
                 self.client.after(0, lambda: messagebox.showerror(
                     "Call Failed", 
                     f"Verbindungsaufbau fehlgeschlagen: {str(e)}"
                 ))
-            
+                
+            # Ressourcen bereinigen
             self.cleanup_call_resources()
             return False
 
