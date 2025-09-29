@@ -1576,12 +1576,10 @@ class CALL:
                 self.client.show_error(f"Anruf fehlgeschlagen: {str(e)}")
             raise
 
-    def handle_public_key_response(self, custom_data, raw_data=None):
+    def handle_public_key_response(self, msg):
         """Verarbeitet Public-Key-Antwort - VOLLSTÄNDIG KORRIGIERT"""
         try:
             print(f"\n🎯 [CALL DEBUG] handle_public_key_response CALLED!")
-            print(f"[CALL DEBUG] custom_data type: {type(custom_data)}")
-            print(f"[CALL DEBUG] custom_data keys: {list(custom_data.keys())}")
             
             # 1. Prüfe ob ein Call ansteht
             if not self.pending_call:
@@ -1594,7 +1592,8 @@ class CALL:
                 
             print(f"[CALL] Processing public key response...")
             
-            # 2. Extrahiere Daten AUS custom_data (nicht aus msg['custom_data'])
+            # 2. Extrahiere Daten AUS custom_data
+            custom_data = msg.get('custom_data', {})
             target_id = custom_data.get('TARGET_CLIENT_ID')
             public_key = custom_data.get('PUBLIC_KEY')
             caller_name = custom_data.get('CALLER_NAME')
@@ -2765,56 +2764,30 @@ class PHONEBOOK(ctk.CTk):
             print(f"[PHONEBOOK ERROR] Entry click failed: {str(e)}")
 
     def connection_loop(self, client_socket, server_ip, message_handler=None):
-        """STABILISIERTE Connection-Loop mit robuster Fehlerbehandlung"""
+        """VERBESSERT: Connection-Loop mit besserer Timeout-Behandlung"""
         global connected
         connected = True
         print("[CONNECTION] Starting stabilized connection loop")
         
-        # Lokale IP ermitteln
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            local_ip = s.getsockname()[0]
-            s.close()
-            print(f"[CONNECTION] Local IP: {local_ip}")
-        except Exception as ip_error:
-            print(f"[WARNING] Could not determine local IP: {ip_error}")
-            local_ip = "127.0.0.1"
-        
-        client_name = self._client_name
         ping_interval = 30  # Normales Ping-Intervall
         last_ping_time = 0
         consecutive_timeouts = 0
-        max_consecutive_timeouts = 3
+        max_consecutive_timeouts = 5
         
         while connected:
             try:
                 current_time = time.time()
                 
-                # ✅ KORREKTUR: Verbindungs-Health-Check
-                if consecutive_timeouts >= max_consecutive_timeouts:
-                    print(f"[CONNECTION WARNING] Too many timeouts ({consecutive_timeouts}), testing connection...")
-                    if not self._test_connection_simple(client_socket, server_ip, client_name):
-                        print("[CONNECTION] Connection test failed, terminating loop")
-                        connected = False
-                        break
-                    else:
-                        consecutive_timeouts = 0
-                        print("[CONNECTION] Connection test successful, resuming normal operation")
-                
-                # Ping nur senden wenn Intervall abgelaufen
-                if current_time - last_ping_time >= ping_interval:
-                    # Ping vorbereiten
+                # ✅ VERBESSERT: Ping nur senden wenn nötig und Verbindung gut
+                if current_time - last_ping_time >= ping_interval and consecutive_timeouts < 2:
                     ping_data = {
                         "MESSAGE_TYPE": "PING",
                         "TIMESTAMP": int(current_time),
-                        "CLIENT_NAME": client_name,
-                        "CLIENT_IP": local_ip
+                        "CLIENT_NAME": self._client_name,
                     }
                     
                     ping_msg = self.build_sip_message("MESSAGE", server_ip, ping_data)
                     
-                    # Ping senden
                     print(f"[PING] Sending ping to {server_ip}")
                     if send_frame(client_socket, ping_msg.encode('utf-8')):
                         last_ping_time = current_time
@@ -2822,69 +2795,41 @@ class PHONEBOOK(ctk.CTk):
                     else:
                         print("[PING ERROR] Failed to send ping")
                         consecutive_timeouts += 1
-                        continue
                 
-                # ✅ KORREKTUR: Längeres Timeout für stabilere Verbindung
-                client_socket.settimeout(10.0)
+                # ✅ VERBESSERT: Dynamisches Timeout basierend auf Verbindungsqualität
+                dynamic_timeout = 15.0 if consecutive_timeouts == 0 else 25.0
+                client_socket.settimeout(dynamic_timeout)
                 
                 try:
-                    response = recv_frame(client_socket, timeout=10)
+                    response = recv_frame(client_socket, timeout=dynamic_timeout)
                     
                     if response is None:
-                        # Timeout bei recv_frame
-                        print("[CONNECTION] recv_frame returned None")
+                        print(f"[CONNECTION] recv_frame returned None (Timeout #{consecutive_timeouts + 1})")
                         consecutive_timeouts += 1
                         continue
                         
                     # ✅ Erfolgreich Daten empfangen - Reset Timeout Counter
                     consecutive_timeouts = 0
-                    
-                    if isinstance(response, bytes):
-                        try:
-                            response = response.decode('utf-8')
-                        except UnicodeDecodeError:
-                            print("[CONNECTION] Binary data received, processing as binary")
-                            # Binary data (encrypted phonebook, etc.)
-                            self.handle_server_message(response)
-                            continue
-                    
                     print(f"[CONNECTION] Received {len(response)} bytes from server")
                     
-                    # Nachricht verarbeiten
-                    sip_data = self.parse_sip_message(response)
-                    if sip_data:
-                        custom_data = sip_data.get('custom_data', {})
-                        message_type = custom_data.get('MESSAGE_TYPE')
-                        
-                        if message_type == 'PONG':
-                            print("[PING] Pong received successfully")
-                            
-                        elif message_type == 'IDENTITY_CHALLENGE':
-                            print("[IDENTITY] Challenge received in connection loop")
-                            self._handle_identity_challenge(sip_data)
-                            
-                        elif message_type == 'PHONEBOOK_UPDATE':
-                            print("[UPDATE] Phonebook received in connection loop")
-                            self._process_phonebook_update(sip_data)
-                            
-                        elif message_type == 'IDENTITY_VERIFIED':
-                            print("[IDENTITY] Verification confirmed in connection loop")
-                            self._handle_identity_verified(sip_data)
-                            
-                        else:
-                            print(f"[CONNECTION] Other message type: {message_type}")
-                            # Zur normalen Verarbeitung weiterleiten
-                            self.handle_server_message(response)
-                    else:
-                        print("[CONNECTION] Could not parse SIP message")
-                        self.handle_server_message(response)
+                    # ✅ SOFORTIGE VERARBEITUNG
+                    self.handle_server_message(response)
                         
                 except socket.timeout:
-                    # Socket timeout - normal bei längerem Timeout
-                    print("[CONNECTION] Socket timeout (10s)")
                     consecutive_timeouts += 1
-                    continue
+                    print(f"[CONNECTION] Socket timeout #{consecutive_timeouts}")
                     
+                    # Bei zu vielen Timeouts Verbindung testen
+                    if consecutive_timeouts >= max_consecutive_timeouts:
+                        print("[CONNECTION] Too many timeouts, testing connection...")
+                        if not self._test_connection_simple(client_socket, server_ip, self._client_name):
+                            print("[CONNECTION] Connection test failed, terminating")
+                            connected = False
+                            break
+                        else:
+                            consecutive_timeouts = 0
+                            print("[CONNECTION] Connection test successful, continuing")
+                            
                 except ConnectionError as e:
                     print(f"[CONNECTION ERROR] Connection lost: {e}")
                     connected = False
@@ -2901,10 +2846,10 @@ class PHONEBOOK(ctk.CTk):
             except Exception as e:
                 print(f"[CONNECTION LOOP ERROR] {str(e)}")
                 consecutive_timeouts += 1
-                if consecutive_timeouts >= max_consecutive_timeouts + 2:  # Etwas mehr Toleranz
+                if consecutive_timeouts >= max_consecutive_timeouts + 2:
                     connected = False
                     break
-                time.sleep(5)  # Längere Pause bei Fehlern
+                time.sleep(5)
         
         # Verbindungsende
         print("[CONNECTION] Connection loop ended")
@@ -3659,62 +3604,68 @@ class PHONEBOOK(ctk.CTk):
             print(f"[DEBUG 47] === END CONNECTION ATTEMPT ===")
             print(f"{'='*60}\n")
     def on_update_click(self):
-        """KORRIGIERTE Update-Nachricht mit JSON-Format"""
+        """KORRIGIERT: Update ohne Debug-Methoden die nicht existieren"""
         global connected
         try:
             if not hasattr(self, 'client_socket') or not self.client_socket or not connected:
                 messagebox.showerror("Fehler", "Nicht mit Server verbunden")
-                print("[UPDATE ERROR] Nicht mit Server verbunden")
+                print("[UPDATE] ❌ Nicht mit Server verbunden")
                 return
 
-            print("[CLIENT] Update-Button geklickt - Sende JSON Update Request")
+            print("[UPDATE] 🟡 Update-Button geklickt")
 
-            # ✅ KORREKTUR: UPDATE im JSON-Format senden
+            # Einfache Queue-Status-Ausgabe ohne separate Methode
+            print(f"\n🔍 UPDATE QUEUE STATUS:")
+            print(f"Queue size: {len(self._message_queue) if hasattr(self, '_message_queue') else 0}")
+            print(f"Processing: {getattr(self, '_processing_queue', False)}")
+
+            # Update Request
             update_data = {
-                "MESSAGE_TYPE": "UPDATE_REQUEST",
+                "MESSAGE_TYPE": "UPDATE_REQUEST", 
                 "CLIENT_NAME": self._client_name,
                 "TIMESTAMP": int(time.time()),
-                "VERSION": "2.0"
+                "VERSION": "2.0",
+                "REQUEST_TYPE": "PHONEBOOK_UPDATE"
             }
             
-            update_msg = self.build_sip_message(
-                "MESSAGE", 
-                self.server_ip, 
-                update_data
-            )
+            update_msg = self.build_sip_message("MESSAGE", self.server_ip, update_data)
+            print(f"[UPDATE] 📤 Sending update request: {len(update_msg)} chars")
 
-            # Sende UPDATE Nachricht mit Framing
-            try:
-                if send_frame(self.client_socket, update_msg.encode('utf-8')):
-                    print("[CLIENT] JSON Update Request an Server gesendet")
+            # Sende Update
+            if send_frame(self.client_socket, update_msg.encode('utf-8')):
+                print("[UPDATE] ✅ Update request sent to server")
+                
+                # Queue initialisieren falls nicht vorhanden
+                if not hasattr(self, '_message_queue'):
+                    self._message_queue = []
                     
-                    # Zur Queue hinzufügen
-                    if not hasattr(self, '_message_queue'):
-                        self._message_queue = []
-                        
-                    self._message_queue.append({
-                        'type': 'update_request_sent',
-                        'message': update_msg,
-                        'timestamp': time.time(),
-                        'server_ip': self.server_ip
-                    })
-
-                    # Queue-Verarbeitung starten
-                    if not hasattr(self, '_processing_queue') or not self._processing_queue:
-                        threading.Thread(target=self._process_queue_simple, daemon=True).start()
-
+                # Tracking zur Queue hinzufügen
+                self._message_queue.append({
+                    'type': 'update_request_sent',
+                    'timestamp': time.time()
+                })
+                
+                # Starte Queue-Verarbeitung falls nicht aktiv
+                if not getattr(self, '_processing_queue', False):
+                    print("[UPDATE] 🚀 Starting queue processor for response...")
+                    self._processing_queue = True
+                    threading.Thread(
+                        target=self._process_queue_simple,
+                        daemon=True,
+                        name="UpdateResponseProcessor"
+                    ).start()
                 else:
-                    messagebox.showerror("Fehler", "Update-Nachricht konnte nicht gesendet werden")
-
-            except Exception as e:
-                print(f"[CLIENT ERROR] Senden der UPDATE Nachricht fehlgeschlagen: {str(e)}")
-                messagebox.showerror("Fehler", f"Update-Nachricht konnte nicht gesendet werden: {str(e)}")
+                    print(f"[UPDATE] ⏳ Queue processor already running, {len(self._message_queue)} items waiting")
+                    
+            else:
+                print("[UPDATE] ❌ Failed to send update request")
+                messagebox.showerror("Fehler", "Update-Nachricht konnte nicht gesendet werden")
 
         except Exception as e:
-            print(f"[CLIENT ERROR] Update click failed: {str(e)}")
+            print(f"[UPDATE] 💥 Error: {str(e)}")
             import traceback
             traceback.print_exc()
-            messagebox.showerror("Fehler", f"Update konnte nicht gestartet werden: {str(e)}")
+            messagebox.showerror("Fehler", f"Update fehlgeschlagen: {str(e)}")
     def set_selected_entry(self, entry, frame):
         """Setzt den ausgewählten Eintrag und aktualisiert die UI"""
         self.selected_entry = entry
@@ -4005,122 +3956,125 @@ class PHONEBOOK(ctk.CTk):
 
 
     def _process_queue_simple(self):
-        """VOLLSTÄNDIG KORRIGIERT: Queue-Verarbeitung für alle Item-Types"""
-        if getattr(self, '_processing_queue', False):
-            return
-            
+        """VOLLSTÄNDIG NEU: Robuste Queue-Verarbeitung die garantiert läuft"""
+        print(f"[QUEUE] 🚀 START Queue Processor - {len(self._message_queue)} items waiting")
+        
+        # Setze Flag sofort
         self._processing_queue = True
+        processed_count = 0
+        max_items_per_run = 50  # Verhindere Endlosschleifen
         
         try:
-            while hasattr(self, '_message_queue') and self._message_queue:
+            while (hasattr(self, '_message_queue') and 
+                   self._message_queue and 
+                   processed_count < max_items_per_run):
+                
                 item = self._message_queue.pop(0)
+                processed_count += 1
+                
+                if not isinstance(item, dict):
+                    print(f"[QUEUE] ❌ Invalid item type: {type(item)}")
+                    continue
+                    
+                item_type = item.get('type', 'unknown')
+                print(f"[QUEUE] 🔄 Processing item {processed_count}: {item_type}")
                 
                 try:
-                    # ✅ VALIDIERE ITEM
-                    if not isinstance(item, dict):
-                        print(f"[QUEUE WARN] Ungültiges Item: {type(item)}")
-                        continue
-                    
-                    # ✅ ITEM-TYPE ERKENNEN (aus verschiedenen Quellen)
-                    item_type = item.get('type') or item.get('message_type')
-                    
-                    if not item_type:
-                        print(f"[QUEUE WARN] Kein Type gefunden: {list(item.keys())}")
-                        continue
-                    
-                    print(f"[QUEUE] Verarbeite: {item_type}")
-                    
-                    # === NACH ITEM-TYPE ROUTEN ===
-                    
-                    # ✅ CALL-RELATED MESSAGES AN CALL MANAGER
-                    if item_type in [
-                        'INCOMING_CALL', 'CALL_RESPONSE', 'PUBLIC_KEY_RESPONSE',
-                        'CALL_CONFIRMED', 'CALL_END', 'SESSION_KEY', 'CALL_REQUEST'
-                    ]:
-                        print(f"[QUEUE] Weiterleite an Call Manager: {item_type}")
-                        if hasattr(self, 'call_manager'):
-                            self.call_manager.handle_message(item)
-                        continue
-                    
-                    # ✅ FRAME_DATA VERARBEITUNG
-                    elif item_type == 'frame_data':
-                        frame_data = item.get('data')
-                        if frame_data:
-                            print(f"[QUEUE] Verarbeite Frame-Daten: {len(frame_data)} bytes")
-                            self._process_received_frame(frame_data)
-                        continue
-                        
-                    # ✅ SEND_MESSAGE VERARBEITUNG
+                    if item_type == 'frame_data':
+                        data = item.get('data')
+                        if data:
+                            print(f"[QUEUE] 📨 Processing frame data: {len(data)} bytes")
+                            success = self._process_received_frame(data)
+                            print(f"[QUEUE] {'✅' if success else '❌'} Frame processing {'successful' if success else 'failed'}")
+                        else:
+                            print("[QUEUE] ⚠️ No data in frame_data item")
+                            
                     elif item_type == 'send_message':
                         message = item.get('message')
                         if message:
-                            print(f"[QUEUE] Sende Nachricht: {len(message)} bytes")
-                            self._send_direct_message(message)
-                        continue
-                    
-                    # ✅ IDENTITY_RESPONSE VERARBEITUNG (NEU!)
-                    elif item_type == 'process_identity_response':
-                        print(f"[QUEUE] Identity Response verarbeiten")
-                        # Diese werden bereits in _process_received_frame behandelt
-                        continue
+                            print(f"[QUEUE] 📤 Sending message: {len(message)} chars")
+                            success = self._send_direct_message(message)
+                            print(f"[QUEUE] {'✅' if success else '❌'} Message send {'successful' if success else 'failed'}")
+                        else:
+                            print("[QUEUE] ⚠️ No message in send_message item")
+                            
+                    elif item_type == 'update_request_sent':
+                        print("[QUEUE] 📋 Update request was sent - waiting for response")
+                        # Keine weitere Aktion benötigt
                         
-                    # ✅ INTERNAL_COMMAND VERARBEITUNG
-                    elif item_type == 'internal_command':
-                        command = item.get('command')
-                        print(f"[QUEUE] Interne Kommando: {command}")
-                        continue
-                    
-                    # ✅ UNBEKANNTER TYP
                     else:
-                        print(f"[QUEUE WARN] Unbekannter Queue-Typ: {item_type}")
-                        print(f"[QUEUE DEBUG] Item keys: {list(item.keys())}")
+                        print(f"[QUEUE] 🤔 Unknown item type: {item_type}")
+                        print(f"[QUEUE] 📋 Item keys: {list(item.keys())}")
                         
-                        # Fallback: Versuche als frame_data zu verarbeiten
-                        if 'data' in item:
-                            self._process_received_frame(item['data'])
-                
                 except Exception as e:
-                    print(f"[QUEUE ITEM ERROR] Fehler bei {item_type}: {e}")
-                    continue
+                    print(f"[QUEUE] 💥 ERROR processing item {item_type}: {str(e)}")
+                    import traceback
+                    traceback.print_exc()
+                    # Weiter mit nächstem Item
                     
+                # Kurze Pause zwischen Items für Stabilität
+                time.sleep(0.01)
+                
+            print(f"[QUEUE] ✅ COMPLETED - Processed {processed_count} items")
+            
+            # Wenn noch Items übrig sind, neu starten
+            remaining = len(self._message_queue) if hasattr(self, '_message_queue') else 0
+            if remaining > 0:
+                print(f"[QUEUE] 🔄 Restarting for {remaining} remaining items")
+                self._processing_queue = False
+                threading.Thread(
+                    target=self._process_queue_simple, 
+                    daemon=True,
+                    name="QueueProcessor-Restart"
+                ).start()
+                
         except Exception as e:
-            print(f"[QUEUE ERROR] {e}")
+            print(f"[QUEUE] 💥 CRITICAL ERROR: {str(e)}")
+            import traceback
+            traceback.print_exc()
         finally:
+            # WICHTIG: Flag immer zurücksetzen
             self._processing_queue = False
+            print(f"[QUEUE] 🏁 Processor stopped")
 
     def handle_server_message(self, raw_data):
-        """KORRIGIERT: Vereinfachte Message-Verarbeitung mit besserer Queue-Handling"""
-        print(f"\n=== HANDLING SERVER MESSAGE ({len(raw_data) if hasattr(raw_data, '__len__') else '?'} bytes) ===")
+        """KORRIGIERT: Garantiert dass Queue-Verarbeitung startet"""
+        print(f"\n=== HANDLING SERVER MESSAGE ({len(raw_data)} bytes) ===")
         
         try:
-            # 1. ✅ QUEUE-INITIALISIERUNG (Thread-sicher)
+            # Queue initialisieren falls nicht vorhanden
             if not hasattr(self, '_message_queue'):
                 self._message_queue = []
             
-            # 2. ✅ KORREKTE QUEUE-ITEM-ERSTELLUNG
+            # Item zur Queue hinzufügen
             queue_item = {
-                'type': 'frame_data',  # ✅ EXPLIZITEN TYP SETZEN
+                'type': 'frame_data',
                 'data': raw_data,
                 'timestamp': time.time(),
-                'source': 'server'
+                'source': 'server',
+                'size': len(raw_data)
             }
             
             self._message_queue.append(queue_item)
-            print(f"[QUEUE] Nachricht hinzugefügt ({len(self._message_queue)} in Warteschlange)")
+            current_queue_size = len(self._message_queue)
+            print(f"[QUEUE] ➕ Added to queue. Size: {current_queue_size}")
             
-            # 3. ✅ VERARBEITUNG NUR STARTEN WENN NICHT BEREITS AKTIV
-            if not hasattr(self, '_processing_queue') or not self._processing_queue:
+            # Queue-Verarbeitung STARTEN - garantiert
+            if not getattr(self, '_processing_queue', False):
+                print("[QUEUE] 🚀 Starting queue processor...")
                 self._processing_queue = True
                 threading.Thread(
                     target=self._process_queue_simple, 
                     daemon=True,
-                    name="QueueProcessor"
+                    name=f"QueueProcessor-{int(time.time())}"
                 ).start()
+            else:
+                print(f"[QUEUE] ⏳ Processor already running, {current_queue_size} items waiting")
             
             return True
             
         except Exception as e:
-            print(f"[HANDLER ERROR] {str(e)}")
+            print(f"[HANDLER ERROR] ❌ {str(e)}")
             return False
 
     def _send_direct_message(self, message):
