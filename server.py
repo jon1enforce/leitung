@@ -1042,7 +1042,7 @@ class CONVEY:
             return False
 
     def handle_call_request(self, msg, client_socket, client_name):
-        """Vermittelt Call-Requests - VOLLSTÄNDIG FRAME-SIP KOMPATIBEL"""
+        """KORRIGIERT: Target-Suche mit erweitertem Debugging"""
         try:
             custom_data = msg.get('custom_data', {})
             target_id = custom_data.get('TARGET_CLIENT_ID')
@@ -1051,76 +1051,94 @@ class CONVEY:
             caller_client_id = custom_data.get('CALLER_CLIENT_ID')
             
             print(f"[CONVEY] Framed SIP call request from {caller_name} to target {target_id}")
-            
+            print(f"[CONVEY DEBUG] Caller ID: {caller_client_id}, Target ID: {target_id}")
+
             # ✅ VALIDIERUNG MIT FRAME-SIP FEHLERMELDUNGEN
             if not all([target_id, encrypted_data, caller_name, caller_client_id]):
                 print("[CONVEY ERROR] Missing required fields in framed SIP")
-                
-                # ✅ FRAME-SIP FEHLERRÜCKMELDUNG
                 error_msg = self.server.build_sip_message("MESSAGE", client_name, {
                     "MESSAGE_TYPE": "CALL_ERROR",
                     "ERROR": "MISSING_REQUIRED_FIELDS",
-                    "MISSING_FIELDS": [k for k, v in {
-                        'TARGET_CLIENT_ID': target_id,
-                        'ENCRYPTED_CALL_DATA': encrypted_data,
-                        'CALLER_NAME': caller_name,
-                        'CALLER_CLIENT_ID': caller_client_id
-                    }.items() if not v],
                     "TIMESTAMP": int(time.time())
                 })
-                
                 send_frame(client_socket, error_msg.encode('utf-8'))
                 return False
-                
-            # ✅ KONSISTENTE ZIELSUCHE NACH CLIENT-ID
+
+            # ✅ KORRIGIERTE ZIELSUCHE MIT DETAILIERTEM DEBUGGING
             target_client = None
             target_socket = None
             
             with self.server.clients_lock:
+                print(f"[CONVEY DEBUG] Searching through {len(self.server.clients)} clients:")
                 for client_id, client_info in self.server.clients.items():
-                    # ✅ IMMER CLIENT-ID VERGLEICHEN (nicht Name!)
+                    client_name_debug = client_info.get('name', 'unknown')
+                    has_socket = client_info.get('socket') is not None
+                    print(f"[CONVEY DEBUG] Client {client_id}: {client_name_debug} (socket: {has_socket})")
+                    
+                    # ✅ VERBESSERTE SUCHE: Prüfe sowohl Client-ID als auch Name
                     if str(client_id) == str(target_id):
                         target_client = client_info
                         target_socket = client_info.get('socket')
+                        print(f"[CONVEY DEBUG] ✓ Found target by ID: {client_name_debug}")
                         break
-            
-            if not target_client or not target_socket:
-                print(f"[CONVEY ERROR] Target client {target_id} not found in framed SIP")
-                
-                # ✅ FRAME-SIP OFFLINE FEHLER
+                    elif client_name_debug == target_id:
+                        target_client = client_info  
+                        target_socket = client_info.get('socket')
+                        print(f"[CONVEY DEBUG] ✓ Found target by name: {client_name_debug}")
+                        break
+
+            if not target_client:
+                print(f"[CONVEY ERROR] Target client {target_id} not found in clients")
+                print(f"[CONVEY DEBUG] Available clients: {list(self.server.clients.keys())}")
                 error_msg = self.server.build_sip_message("MESSAGE", caller_name, {
                     "MESSAGE_TYPE": "CALL_ERROR",
+                    "ERROR": "TARGET_NOT_FOUND",
+                    "TARGET_ID": target_id,
+                    "TIMESTAMP": int(time.time())
+                })
+                send_frame(client_socket, error_msg.encode('utf-8'))
+                return False
+
+            if not target_socket:
+                print(f"[CONVEY ERROR] Target client {target_id} has no active socket")
+                error_msg = self.server.build_sip_message("MESSAGE", caller_name, {
+                    "MESSAGE_TYPE": "CALL_ERROR", 
                     "ERROR": "TARGET_OFFLINE",
                     "TARGET_ID": target_id,
                     "TIMESTAMP": int(time.time())
                 })
-                
                 send_frame(client_socket, error_msg.encode('utf-8'))
                 return False
 
-            # ✅ FRAME-SIP INCOMING_CALL NACHricht
+            # ✅ FRAME-SIP INCOMING_CALL NACHRICHT
             incoming_call_msg = self.server.build_sip_message("MESSAGE", target_client.get('name', 'Unknown'), {
                 "MESSAGE_TYPE": "INCOMING_CALL",
                 "CALLER_NAME": caller_name,
-                "CALLER_CLIENT_ID": caller_client_id,  # ✅ KONSISTENT: Client-ID
+                "CALLER_CLIENT_ID": caller_client_id,
                 "ENCRYPTED_CALL_DATA": encrypted_data,
                 "TIMESTAMP": int(time.time()),
                 "TIMEOUT": 120
             })
             
-            print(f"[CONVEY] Sending framed SIP INCOMING_CALL to target {target_id}")
+            print(f"[CONVEY] Sending framed SIP INCOMING_CALL to target {target_client.get('name')}")
             send_success = send_frame(target_socket, incoming_call_msg.encode('utf-8'))
             
             if not send_success:
                 print("[CONVEY ERROR] Failed to send framed SIP INCOMING_CALL")
+                error_msg = self.server.build_sip_message("MESSAGE", caller_name, {
+                    "MESSAGE_TYPE": "CALL_ERROR",
+                    "ERROR": "TARGET_SEND_FAILED",
+                    "TIMESTAMP": int(time.time())
+                })
+                send_frame(client_socket, error_msg.encode('utf-8'))
                 return False
 
-            # ✅ KONSISTENTE CALL-VERWALTUNG MIT CLIENT-IDs
+            # ✅ KONSISTENTE CALL-VERWALTUNG
             call_id = f"{caller_client_id}_{target_id}_{int(time.time())}"
             self.active_calls[call_id] = {
-                'caller_id': caller_client_id,      # ✅ Client-ID
-                'callee_id': target_id,             # ✅ Client-ID  
-                'caller_name': caller_name,         # ✅ Name separat
+                'caller_id': caller_client_id,
+                'callee_id': target_id,
+                'caller_name': caller_name,
                 'callee_name': target_client.get('name', 'Unknown'),
                 'caller_socket': client_socket,
                 'callee_socket': target_socket,
@@ -1153,8 +1171,9 @@ class CONVEY:
             
         except Exception as e:
             print(f"[CONVEY ERROR] Framed SIP call request failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
             
-            # ✅ FRAME-SIP FEHLERRÜCKMELDUNG
             try:
                 error_msg = self.server.build_sip_message("MESSAGE", client_name, {
                     "MESSAGE_TYPE": "CALL_ERROR", 
@@ -1390,7 +1409,6 @@ class CONVEY:
         if calls_to_remove:
             print(f"[CONVEY] Cleaned up {len(calls_to_remove)} calls for disconnected client {client_name}")
 
-    # ✅ ENTFERNT: generate_wireguard_keypair() nicht mehr benötigt
 
 class Server:
     def __init__(self, host='0.0.0.0', port=5060):
@@ -1730,8 +1748,30 @@ class Server:
             while client_queue:
                 queue_item = client_queue.pop(0)
                 
+                # === IDENTITY RESPONSE PROCESSING ===
+                if queue_item.get('type') == 'process_identity_response':
+                    print(f"[IDENTITY] Processing identity response from {client_name}")
+                    try:
+                        sip_data = queue_item.get('sip_data')
+                        encrypted_response_b64 = queue_item.get('encrypted_response_b64')
+                        response_challenge_id = queue_item.get('response_challenge_id')
+                        
+                        # Identity Response verarbeiten
+                        if self._verify_identity_response(client_socket, client_name, response_challenge_id, encrypted_response_b64):
+                            print(f"[IDENTITY] {client_name} successfully verified via queue")
+                            # Phonebook erneut senden falls nötig
+                            client_id = queue_item.get('client_id')
+                            if client_id:
+                                self.send_phonebook(client_id)
+                        else:
+                            print(f"[IDENTITY] {client_name} verification failed via queue")
+                            
+                    except Exception as e:
+                        print(f"[IDENTITY QUEUE ERROR] Processing failed: {str(e)}")
+                    continue
+                
                 # === FRAME_DATA VERARBEITUNG ===
-                if queue_item.get('type') == 'frame_data':
+                elif queue_item.get('type') == 'frame_data':
                     frame_data = queue_item.get('data')
                     if not frame_data:
                         continue
@@ -1942,26 +1982,7 @@ class Server:
                             })
                             send_frame(client_socket, error_msg.encode('utf-8'))
                             continue
-                        # === IDENTITY RESPONSE PROCESSING ===
-                        elif queue_item.get('type') == 'process_identity_response':
-                            print(f"[IDENTITY] Processing identity response from {client_name}")
-                            try:
-                                sip_data = queue_item.get('sip_data')
-                                encrypted_response_b64 = queue_item.get('encrypted_response_b64')
-                                response_challenge_id = queue_item.get('response_challenge_id')
-                                
-                                # Identity Response verarbeiten
-                                if self._verify_identity_response(client_socket, client_name, response_challenge_id, encrypted_response_b64):
-                                    print(f"[IDENTITY] {client_name} successfully verified via queue")
-                                    # Phonebook erneut senden falls nötig
-                                    client_id = queue_item.get('client_id')
-                                    if client_id:
-                                        self.send_phonebook(client_id)
-                                else:
-                                    print(f"[IDENTITY] {client_name} verification failed via queue")
-                                    
-                            except Exception as e:
-                                print(f"[IDENTITY QUEUE ERROR] Processing failed: {str(e)}")
+                        
                         # === LEGACY CALL SETUP ===
                         elif ('CALL_SETUP' in custom_data or 
                               message_type == 'CALL_SETUP'):
@@ -2088,7 +2109,7 @@ class Server:
             self._processing_client_queue = False
             print(f"[QUEUE] Finished processing queue for {client_name}")
     def _verify_identity_response(self, client_socket, client_name, challenge_id, encrypted_response_b64):
-        """Verifiziert die Identity Response des Clients"""
+        """Verifiziert die Identity Response des Clients - KORRIGIERT"""
         try:
             print(f"[IDENTITY VERIFY] Verifying response for {client_name}, challenge: {challenge_id}")
             
@@ -2114,14 +2135,22 @@ class Server:
                 print(f"[IDENTITY DEBUG] Decrypted response: {decrypted_text}")
                 print(f"[IDENTITY DEBUG] Expected: {original_challenge}")
                 
-                # Validiere die Response
-                if decrypted_text == original_challenge:
+                # ✅ KORRIGIERT: Erwarte sowohl die reine Challenge als auch Challenge+VALIDATED
+                expected_responses = [
+                    original_challenge,  # Nur die Challenge
+                    original_challenge + "VALIDATED"  # Challenge + VALIDATED
+                ]
+                
+                # Validiere die Response gegen beide möglichen Formate
+                if decrypted_text in expected_responses:
                     print(f"[IDENTITY SUCCESS] {client_name} identity verified")
                     # Challenge aus pending entfernen
                     del self.pending_challenges[challenge_id]
                     return True
                 else:
                     print(f"[IDENTITY FAIL] Response mismatch for {client_name}")
+                    print(f"Expected one of: {expected_responses}")
+                    print(f"Received: {decrypted_text}")
                     return False
                     
             except Exception as e:
@@ -2930,25 +2959,44 @@ class Server:
         except UnicodeDecodeError:
             print(f"[SERVER ERROR] Kein UTF-8 SIP von {client_name} - Verwerfe {len(frame_data)} bytes")
     def _handle_update_request(self, client_socket, client_name, msg):
-        """VOLLSTÄNDIG KORRIGIERTE Update-Request-Verarbeitung"""
+        """KORRIGIERT mit besserem Debugging"""
         try:
             print(f"[UPDATE] Handling update request from {client_name}")
             
-            # 1. Client-ID und Public Key finden
+            # 1. Client-ID und Public Key finden MIT DEBUGGING
             client_id = None
             client_pubkey = None
             with self.clients_lock:
+                print(f"[UPDATE DEBUG] Searching through {len(self.clients)} clients:")
                 for cid, data in self.clients.items():
+                    client_name_debug = data.get('name', 'unknown')
+                    has_pubkey = 'public_key' in data
+                    print(f"[UPDATE DEBUG] Client {cid}: {client_name_debug} (pubkey: {has_pubkey})")
+                    
                     if data.get('name') == client_name:
                         client_id = cid
                         client_pubkey = data.get('public_key')
+                        print(f"[UPDATE DEBUG] ✓ Found client: {client_name} -> ID: {client_id}")
                         break
             
-            if not client_id or not client_pubkey:
-                print(f"[UPDATE ERROR] Client {client_name} not found or no public key")
+            if not client_id:
+                print(f"[UPDATE ERROR] Client {client_name} not found in clients list")
+                print(f"[UPDATE DEBUG] Available clients: {list(self.clients.keys())}")
                 error_msg = self.build_sip_message("404 Not Found", client_name, {
                     "MESSAGE_TYPE": "ERROR",
                     "ERROR": "CLIENT_NOT_FOUND",
+                    "DEBUG_INFO": f"Client {client_name} not found. Available: {list(self.clients.keys())}",
+                    "TIMESTAMP": int(time.time())
+                })
+                send_frame(client_socket, error_msg.encode('utf-8'))
+                return
+            
+            if not client_pubkey:
+                print(f"[UPDATE ERROR] Client {client_name} has no public key")
+                error_msg = self.build_sip_message("400 Bad Request", client_name, {
+                    "MESSAGE_TYPE": "ERROR",
+                    "ERROR": "NO_PUBLIC_KEY",
+                    "DEBUG_INFO": f"Client {client_name} missing public key",
                     "TIMESTAMP": int(time.time())
                 })
                 send_frame(client_socket, error_msg.encode('utf-8'))
@@ -2956,18 +3004,17 @@ class Server:
             
             print(f"[UPDATE] Starting identity challenge for {client_name} (ID: {client_id})")
             
-            # 2. Identity Challenge durchführen
+            # Identity Challenge durchführen
             identity_verified = self._direct_identity_challenge(client_socket, client_pubkey, client_name)
             
             if identity_verified:
                 print(f"[IDENTITY] {client_name} successfully verified")
                 
-                # 3. SOFORT Phonebook senden (nicht nur Status)
+                # Phonebook senden
                 phonebook_sent = self.send_phonebook(client_id)
                 
                 if phonebook_sent:
                     print(f"[UPDATE] Phonebook sent to {client_name}")
-                    # Keine zusätzliche Status-Nachricht nötig - Phonebook enthält alle Daten
                 else:
                     print(f"[UPDATE ERROR] Failed to send phonebook to {client_name}")
                     error_msg = self.build_sip_message("500 Error", client_name, {
@@ -2984,9 +3031,12 @@ class Server:
                     "TIMESTAMP": int(time.time())
                 })
                 send_frame(client_socket, error_msg.encode('utf-8'))
-                
+                    
         except Exception as e:
             print(f"[UPDATE ERROR] Handling failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            
             error_msg = self.build_sip_message("500 Error", client_name, {
                 "MESSAGE_TYPE": "ERROR",
                 "ERROR": f"UPDATE_PROCESSING_FAILED: {str(e)}",

@@ -3976,95 +3976,88 @@ class PHONEBOOK(ctk.CTk):
 
 
     def _process_queue_simple(self):
-        """VOLLSTÄNDIGE Queue-Verarbeitung - KORRIGIERTE VERSION"""
+        """VOLLSTÄNDIG KORRIGIERT: Queue-Verarbeitung für alle Item-Types"""
         if getattr(self, '_processing_queue', False):
             return
             
         self._processing_queue = True
-        print("[QUEUE] Starte vollständige Verarbeitung...")
         
         try:
             while hasattr(self, '_message_queue') and self._message_queue:
                 item = self._message_queue.pop(0)
                 
                 try:
-                    # === AUTOMATISCHE TYP-ERKENNUNG FÜR ALTE ITEMS ===
+                    # ✅ VALIDIERE ITEM
                     if not isinstance(item, dict):
                         print(f"[QUEUE WARN] Ungültiges Item: {type(item)}")
                         continue
                     
-                    # Falls kein 'type' vorhanden, versuche Typ zu erkennen
-                    if 'type' not in item:
-                        if 'data' in item:
-                            item['type'] = 'frame_data'
-                        elif 'message' in item:
-                            item['type'] = 'send_message'
-                        elif 'recipient' in item:
-                            item['type'] = 'call_request'
-                        else:
-                            print(f"[QUEUE WARN] Unbekanntes Item-Format: {list(item.keys())}")
-                            continue
+                    # ✅ ITEM-TYPE ERKENNEN (aus verschiedenen Quellen)
+                    item_type = item.get('type') or item.get('message_type')
                     
-                    item_type = item['type']
+                    if not item_type:
+                        print(f"[QUEUE WARN] Kein Type gefunden: {list(item.keys())}")
+                        continue
                     
-                    # === FRAME_DATA VERARBEITUNG ===
-                    if item_type == 'frame_data':
+                    print(f"[QUEUE] Verarbeite: {item_type}")
+                    
+                    # === NACH ITEM-TYPE ROUTEN ===
+                    
+                    # ✅ CALL-RELATED MESSAGES AN CALL MANAGER
+                    if item_type in [
+                        'INCOMING_CALL', 'CALL_RESPONSE', 'PUBLIC_KEY_RESPONSE',
+                        'CALL_CONFIRMED', 'CALL_END', 'SESSION_KEY', 'CALL_REQUEST'
+                    ]:
+                        print(f"[QUEUE] Weiterleite an Call Manager: {item_type}")
+                        if hasattr(self, 'call_manager'):
+                            self.call_manager.handle_message(item)
+                        continue
+                    
+                    # ✅ FRAME_DATA VERARBEITUNG
+                    elif item_type == 'frame_data':
                         frame_data = item.get('data')
                         if frame_data:
                             print(f"[QUEUE] Verarbeite Frame-Daten: {len(frame_data)} bytes")
                             self._process_received_frame(frame_data)
-                        else:
-                            print("[QUEUE WARN] Frame-Daten ohne 'data' Feld")
-                    
-                    # === SEND_MESSAGE VERARBEITUNG ===
+                        continue
+                        
+                    # ✅ SEND_MESSAGE VERARBEITUNG
                     elif item_type == 'send_message':
                         message = item.get('message')
                         if message:
-                            print(f"[QUEUE] Sende Nachricht: {len(message) if isinstance(message, str) else 'binary'}")
+                            print(f"[QUEUE] Sende Nachricht: {len(message)} bytes")
                             self._send_direct_message(message)
-                        else:
-                            print("[QUEUE WARN] Send-Message ohne 'message' Feld")
+                        continue
                     
-                    # === CALL_REQUEST VERARBEITUNG ===
-                    elif item_type == 'call_request':
-                        recipient = item.get('recipient')
-                        if recipient and hasattr(self, 'call_manager'):
-                            print(f"[QUEUE] Starte Call zu: {recipient.get('name', 'Unknown')}")
-                            self.call_manager.initiate_call(recipient)
-                        else:
-                            print("[QUEUE WARN] Call-Request ohne Empfänger")
-                    
-                    # === UPDATE_REQUEST VERARBEITUNG ===
-                    elif item_type == 'update_request_sent':
-                        print("[QUEUE] Update request wurde verarbeitet")
-                        # Kann für spätere Logik erweitert werden
-                    
-                    # === INTERNAL_COMMAND VERARBEITUNG ===
+                    # ✅ IDENTITY_RESPONSE VERARBEITUNG (NEU!)
+                    elif item_type == 'process_identity_response':
+                        print(f"[QUEUE] Identity Response verarbeiten")
+                        # Diese werden bereits in _process_received_frame behandelt
+                        continue
+                        
+                    # ✅ INTERNAL_COMMAND VERARBEITUNG
                     elif item_type == 'internal_command':
                         command = item.get('command')
                         print(f"[QUEUE] Interne Kommando: {command}")
-                        # Für zukünftige Erweiterungen
+                        continue
                     
-                    # === UNBEKANNTER TYP ===
+                    # ✅ UNBEKANNTER TYP
                     else:
                         print(f"[QUEUE WARN] Unbekannter Queue-Typ: {item_type}")
                         print(f"[QUEUE DEBUG] Item keys: {list(item.keys())}")
+                        
+                        # Fallback: Versuche als frame_data zu verarbeiten
+                        if 'data' in item:
+                            self._process_received_frame(item['data'])
                 
                 except Exception as e:
-                    print(f"[QUEUE ITEM ERROR] Fehler bei Item-Verarbeitung: {e}")
-                    import traceback
-                    traceback.print_exc()
+                    print(f"[QUEUE ITEM ERROR] Fehler bei {item_type}: {e}")
                     continue
                     
-                time.sleep(0.01)  # Kurze Pause für CPU-Entlastung
-                
         except Exception as e:
             print(f"[QUEUE ERROR] {e}")
-            import traceback
-            traceback.print_exc()
         finally:
             self._processing_queue = False
-            print("[QUEUE] Verarbeitung beendet")
 
     def handle_server_message(self, raw_data):
         """KORRIGIERT: Vereinfachte Message-Verarbeitung mit besserer Queue-Handling"""
