@@ -1211,14 +1211,33 @@ class CALL:
         self.connection_state = "disconnected"
 
     def show_audio_devices_popup(self):
-        """Zeigt Popup zur Auswahl der Audio-Geräte"""
+        """Zeigt Popup zur Auswahl der Audio-Geräte - KORRIGIERTE VERSION"""
         try:
+            # Warte bis das Hauptfenster sichtbar ist
+            if hasattr(self.client, 'winfo_viewable') and not self.client.winfo_viewable():
+                print("[AUDIO POPUP] Main window not ready, delaying popup...")
+                self.client.after(500, self.show_audio_devices_popup)  # Retry after 500ms
+                return
+            
+            # Überprüfe ob das Fenster noch existiert
+            if not hasattr(self.client, 'tk') or not self.client.winfo_exists():
+                print("[AUDIO POPUP] Main window destroyed, aborting...")
+                return
+
             # Erstelle neues Fenster
-            popup = tk.Toplevel(self.client.root)
+            popup = tk.Toplevel(self.client)
             popup.title("Audio-Geräte Auswahl")
             popup.geometry("500x400")
-            popup.transient(self.client.root)
-            popup.grab_set()
+            
+            # Warte bis Popup sichtbar ist bevor grab_set aufgerufen wird
+            popup.update_idletasks()
+            
+            # Nur grab_set aufrufen wenn Fenster sichtbar ist
+            if popup.winfo_viewable():
+                popup.transient(self.client)
+                popup.grab_set()
+            else:
+                print("[AUDIO POPUP] Popup not viewable, skipping grab_set")
             
             # Zentriere das Fenster
             popup.update_idletasks()
@@ -1260,10 +1279,14 @@ class CALL:
             def apply_selection():
                 self.selected_input_device = input_combo.get()
                 self.selected_output_device = output_combo.get()
-                popup.destroy()
-                messagebox.showinfo("Audio-Geräte", 
-                                  f"Eingabegerät: {self.selected_input_device}\n"
-                                  f"Ausgabegerät: {self.selected_output_device}")
+                try:
+                    if popup.winfo_exists():
+                        popup.destroy()
+                    messagebox.showinfo("Audio-Geräte", 
+                                      f"Eingabegerät: {self.selected_input_device}\n"
+                                      f"Ausgabegerät: {self.selected_output_device}")
+                except Exception as e:
+                    print(f"[AUDIO POPUP CLOSE ERROR] {str(e)}")
             
             def use_same_device():
                 selected = input_combo.get()
@@ -1273,19 +1296,31 @@ class CALL:
             def use_default():
                 self.selected_input_device = None
                 self.selected_output_device = None
-                popup.destroy()
-                messagebox.showinfo("Audio-Geräte", "Standard-Geräte werden verwendet")
+                try:
+                    if popup.winfo_exists():
+                        popup.destroy()
+                    messagebox.showinfo("Audio-Geräte", "Standard-Geräte werden verwendet")
+                except Exception as e:
+                    print(f"[AUDIO POPUP CLOSE ERROR] {str(e)}")
             
             ttk.Button(button_frame, text="Gleiches Gerät verwenden", command=use_same_device).pack(side=tk.LEFT, padx=5)
             ttk.Button(button_frame, text="Übernehmen", command=apply_selection).pack(side=tk.LEFT, padx=5)
             ttk.Button(button_frame, text="Standard verwenden", command=use_default).pack(side=tk.LEFT, padx=5)
             
-            popup.mainloop()
+            # Safe error handling for mainloop
+            try:
+                popup.mainloop()
+            except Exception as e:
+                print(f"[AUDIO POPUP MAINLOOP ERROR] {str(e)}")
             
         except Exception as e:
             print(f"[AUDIO DEVICE POPUP ERROR] {str(e)}")
-            messagebox.showerror("Fehler", f"Audio-Geräte Auswahl fehlgeschlagen: {str(e)}")
-
+            # Verwende after für messagebox um Tkinter-Probleme zu vermeiden
+            try:
+                if hasattr(self.client, 'after'):
+                    self.client.after(0, lambda: messagebox.showerror("Fehler", f"Audio-Geräte Auswahl fehlgeschlagen: {str(e)}"))
+            except:
+                pass  # Ignoriere Fehler wenn Tkinter bereits zerstört ist
     def _get_input_devices(self):
         """Gibt Liste aller Eingabegeräte (Mikrofone) zurück"""
         devices = []
@@ -1720,22 +1755,34 @@ class CALL:
             return None
 
     def handle_incoming_call(self, msg):
-        """Verarbeitet eingehende Anrufe"""
+        """Verarbeitet eingehende Anrufe - VOLLSTÄNDIG FRAME-SIP KOMPATIBEL"""
         try:
-            headers = msg.get('headers', {})
-            custom_data = msg.get('custom_data', {})
-            
-            caller_name = headers.get('CALLER_NAME') or custom_data.get('CALLER_NAME')
-            caller_id = headers.get('CALLER_CLIENT_ID') or custom_data.get('CALLER_CLIENT_ID')
-            encrypted_data = headers.get('ENCRYPTED_CALL_DATA') or custom_data.get('ENCRYPTED_CALL_DATA')
-            
-            if not all([caller_name, caller_id, encrypted_data]):
-                print("[CALL ERROR] Missing call information")
-                self._send_call_response("rejected", caller_id)
+            # ✅ IMMER SIP PARSEN!
+            if isinstance(msg, str):
+                sip_data = self.client.parse_sip_message(msg)
+            else:
+                sip_data = msg
+                
+            if not sip_data:
+                print("[CALL ERROR] Failed to parse framed SIP INCOMING_CALL")
                 return
                 
-            print(f"[CALL] Incoming call from {caller_name}")
+            headers = sip_data.get('headers', {})
+            custom_data = sip_data.get('custom_data', {})
             
+            # ✅ EINHEITLICHE DATENEXTRAKTION
+            caller_name = custom_data.get('CALLER_NAME') or headers.get('CALLER_NAME')
+            caller_id = custom_data.get('CALLER_CLIENT_ID') or headers.get('CALLER_CLIENT_ID')
+            encrypted_data = custom_data.get('ENCRYPTED_CALL_DATA') or headers.get('ENCRYPTED_CALL_DATA')
+            
+            if not all([caller_name, caller_id, encrypted_data]):
+                print("[CALL ERROR] Missing call information in framed SIP")
+                self._send_call_response("error", caller_id)
+                return
+                
+            print(f"[CALL] Framed SIP incoming call from {caller_name} ({caller_id})")
+            
+            # ✅ FRAME-SIP ANTWORT
             if hasattr(self.client, 'after'):
                 self.client.after(0, lambda: self._ask_call_acceptance(
                     caller_name, caller_id, encrypted_data))
@@ -1743,8 +1790,16 @@ class CALL:
                 self._ask_call_acceptance(caller_name, caller_id, encrypted_data)
                 
         except Exception as e:
-            print(f"[CALL ERROR] Incoming call handling failed: {str(e)}")
-            self._send_call_response("error", caller_id)
+            print(f"[CALL ERROR] Framed SIP incoming call failed: {str(e)}")
+            try:
+                # Extrahiere caller_id aus msg falls möglich
+                caller_id = None
+                if isinstance(msg, dict):
+                    custom_data = msg.get('custom_data', {})
+                    caller_id = custom_data.get('CALLER_CLIENT_ID')
+                self._send_call_response("error", caller_id)
+            except:
+                pass
 
     def _ask_call_acceptance(self, caller_name, caller_id, encrypted_data):
         """Fragt Benutzer nach Annahme des Anrufs"""
@@ -1764,112 +1819,206 @@ class CALL:
             self._reject_incoming_call(caller_id)
 
     def _accept_incoming_call(self, caller_name, caller_id, encrypted_data):
-        """Nimmt eingehenden Anruf an - VEREINFACHT OHNE WIREGUARD"""
+        """Nimmt eingehenden Anruf an - VOLLSTÄNDIG FRAME-SIP KOMPATIBEL"""
         try:
-            # Daten entschlüsseln (RSA mit privatem Schlüssel)
+            print(f"[CALL] Accepting incoming call from {caller_name} ({caller_id})")
+            
+            # 1. Daten entschlüsseln (RSA mit privatem Schlüssel)
             private_key = load_privatekey()
+            if not private_key:
+                raise Exception("Failed to load private key")
+                
             priv_key = RSA.load_key_string(private_key.encode())
             
-            encrypted_bytes = base64.b64decode(encrypted_data)
-            decrypted_bytes = priv_key.private_decrypt(encrypted_bytes, RSA.pkcs1_padding)
-            call_info = json.loads(decrypted_bytes.decode('utf-8'))
-            
-            # ✅ KEIN WIREGUARD MEHR - nur AES Session Key speichern
+            try:
+                encrypted_bytes = base64.b64decode(encrypted_data)
+                print(f"[CALL] Decrypting {len(encrypted_bytes)} bytes of call data")
+                
+                decrypted_bytes = priv_key.private_decrypt(encrypted_bytes, RSA.pkcs1_padding)
+                call_info = json.loads(decrypted_bytes.decode('utf-8'))
+                
+                print(f"[CALL] Decrypted call info: {list(call_info.keys())}")
+                
+            except Exception as e:
+                print(f"[CALL ERROR] Decryption failed: {str(e)}")
+                raise Exception(f"Entschlüsselung fehlgeschlagen: {str(e)}")
+
+            # 2. Session Key speichern
             self.pending_call = {
                 'caller_name': caller_name,
                 'caller_id': caller_id,
                 'aes_iv': base64.b64decode(call_info['aes_iv']),
                 'aes_key': base64.b64decode(call_info['aes_key']),
-                'status': 'accepted'
+                'status': 'accepted',
+                'timestamp': time.time()
             }
             
-            # Session Key speichern
             self.current_secret = self.pending_call['aes_iv'] + self.pending_call['aes_key']
             
-            # ✅ Vereinfachte Antwort an Server
-            self._send_call_response("accepted", caller_id)
+            # 3. ✅ FRAME-SIP KOMPATIBLE Antwort
+            success = self._send_call_response("accepted", caller_id)
             
-            print("[CALL] Call accepted with AES encryption only")
+            if success:
+                print("[CALL] ✓ Call accepted successfully")
+                
+                # UI aktualisieren
+                if hasattr(self.client, 'update_call_ui'):
+                    self.client.update_call_ui(True, "connected", caller_name)
+                    
+                return True
+            else:
+                raise Exception("Failed to send acceptance response")
             
         except Exception as e:
             print(f"[CALL ERROR] Acceptance failed: {str(e)}")
-            self._send_call_response("error", caller_id)
+            try:
+                self._send_call_response("error", caller_id)
+            except:
+                pass
             self.cleanup_call_resources()
+            return False
 
     def _reject_incoming_call(self, caller_id):
-        """Lehnt eingehenden Anruf ab"""
+        """Lehnt eingehenden Anruf ab - VOLLSTÄNDIG FRAME-SIP KOMPATIBEL"""
         try:
-            self._send_call_response("rejected", caller_id)
-            print("[CALL] Call rejected")
+            print(f"[CALL] Rejecting call from {caller_id}")
+            
+            success = self._send_call_response("rejected", caller_id)
+            
+            if success:
+                print("[CALL] ✓ Call rejected successfully")
+            else:
+                print("[CALL WARNING] Call rejection may not have reached server")
+                
+            self.cleanup_call_resources()
+            
         except Exception as e:
             print(f"[CALL ERROR] Rejection failed: {str(e)}")
+            self.cleanup_call_resources()
 
     def _send_call_response(self, response, caller_id):
-        """Vereinfachte Antwort ohne WireGuard Keys"""
+        """VOLLSTÄNDIG FRAME-SIP KOMPATIBEL: Sendet Response im korrekten Format"""
         try:
+            print(f"[CALL] Preparing framed SIP {response} response for caller {caller_id}")
+            
+            # ✅ KORREKT: Einheitliches SIP + JSON Format
             response_data = {
                 "MESSAGE_TYPE": "CALL_RESPONSE",
                 "RESPONSE": response,
                 "CALLER_CLIENT_ID": caller_id,
-                "TIMESTAMP": int(time.time())
+                "TIMESTAMP": int(time.time()),
+                "CLIENT_NAME": getattr(self.client, '_client_name', 'Unknown')
             }
             
-            # ✅ KEINE WIREGUARD KEYS MEHR SENDEN
+            # ✅ KORREKT: SIP-Nachricht mit JSON Body erstellen
             response_msg = self.client.build_sip_message("MESSAGE", "server", response_data)
-            self.client._send_message(response_msg)
+            
+            print(f"[CALL] Built framed SIP message: {len(response_msg)} chars")
+            
+            # ✅ KORREKT: Immer send_frame verwenden
+            if hasattr(self.client, 'client_socket') and self.client.client_socket:
+                success = send_frame(self.client.client_socket, response_msg.encode('utf-8'))
+                print(f"[CALL] send_frame result: {success}")
+                
+                if success:
+                    print(f"[CALL] ✓ Framed SIP response '{response}' sent successfully")
+                else:
+                    print(f"[CALL ERROR] ✗ Failed to send framed SIP response")
+                    
+                return success
+            else:
+                print("[CALL ERROR] No socket available for framed SIP response")
+                return False
             
         except Exception as e:
-            print(f"[CALL ERROR] Failed to send response: {str(e)}")
+            print(f"[CALL CRITICAL ERROR] Failed to send framed SIP response: {str(e)}")
+            return False
 
     def handle_call_response(self, msg):
-        """Verarbeitet Antwort auf eigenen Anruf - VEREINFACHT OHNE WIREGUARD"""
+        """Verarbeitet Antwort auf eigenen Anruf - VOLLSTÄNDIG FRAME-SIP KOMPATIBEL"""
         try:
             if not self.pending_call:
                 print("[CALL WARNING] No pending call for response")
                 return
                 
-            custom_data = msg.get('custom_data', {})
+            print(f"[CALL] Processing framed SIP call response")
+            
+            # ✅ KRITISCH: SIP-Nachricht korrekt parsen
+            sip_data = None
+            
+            if isinstance(msg, str) and 'SIP/2.0' in msg:
+                # Framed SIP Nachricht parsen
+                sip_data = self.client.parse_sip_message(msg)
+                if not sip_data:
+                    print("[CALL ERROR] Failed to parse SIP message in response")
+                    return
+            elif isinstance(msg, dict):
+                # Bereits geparste SIP-Daten
+                sip_data = msg
+            else:
+                print(f"[CALL ERROR] Unsupported message format: {type(msg)}")
+                return
+            
+            # ✅ KORREKT: Aus custom_data extrahieren
+            custom_data = sip_data.get('custom_data', {})
             response = custom_data.get('RESPONSE')
             
-            # ✅ UDP Relay Konfiguration
+            print(f"[CALL] Framed SIP response type: {response}")
+            print(f"[CALL] Custom data keys: {list(custom_data.keys())}")
+            
+            if not response:
+                print("[CALL ERROR] No RESPONSE in framed SIP message")
+                return
+            
+            # UDP Relay Konfiguration aus framed SIP extrahieren
             use_relay = custom_data.get('USE_AUDIO_RELAY', False)
             relay_ip = custom_data.get('AUDIO_RELAY_IP')
             relay_port = custom_data.get('AUDIO_RELAY_PORT', 51822)
             
             if response == "accepted":
-                print("[CALL] Call accepted by recipient")
+                print("[CALL] ✓ Call accepted by recipient via framed SIP")
                 
                 if use_relay and relay_ip:
-                    print(f"[CALL] Using UDP Relay: {relay_ip}:{relay_port}")
+                    print(f"[CALL] Using UDP Relay from framed SIP: {relay_ip}:{relay_port}")
                     self.use_udp_relay = True
                     self.relay_server_ip = relay_ip
                     self.relay_server_port = relay_port
-                    
-                    # Audio streams starten
-                    if 'session_secret' in self.pending_call:
-                        self.current_secret = self.pending_call['session_secret']
-                        self._start_audio_streams()
-                    
+                
+                # Audio streams starten
+                if 'session_secret' in self.pending_call:
+                    self.current_secret = self.pending_call['session_secret']
+                    self._start_audio_streams()
                     self.pending_call['status'] = 'connected'
                     self._update_ui_wrapper(active=True, status="connected", 
                                           caller_name=self.pending_call['recipient'].get('name', 'Unknown'))
+                    print("[CALL] ✓ Audio streams started successfully")
+                else:
+                    print("[CALL ERROR] No session secret for audio")
                     
             elif response == "rejected":
-                print("[CALL] Call rejected by recipient")
+                print("[CALL] ✗ Call rejected via framed SIP")
                 if hasattr(self.client, 'after'):
                     self.client.after(0, lambda: messagebox.showinfo("Call Rejected", "Der Empfänger hat den Anruf abgelehnt"))
                 self.cleanup_call_resources()
+                
             elif response == "timeout":
-                print("[CALL] Call timeout")
+                print("[CALL] ✗ Call timeout via framed SIP")
                 if hasattr(self.client, 'after'):
                     self.client.after(0, lambda: messagebox.showinfo("Call Failed", "Der Empfänger hat nicht geantwortet"))
                 self.cleanup_call_resources()
+                
+            elif response == "error":
+                print("[CALL] ✗ Call error via framed SIP")
+                if hasattr(self.client, 'after'):
+                    self.client.after(0, lambda: messagebox.showinfo("Call Failed", "Fehler beim Empfänger"))
+                self.cleanup_call_resources()
+                
             else:
-                print(f"[CALL] Unknown response: {response}")
+                print(f"[CALL WARNING] Unknown framed SIP response: {response}")
                 self.cleanup_call_resources()
                 
         except Exception as e:
-            print(f"[CALL ERROR] Response handling failed: {str(e)}")
+            print(f"[CALL ERROR] Framed SIP response handling failed: {str(e)}")
             self.cleanup_call_resources()
 
     def handle_call_confirmed(self, msg):
@@ -2537,10 +2686,10 @@ class PHONEBOOK(ctk.CTk):
             print(f"[PHONEBOOK ERROR] Entry click failed: {str(e)}")
 
     def connection_loop(self, client_socket, server_ip, message_handler=None):
-        """KORRIGIERTE Connection-Loop mit besserem Timeout-Management"""
+        """STABILISIERTE Connection-Loop mit robuster Fehlerbehandlung"""
         global connected
         connected = True
-        print("[CONNECTION] Starting improved connection loop")
+        print("[CONNECTION] Starting stabilized connection loop")
         
         # Lokale IP ermitteln
         try:
@@ -2555,88 +2704,106 @@ class PHONEBOOK(ctk.CTk):
         
         client_name = self._client_name
         ping_interval = 30  # Normales Ping-Intervall
-        fast_ping_interval = 5  # Schnelles Intervall bei ausstehenden Requests
         last_ping_time = 0
-        pending_requests = 0
+        consecutive_timeouts = 0
+        max_consecutive_timeouts = 3
         
         while connected:
             try:
                 current_time = time.time()
                 
-                # Entscheide Ping-Intervall basierend auf ausstehenden Requests
-                if pending_requests > 0:
-                    interval = fast_ping_interval
-                    print(f"[PING] Fast mode ({interval}s) - {pending_requests} pending requests")
-                else:
-                    interval = ping_interval
+                # ✅ KORREKTUR: Verbindungs-Health-Check
+                if consecutive_timeouts >= max_consecutive_timeouts:
+                    print(f"[CONNECTION WARNING] Too many timeouts ({consecutive_timeouts}), testing connection...")
+                    if not self._test_connection_simple(client_socket, server_ip, client_name):
+                        print("[CONNECTION] Connection test failed, terminating loop")
+                        connected = False
+                        break
+                    else:
+                        consecutive_timeouts = 0
+                        print("[CONNECTION] Connection test successful, resuming normal operation")
                 
-                # Ping senden wenn Intervall abgelaufen
-                if current_time - last_ping_time >= interval:
-                    # 1. Ping vorbereiten
+                # Ping nur senden wenn Intervall abgelaufen
+                if current_time - last_ping_time >= ping_interval:
+                    # Ping vorbereiten
                     ping_data = {
                         "MESSAGE_TYPE": "PING",
                         "TIMESTAMP": int(current_time),
                         "CLIENT_NAME": client_name,
-                        "CLIENT_IP": local_ip,
-                        "PENDING_REQUESTS": pending_requests
+                        "CLIENT_IP": local_ip
                     }
                     
                     ping_msg = self.build_sip_message("MESSAGE", server_ip, ping_data)
                     
-                    # 2. Ping senden
+                    # Ping senden
                     print(f"[PING] Sending ping to {server_ip}")
                     if send_frame(client_socket, ping_msg.encode('utf-8')):
                         last_ping_time = current_time
-                        pending_requests += 1  # Ping als ausstehenden Request zählen
+                        print("[PING] Ping sent successfully")
                     else:
                         print("[PING ERROR] Failed to send ping")
-                        connected = False
-                        break
+                        consecutive_timeouts += 1
+                        continue
                 
-                # 3. Auf Antwort warten mit kürzerem Timeout
-                client_socket.settimeout(3.0)  # Nur 3 Sekunden warten
+                # ✅ KORREKTUR: Längeres Timeout für stabilere Verbindung
+                client_socket.settimeout(10.0)
                 
                 try:
-                    response = recv_frame(client_socket, timeout=3)
+                    response = recv_frame(client_socket, timeout=10)
                     
                     if response is None:
-                        # Timeout ist normal - weiter im Loop
+                        # Timeout bei recv_frame
+                        print("[CONNECTION] recv_frame returned None")
+                        consecutive_timeouts += 1
                         continue
                         
+                    # ✅ Erfolgreich Daten empfangen - Reset Timeout Counter
+                    consecutive_timeouts = 0
+                    
                     if isinstance(response, bytes):
-                        response = response.decode('utf-8')
+                        try:
+                            response = response.decode('utf-8')
+                        except UnicodeDecodeError:
+                            print("[CONNECTION] Binary data received, processing as binary")
+                            # Binary data (encrypted phonebook, etc.)
+                            self.handle_server_message(response)
+                            continue
                     
-                    # 4. Antwort verarbeiten
-                    if response:
-                        sip_data = self.parse_sip_message(response)
-                        if sip_data:
-                            custom_data = sip_data.get('custom_data', {})
-                            message_type = custom_data.get('MESSAGE_TYPE')
-                            
-                            if message_type == 'PONG':
-                                print("[PING] Pong received successfully")
-                                pending_requests = max(0, pending_requests - 1)
-                                
-                            elif message_type == 'IDENTITY_CHALLENGE':
-                                print("[IDENTITY] Challenge received in ping loop")
-                                self._handle_identity_challenge(sip_data)
-                                pending_requests = max(0, pending_requests - 1)
-                                
-                            elif message_type == 'PHONEBOOK_UPDATE':
-                                print("[UPDATE] Phonebook received in ping loop")
-                                self._process_phonebook_update(sip_data)
-                                pending_requests = max(0, pending_requests - 1)
-                                
-                            else:
-                                print(f"[PING] Other message: {message_type}")
-                                # Zur normalen Verarbeitung weiterleiten
-                                self.handle_server_message(response)
+                    print(f"[CONNECTION] Received {len(response)} bytes from server")
+                    
+                    # Nachricht verarbeiten
+                    sip_data = self.parse_sip_message(response)
+                    if sip_data:
+                        custom_data = sip_data.get('custom_data', {})
+                        message_type = custom_data.get('MESSAGE_TYPE')
                         
+                        if message_type == 'PONG':
+                            print("[PING] Pong received successfully")
+                            
+                        elif message_type == 'IDENTITY_CHALLENGE':
+                            print("[IDENTITY] Challenge received in connection loop")
+                            self._handle_identity_challenge(sip_data)
+                            
+                        elif message_type == 'PHONEBOOK_UPDATE':
+                            print("[UPDATE] Phonebook received in connection loop")
+                            self._process_phonebook_update(sip_data)
+                            
+                        elif message_type == 'IDENTITY_VERIFIED':
+                            print("[IDENTITY] Verification confirmed in connection loop")
+                            self._handle_identity_verified(sip_data)
+                            
                         else:
-                            print("[PING] Could not parse server response")
-                    
+                            print(f"[CONNECTION] Other message type: {message_type}")
+                            # Zur normalen Verarbeitung weiterleiten
+                            self.handle_server_message(response)
+                    else:
+                        print("[CONNECTION] Could not parse SIP message")
+                        self.handle_server_message(response)
+                        
                 except socket.timeout:
-                    # Timeout ist normal bei schnellen Pings
+                    # Socket timeout - normal bei längerem Timeout
+                    print("[CONNECTION] Socket timeout (10s)")
+                    consecutive_timeouts += 1
                     continue
                     
                 except ConnectionError as e:
@@ -2645,33 +2812,88 @@ class PHONEBOOK(ctk.CTk):
                     break
                     
                 except Exception as e:
-                    print(f"[CONNECTION ERROR] Unexpected error: {e}")
-                    # Kein Break - versuche Verbindung zu halten
+                    print(f"[CONNECTION ERROR] Receive error: {e}")
+                    consecutive_timeouts += 1
                     continue
                 
                 # Kurze Pause zwischen Durchläufen
-                time.sleep(0.5)
+                time.sleep(1)
                 
             except Exception as e:
                 print(f"[CONNECTION LOOP ERROR] {str(e)}")
-                connected = False
-                break
+                consecutive_timeouts += 1
+                if consecutive_timeouts >= max_consecutive_timeouts + 2:  # Etwas mehr Toleranz
+                    connected = False
+                    break
+                time.sleep(5)  # Längere Pause bei Fehlern
         
         # Verbindungsende
         print("[CONNECTION] Connection loop ended")
         connected = False
         self.cleanup_connection()
-    def start_connection(self, server_ip, server_port, client_name, client_socket, message_handler=None):
-        """VOLLSTÄNDIG KORRIGIERTE REGISTRATION MIT EINHEITLICHEM PARSING"""
+
+    def _test_connection_simple(self, client_socket, server_ip, client_name):
+        """Einfacher Verbindungstest ohne komplexe Logik"""
         try:
-            # 1. Configure socket
+            print("[CONNECTION TEST] Simple connection test...")
+            
+            # Setze kürzeres Timeout für Test
+            original_timeout = client_socket.gettimeout()
+            client_socket.settimeout(5.0)
+            
+            # Sende einfachen Ping
+            test_data = {
+                "MESSAGE_TYPE": "PING",
+                "TIMESTAMP": int(time.time()),
+                "CLIENT_NAME": client_name,
+                "TEST": "connection_test"
+            }
+            
+            test_msg = self.build_sip_message("MESSAGE", server_ip, test_data)
+            
+            if send_frame(client_socket, test_msg.encode('utf-8')):
+                # Versuche Antwort zu empfangen
+                try:
+                    response = recv_frame(client_socket, timeout=5)
+                    if response:
+                        print("[CONNECTION TEST] Success - received response")
+                        client_socket.settimeout(original_timeout)
+                        return True
+                except:
+                    pass  # Timeout ist okay für Test
+            
+            print("[CONNECTION TEST] Failed - no response")
+            client_socket.settimeout(original_timeout)
+            return False
+            
+        except Exception as e:
+            print(f"[CONNECTION TEST ERROR] {str(e)}")
+            try:
+                client_socket.settimeout(original_timeout)
+            except:
+                pass
+            return False
+    def start_connection(self, server_ip, server_port, client_name, client_socket, message_handler=None):
+        """STABILISIERTE REGISTRATION MIT ROBUSTER FEHLERBEHANDLUNG"""
+        try:
+            print(f"[CONNECTION] Starting stabilized connection to {server_ip}:{server_port}")
+            
+            # 1. Socket für Stabilität konfigurieren
             client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-            client_socket.settimeout(15.0)
+            # Platform-spezifische Keep-Alive Einstellungen
+            if hasattr(socket, 'TCP_KEEPIDLE'):
+                client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
+            if hasattr(socket, 'TCP_KEEPINTVL'):
+                client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 30)
+            
+            client_socket.settimeout(25.0)  # Längeres Timeout für Registration
 
             # 2. Load client public key
+            print("[CONNECTION] Loading client public key...")
             client_pubkey = load_publickey()
             if not is_valid_public_key(client_pubkey):
                 raise ValueError("Invalid client public key format")
+            print("[CONNECTION] Client public key loaded and validated")
 
             # 3. REGISTRATION NACHRICHT
             register_data = {
@@ -2690,41 +2912,42 @@ class PHONEBOOK(ctk.CTk):
                 client_name=client_name
             )
             
-            print("\n[Client] Sending registration...")
-            send_frame(client_socket, register_msg.encode('utf-8'))
+            print("[CONNECTION] Sending registration...")
+            if not send_frame(client_socket, register_msg.encode('utf-8')):
+                raise ConnectionError("Failed to send registration frame")
+            print("[CONNECTION] Registration sent successfully")
 
-            # 4. Response empfangen und parsen
-            response = recv_frame(client_socket)
+            # 4. Erste Response empfangen und parsen
+            print("[CONNECTION] Waiting for server response...")
+            response = recv_frame(client_socket, timeout=25)
             if not response:
-                raise ConnectionError("Empty response from server")
+                raise ConnectionError("Empty response from server - timeout or connection issue")
 
             if isinstance(response, bytes):
                 response = response.decode('utf-8')
 
-            print(f"\n[Client] Server response received ({len(response)} bytes)")
+            print(f"[CONNECTION] Server response received ({len(response)} bytes)")
 
-            # 5. ✅ EINHEITLICHES SIP-PARSING
+            # 5. SIP-PARSING
             sip_data = self.parse_sip_message(response)
             if not sip_data:
-                raise ValueError("Invalid SIP response format")
+                raise ValueError("Invalid SIP response format - cannot parse")
                 
-            print(f"[DEBUG] SIP message type: {sip_data.get('type')}")
-            print(f"[DEBUG] Status code: {sip_data.get('status_code')}")
+            print(f"[CONNECTION] SIP message type: {sip_data.get('type')}")
 
-            # 6. ✅ KORREKTE BODY-EXTRAKTION
+            # 6. BODY-EXTRAKTION
             body = sip_data.get('body', '')
             if not body:
                 raise ValueError("No body in SIP response")
                 
-            print(f"[DEBUG] Body length: {len(body)}")
-            print(f"[DEBUG] Body content: {body[:200]}...")
+            print(f"[CONNECTION] Body length: {len(body)}")
 
-            # 7. ✅ BODY ALS JSON PARSEN
+            # 7. JSON PARSEN
             try:
                 response_data = json.loads(body)
-                print(f"[DEBUG] JSON parsed successfully: {list(response_data.keys())}")
+                print(f"[CONNECTION] JSON parsed successfully: {list(response_data.keys())}")
             except json.JSONDecodeError as e:
-                print(f"[DEBUG] JSON decode error: {e}")
+                print(f"[CONNECTION] JSON decode error: {e}")
                 raise ValueError("Invalid JSON in response body")
 
             # 8. Server Public Key extrahieren
@@ -2735,29 +2958,30 @@ class PHONEBOOK(ctk.CTk):
                 for key in possible_keys:
                     if key in response_data:
                         server_public_key = response_data[key]
-                        print(f"[DEBUG] Found key in field: {key}")
+                        print(f"[CONNECTION] Found key in field: {key}")
                         break
             
             if not server_public_key:
-                print(f"[DEBUG] Available fields: {list(response_data.keys())}")
+                print(f"[CONNECTION] Available fields: {list(response_data.keys())}")
                 raise ValueError("No server public key found in response")
 
             # 9. Key formatieren und validieren
             server_public_key = server_public_key.replace('\\\\n', '\n').replace('\\n', '\n')
             
             if not is_valid_public_key(server_public_key):
-                print("[DEBUG] Key validation failed")
+                print("[CONNECTION] Key validation failed")
                 raise ValueError("Invalid server public key format")
 
             # Save server public key
             with open("server_public_key.pem", "w") as f:
                 f.write(server_public_key)
-            print("[DEBUG] Server public key saved")
+            print("[CONNECTION] Server public key saved")
 
             # 10. Zweite Response (Merkle Data) empfangen
-            merkle_response = recv_frame(client_socket)
+            print("[CONNECTION] Waiting for Merkle data...")
+            merkle_response = recv_frame(client_socket, timeout=25)
             if not merkle_response:
-                raise ConnectionError("No Merkle data received")
+                raise ConnectionError("No Merkle data received - timeout")
 
             if isinstance(merkle_response, bytes):
                 merkle_response = merkle_response.decode('utf-8')
@@ -2774,7 +2998,7 @@ class PHONEBOOK(ctk.CTk):
             try:
                 merkle_data = json.loads(merkle_body)
             except json.JSONDecodeError as e:
-                print(f"[DEBUG] Merkle JSON error: {e}")
+                print(f"[CONNECTION] Merkle JSON error: {e}")
                 raise ValueError("Invalid JSON in Merkle response")
 
             # Merkle Daten extrahieren
@@ -2785,20 +3009,31 @@ class PHONEBOOK(ctk.CTk):
                 raise ValueError("No Merkle root in response")
 
             # Merkle Verification
-            print("\n=== CLIENT VERIFICATION ===")
+            print("[CONNECTION] Starting Merkle verification...")
             if not verify_merkle_integrity(all_keys, merkle_root):
-                raise ValueError("Merkle verification failed")
+                raise ValueError("Merkle verification failed - potential security issue")
 
-            print("[DEBUG] Merkle verification successful")
+            print("[CONNECTION] Merkle verification successful")
 
-            # 11. Hauptloop starten
-            print("\n[Client] Starting communication loop...")
+            # 11. Socket für Hauptloop neu konfigurieren
+            client_socket.settimeout(10.0)  # Angemessenes Timeout für Hauptloop
+            
+            # 12. Hauptloop starten
+            print("[CONNECTION] Starting stabilized communication loop...")
             self.connection_loop(client_socket, server_ip, message_handler)
             return True
 
+        except socket.timeout:
+            error_msg = "Connection timeout during registration"
+            print(f"[CONNECTION ERROR] {error_msg}")
+            return False
+        except ConnectionError as e:
+            error_msg = f"Connection error: {str(e)}"
+            print(f"[CONNECTION ERROR] {error_msg}")
+            return False
         except Exception as e:
             error_msg = f"Connection failed: {str(e)}"
-            print(f"\n[Client ERROR] {error_msg}")
+            print(f"[CONNECTION ERROR] {error_msg}")
             traceback.print_exc()
             return False
 
