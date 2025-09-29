@@ -992,38 +992,100 @@ class CONVEY:
                 del self.audio_relays[call_id]
 
     def handle_get_public_key(self, msg, client_socket, client_name):
-        """EINHEITLICHE Public-Key-Antwort - KORRIGIERT"""
+        """VOLLSTÄNDIG KORRIGIERT: Public-Key-Antwort mit erweitertem Debugging"""
         try:
+            print(f"\n=== CONVEY: GET_PUBLIC_KEY PROCESSING ===")
+            print(f"[CONVEY] Processing GET_PUBLIC_KEY from {client_name}")
+            
             custom_data = msg.get('custom_data', {})
             
             # EINHEITLICHE Daten-Extraktion
             target_id = custom_data.get('TARGET_CLIENT_ID')
             caller_name = custom_data.get('CALLER_NAME', client_name)
+            caller_client_id = custom_data.get('CALLER_CLIENT_ID')
             
+            print(f"[CONVEY DEBUG] Target ID: {target_id}")
+            print(f"[CONVEY DEBUG] Caller name: {caller_name}")
+            print(f"[CONVEY DEBUG] Caller client ID: {caller_client_id}")
+            print(f"[CONVEY DEBUG] Custom data keys: {list(custom_data.keys())}")
+
             if not target_id:
                 print("[CONVEY ERROR] Missing target client ID")
+                error_msg = self.server.build_sip_message("MESSAGE", client_name, {
+                    "MESSAGE_TYPE": "ERROR",
+                    "ERROR": "MISSING_TARGET_CLIENT_ID",
+                    "TIMESTAMP": int(time.time())
+                })
+                send_frame(client_socket, error_msg.encode('utf-8'))
                 return False
                 
             print(f"[CONVEY] Public key request from {caller_name} for client {target_id}")
-            
+
             # Ziel-Client finden (thread-safe)
             target_client = None
+            target_client_name = None
+            target_client_id = None
+            
             with self.server.clients_lock:
+                print(f"[CONVEY DEBUG] Searching through {len(self.server.clients)} clients:")
                 for client_id, client_info in self.server.clients.items():
+                    client_name_debug = client_info.get('name', 'unknown')
+                    has_pubkey = 'public_key' in client_info
+                    print(f"[CONVEY DEBUG] Client {client_id}: {client_name_debug} (pubkey: {has_pubkey})")
+                    
+                    # ✅ VERBESSERTE SUCHE: Prüfe sowohl Client-ID als auch Name
                     if str(client_id) == str(target_id):
                         target_client = client_info
+                        target_client_name = client_name_debug
+                        target_client_id = client_id
+                        print(f"[CONVEY DEBUG] ✓ Found target by ID: {client_name_debug}")
                         break
-            
-            if not target_client or 'public_key' not in target_client:
-                print(f"[CONVEY ERROR] Target client {target_id} not found")
+                    elif client_name_debug == target_id:
+                        target_client = client_info  
+                        target_client_name = client_name_debug
+                        target_client_id = client_id
+                        print(f"[CONVEY DEBUG] ✓ Found target by name: {client_name_debug}")
+                        break
+
+            if not target_client:
+                print(f"[CONVEY ERROR] Target client {target_id} not found in clients")
+                print(f"[CONVEY DEBUG] Available clients: {list(self.server.clients.keys())}")
+                error_msg = self.server.build_sip_message("MESSAGE", caller_name, {
+                    "MESSAGE_TYPE": "ERROR",
+                    "ERROR": "TARGET_NOT_FOUND",
+                    "TARGET_ID": target_id,
+                    "DEBUG_INFO": f"Available clients: {list(self.server.clients.keys())}",
+                    "TIMESTAMP": int(time.time())
+                })
+                send_frame(client_socket, error_msg.encode('utf-8'))
                 return False
-            
-            # EINHEITLICHE Response-Erstellung
+
+            if 'public_key' not in target_client:
+                print(f"[CONVEY ERROR] Target client {target_client_name} has no public key")
+                error_msg = self.server.build_sip_message("MESSAGE", caller_name, {
+                    "MESSAGE_TYPE": "ERROR",
+                    "ERROR": "TARGET_NO_PUBLIC_KEY",
+                    "TARGET_ID": target_id,
+                    "TARGET_NAME": target_client_name,
+                    "TIMESTAMP": int(time.time())
+                })
+                send_frame(client_socket, error_msg.encode('utf-8'))
+                return False
+
+            # Public Key des Ziels extrahieren
+            target_public_key = target_client['public_key']
+            print(f"[CONVEY] Found public key for target {target_client_name} (length: {len(target_public_key)})")
+
+            # ✅ EINHEITLICHE Response-Erstellung
             response_data = {
                 "MESSAGE_TYPE": "PUBLIC_KEY_RESPONSE",
-                "TARGET_CLIENT_ID": target_id,
-                "PUBLIC_KEY": target_client['public_key'],
-                "CALLER_NAME": caller_name
+                "TARGET_CLIENT_ID": target_client_id,
+                "TARGET_CLIENT_NAME": target_client_name,
+                "PUBLIC_KEY": target_public_key,
+                "CALLER_NAME": caller_name,
+                "CALLER_CLIENT_ID": caller_client_id,
+                "TIMESTAMP": int(time.time()),
+                "STATUS": "SUCCESS"
             }
             
             response_msg = self.server.build_sip_message(
@@ -1032,13 +1094,34 @@ class CONVEY:
                 response_data
             )
             
-            # EINHEITLICHES Framing
-            send_frame(client_socket, response_msg.encode('utf-8'))
-            print(f"[CONVEY] Sent public key for client {target_id} to {caller_name}")
-            return True
+            print(f"[CONVEY] Sending PUBLIC_KEY_RESPONSE to {caller_name}")
+            print(f"[CONVEY DEBUG] Response data: {response_data}")
             
+            # EINHEITLICHES Framing
+            success = send_frame(client_socket, response_msg.encode('utf-8'))
+            
+            if success:
+                print(f"[CONVEY SUCCESS] Sent public key for client {target_client_name} to {caller_name}")
+                return True
+            else:
+                print(f"[CONVEY ERROR] Failed to send public key response to {caller_name}")
+                return False
+                
         except Exception as e:
             print(f"[CONVEY ERROR] Public key handling failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            
+            try:
+                error_msg = self.server.build_sip_message("MESSAGE", client_name, {
+                    "MESSAGE_TYPE": "ERROR",
+                    "ERROR": f"PUBLIC_KEY_PROCESSING_FAILED: {str(e)}",
+                    "TIMESTAMP": int(time.time())
+                })
+                send_frame(client_socket, error_msg.encode('utf-8'))
+            except:
+                pass
+                
             return False
 
     def handle_call_request(self, msg, client_socket, client_name):
@@ -1052,10 +1135,13 @@ class CONVEY:
             
             print(f"[CONVEY] Framed SIP call request from {caller_name} to target {target_id}")
             print(f"[CONVEY DEBUG] Caller ID: {caller_client_id}, Target ID: {target_id}")
+            print(f"[CONVEY DEBUG] Encrypted data length: {len(encrypted_data) if encrypted_data else 0}")
 
             # ✅ VALIDIERUNG MIT FRAME-SIP FEHLERMELDUNGEN
             if not all([target_id, encrypted_data, caller_name, caller_client_id]):
                 print("[CONVEY ERROR] Missing required fields in framed SIP")
+                print(f"[CONVEY DEBUG] target_id: {target_id}, encrypted_data: {'present' if encrypted_data else 'missing'}")
+                print(f"[CONVEY DEBUG] caller_name: {caller_name}, caller_client_id: {caller_client_id}")
                 error_msg = self.server.build_sip_message("MESSAGE", client_name, {
                     "MESSAGE_TYPE": "CALL_ERROR",
                     "ERROR": "MISSING_REQUIRED_FIELDS",
@@ -1067,6 +1153,7 @@ class CONVEY:
             # ✅ KORRIGIERTE ZIELSUCHE MIT DETAILIERTEM DEBUGGING
             target_client = None
             target_socket = None
+            target_client_name = None
             
             with self.server.clients_lock:
                 print(f"[CONVEY DEBUG] Searching through {len(self.server.clients)} clients:")
@@ -1079,11 +1166,13 @@ class CONVEY:
                     if str(client_id) == str(target_id):
                         target_client = client_info
                         target_socket = client_info.get('socket')
+                        target_client_name = client_name_debug
                         print(f"[CONVEY DEBUG] ✓ Found target by ID: {client_name_debug}")
                         break
                     elif client_name_debug == target_id:
                         target_client = client_info  
                         target_socket = client_info.get('socket')
+                        target_client_name = client_name_debug
                         print(f"[CONVEY DEBUG] ✓ Found target by name: {client_name_debug}")
                         break
 
@@ -1094,6 +1183,7 @@ class CONVEY:
                     "MESSAGE_TYPE": "CALL_ERROR",
                     "ERROR": "TARGET_NOT_FOUND",
                     "TARGET_ID": target_id,
+                    "DEBUG_INFO": f"Available clients: {list(self.server.clients.keys())}",
                     "TIMESTAMP": int(time.time())
                 })
                 send_frame(client_socket, error_msg.encode('utf-8'))
@@ -1105,13 +1195,14 @@ class CONVEY:
                     "MESSAGE_TYPE": "CALL_ERROR", 
                     "ERROR": "TARGET_OFFLINE",
                     "TARGET_ID": target_id,
+                    "TARGET_NAME": target_client_name,
                     "TIMESTAMP": int(time.time())
                 })
                 send_frame(client_socket, error_msg.encode('utf-8'))
                 return False
 
             # ✅ FRAME-SIP INCOMING_CALL NACHRICHT
-            incoming_call_msg = self.server.build_sip_message("MESSAGE", target_client.get('name', 'Unknown'), {
+            incoming_call_msg = self.server.build_sip_message("MESSAGE", target_client_name, {
                 "MESSAGE_TYPE": "INCOMING_CALL",
                 "CALLER_NAME": caller_name,
                 "CALLER_CLIENT_ID": caller_client_id,
@@ -1120,7 +1211,7 @@ class CONVEY:
                 "TIMEOUT": 120
             })
             
-            print(f"[CONVEY] Sending framed SIP INCOMING_CALL to target {target_client.get('name')}")
+            print(f"[CONVEY] Sending framed SIP INCOMING_CALL to target {target_client_name}")
             send_success = send_frame(target_socket, incoming_call_msg.encode('utf-8'))
             
             if not send_success:
@@ -1128,6 +1219,7 @@ class CONVEY:
                 error_msg = self.server.build_sip_message("MESSAGE", caller_name, {
                     "MESSAGE_TYPE": "CALL_ERROR",
                     "ERROR": "TARGET_SEND_FAILED",
+                    "TARGET_NAME": target_client_name,
                     "TIMESTAMP": int(time.time())
                 })
                 send_frame(client_socket, error_msg.encode('utf-8'))
@@ -1139,7 +1231,7 @@ class CONVEY:
                 'caller_id': caller_client_id,
                 'callee_id': target_id,
                 'caller_name': caller_name,
-                'callee_name': target_client.get('name', 'Unknown'),
+                'callee_name': target_client_name,
                 'caller_socket': client_socket,
                 'callee_socket': target_socket,
                 'start_time': time.time(),
@@ -1152,7 +1244,7 @@ class CONVEY:
                 "MESSAGE_TYPE": "CALL_REQUEST_ACK",
                 "STATUS": "CALL_FORWARDED",
                 "TARGET_ID": target_id,
-                "TARGET_NAME": target_client.get('name', 'Unknown'),
+                "TARGET_NAME": target_client_name,
                 "CALL_ID": call_id,
                 "TIMESTAMP": int(time.time())
             })
@@ -1194,6 +1286,8 @@ class CONVEY:
             caller_id = custom_data.get('CALLER_CLIENT_ID')  # ✅ Client-ID
             
             print(f"[CONVEY] Framed SIP call response from {client_name}: {response}")
+            print(f"[CONVEY DEBUG] Caller ID: {caller_id}")
+            print(f"[CONVEY DEBUG] Custom data keys: {list(custom_data.keys())}")
 
             if not response or not caller_id:
                 print("[CONVEY ERROR] Missing response or caller_id in framed SIP")
@@ -1203,70 +1297,112 @@ class CONVEY:
             call_id = None
             call_data = None
             
+            print(f"[CONVEY DEBUG] Searching through {len(self.active_calls)} active calls")
             for cid, data in self.active_calls.items():
+                print(f"[CONVEY DEBUG] Call {cid}: caller={data.get('caller_id')}, callee={data.get('callee_id')}")
                 # ✅ NUR CLIENT-IDs VERGLEICHEN!
                 if data['callee_id'] == client_name and data['caller_id'] == caller_id:
                     call_id = cid
                     call_data = data
+                    print(f"[CONVEY DEBUG] ✓ Found matching call: {cid}")
                     break
             
             if not call_data:
                 print(f"[CONVEY ERROR] No active call found for {client_name} -> {caller_id}")
+                print(f"[CONVEY DEBUG] Available calls: {list(self.active_calls.keys())}")
                 return False
+            
+            print(f"[CONVEY] Processing call response for call {call_id}")
             
             # ✅ FRAME-SIP BEARBEITUNG
             if response == "accepted":
+                print(f"[CONVEY] Call {call_id} accepted by {client_name}")
+                
                 # UDP Relay registrieren
-                self._register_audio_relay(call_id, call_data['caller_name'], client_name)
+                relay_success = self._register_audio_relay(call_id, call_data['caller_name'], client_name)
                 
                 # ✅ FRAME-SIP ACCEPTED NACHRICHT
                 response_data = {
                     "MESSAGE_TYPE": "CALL_RESPONSE",
                     "RESPONSE": "accepted",
-                    "AUDIO_RELAY_IP": self.server.host,
-                    "AUDIO_RELAY_PORT": self.udp_relay_port,
-                    "USE_AUDIO_RELAY": True,
+                    "CALLER_CLIENT_ID": caller_id,
                     "TIMESTAMP": int(time.time())
                 }
                 
+                # Füge Relay-Informationen hinzu falls verfügbar
+                if relay_success:
+                    response_data.update({
+                        "AUDIO_RELAY_IP": self.server.host,
+                        "AUDIO_RELAY_PORT": self.udp_relay_port,
+                        "USE_AUDIO_RELAY": True
+                    })
+                
                 response_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], response_data)
-                send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
-                call_data['status'] = 'accepted'
+                send_success = send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
                 
-                # ✅ FRAME-SIP CALLEE BESTÄTIGUNG
-                callee_msg = self.server.build_sip_message("MESSAGE", client_name, {
-                    "MESSAGE_TYPE": "CALL_CONFIRMED",
-                    "AUDIO_RELAY_IP": self.server.host,
-                    "AUDIO_RELAY_PORT": self.udp_relay_port,
-                    "USE_AUDIO_RELAY": True,
-                    "TIMESTAMP": int(time.time())
-                })
-                send_frame(client_socket, callee_msg.encode('utf-8'))
-                
-                print(f"[CONVEY] Framed SIP call {call_id} accepted with UDP Relay")
-                
+                if send_success:
+                    call_data['status'] = 'accepted'
+                    print(f"[CONVEY] Call accepted response sent to {call_data['caller_name']}")
+                    
+                    # ✅ FRAME-SIP CALLEE BESTÄTIGUNG
+                    callee_msg = self.server.build_sip_message("MESSAGE", client_name, {
+                        "MESSAGE_TYPE": "CALL_CONFIRMED",
+                        "TIMESTAMP": int(time.time())
+                    })
+                    
+                    # Füge Relay-Informationen hinzu falls verfügbar
+                    if relay_success:
+                        callee_msg_data = {
+                            "AUDIO_RELAY_IP": self.server.host,
+                            "AUDIO_RELAY_PORT": self.udp_relay_port,
+                            "USE_AUDIO_RELAY": True
+                        }
+                        callee_msg = self.server.build_sip_message("MESSAGE", client_name, {
+                            "MESSAGE_TYPE": "CALL_CONFIRMED",
+                            "TIMESTAMP": int(time.time()),
+                            **callee_msg_data
+                        })
+                    
+                    send_frame(client_socket, callee_msg.encode('utf-8'))
+                    
+                    print(f"[CONVEY] Framed SIP call {call_id} accepted with UDP Relay: {relay_success}")
+                else:
+                    print(f"[CONVEY ERROR] Failed to send accepted response to caller")
+                    
             elif response == "rejected":
+                print(f"[CONVEY] Call {call_id} rejected by {client_name}")
+                
                 # ✅ FRAME-SIP REJECTED NACHRICHT
                 response_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], {
                     "MESSAGE_TYPE": "CALL_RESPONSE",
                     "RESPONSE": "rejected",
+                    "CALLER_CLIENT_ID": caller_id,
                     "TIMESTAMP": int(time.time())
                 })
-                send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
-                call_data['status'] = 'rejected'
-                print(f"[CONVEY] Framed SIP call {call_id} rejected")
+                send_success = send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
                 
+                if send_success:
+                    call_data['status'] = 'rejected'
+                    print(f"[CONVEY] Call rejected response sent to {call_data['caller_name']}")
+                else:
+                    print(f"[CONVEY ERROR] Failed to send rejected response to caller")
+                    
             elif response == "error":
+                print(f"[CONVEY] Call {call_id} error from {client_name}")
+                
                 # ✅ FRAME-SIP ERROR NACHRICHT
                 response_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], {
                     "MESSAGE_TYPE": "CALL_RESPONSE", 
                     "RESPONSE": "error",
                     "ERROR": "CALLEE_ERROR",
+                    "CALLER_CLIENT_ID": caller_id,
                     "TIMESTAMP": int(time.time())
                 })
-                send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
-                call_data['status'] = 'error'
-                print(f"[CONVEY] Framed SIP call {call_id} error")
+                send_success = send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
+                
+                if send_success:
+                    call_data['status'] = 'error'
+                    print(f"[CONVEY] Call error response sent to {call_data['caller_name']}")
             
             # ✅ SAUBERES CLEANUP
             if response in ['accepted', 'rejected', 'error']:
@@ -1274,11 +1410,14 @@ class CONVEY:
                     if response in ['rejected', 'error']:
                         self._unregister_audio_relay(call_id)
                     del self.active_calls[call_id]
+                    print(f"[CONVEY] Call {call_id} cleaned up")
             
             return True
             
         except Exception as e:
             print(f"[CONVEY ERROR] Framed SIP call response failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def handle_call_end(self, msg, client_socket, client_name):
@@ -1737,9 +1876,8 @@ class Server:
                 for c in self.clients.values()
             )
     def _process_client_queue(self, client_queue, client_socket, client_name):
-        """VOLLSTÄNDIGE Verarbeitung der Client-Queue - KORRIGIERTE VERSION"""
-        if hasattr(self, '_processing_client_queue') and self._processing_client_queue:
-            print(f"[QUEUE] Queue für {client_name} wird bereits verarbeitet")
+        """VOLLSTÄNDIG KORRIGIERT: Queue-Verarbeitung für alle Message-Types"""
+        if getattr(self, '_processing_client_queue', False):
             return
             
         self._processing_client_queue = True
@@ -1748,35 +1886,28 @@ class Server:
             while client_queue:
                 queue_item = client_queue.pop(0)
                 
-                # === IDENTITY RESPONSE PROCESSING ===
-                if queue_item.get('type') == 'process_identity_response':
-                    print(f"[IDENTITY] Processing identity response from {client_name}")
-                    try:
-                        sip_data = queue_item.get('sip_data')
-                        encrypted_response_b64 = queue_item.get('encrypted_response_b64')
-                        response_challenge_id = queue_item.get('response_challenge_id')
-                        
-                        # Identity Response verarbeiten
-                        if self._verify_identity_response(client_socket, client_name, response_challenge_id, encrypted_response_b64):
-                            print(f"[IDENTITY] {client_name} successfully verified via queue")
-                            # Phonebook erneut senden falls nötig
-                            client_id = queue_item.get('client_id')
-                            if client_id:
-                                self.send_phonebook(client_id)
-                        else:
-                            print(f"[IDENTITY] {client_name} verification failed via queue")
-                            
-                    except Exception as e:
-                        print(f"[IDENTITY QUEUE ERROR] Processing failed: {str(e)}")
-                    continue
-                
-                # === FRAME_DATA VERARBEITUNG ===
-                elif queue_item.get('type') == 'frame_data':
-                    frame_data = queue_item.get('data')
-                    if not frame_data:
+                try:
+                    # ✅ VALIDIERE ITEM
+                    if not isinstance(queue_item, dict):
+                        print(f"[QUEUE WARN] Ungültiges Item: {type(queue_item)}")
                         continue
                     
-                    try:
+                    item_type = queue_item.get('type')
+                    
+                    if not item_type:
+                        print(f"[QUEUE WARN] Kein Type gefunden: {list(queue_item.keys())}")
+                        continue
+                    
+                    print(f"[QUEUE] Verarbeite: {item_type} für {client_name}")
+                    
+                    # === FRAME_DATA VERARBEITUNG ===
+                    if item_type == 'frame_data':
+                        frame_data = queue_item.get('data')
+                        if not frame_data:
+                            continue
+                        
+                        print(f"[SERVER] Empfangen von {client_name}: {len(frame_data)} bytes")
+                        
                         # 1. Decoding versuchen
                         if isinstance(frame_data, bytes):
                             try:
@@ -1803,8 +1934,6 @@ class Server:
                                 continue
                         else:
                             message = str(frame_data)
-                        
-                        print(f"[SERVER] Verarbeite Nachricht von {client_name}: {len(message)} bytes")
                         
                         # 2. SIP-Nachricht parsen
                         msg = self.parse_sip_message(message)
@@ -1879,7 +2008,11 @@ class Server:
                                 
                                 try:
                                     if message_type == 'GET_PUBLIC_KEY':
-                                        self.convey_manager.handle_get_public_key(msg, client_socket, client_name)
+                                        success = self.convey_manager.handle_get_public_key(msg, client_socket, client_name)
+                                        if success:
+                                            print(f"[CALL] GET_PUBLIC_KEY successfully processed for {client_name}")
+                                        else:
+                                            print(f"[CALL ERROR] GET_PUBLIC_KEY failed for {client_name}")
                                     elif message_type == 'CALL_REQUEST':
                                         self.convey_manager.handle_call_request(msg, client_socket, client_name)
                                     elif message_type == 'CALL_RESPONSE':
@@ -2045,50 +2178,29 @@ class Server:
                             send_frame(client_socket, ack_msg.encode('utf-8'))
                             continue
                             
-                    except UnicodeDecodeError as ude:
-                        print(f"[SERVER ERROR] UTF-8 decoding failed from {client_name}: {ude}")
-                        error_msg = self.build_sip_message("400 Bad Request", client_name, {
-                            "MESSAGE_TYPE": "ERROR",
-                            "ERROR": "INVALID_ENCODING",
-                            "DETAILS": "Message must be valid UTF-8",
-                            "TIMESTAMP": int(time.time())
-                        })
-                        send_frame(client_socket, error_msg.encode('utf-8'))
-                        continue
-                        
-                    except Exception as e:
-                        print(f"[SERVER ERROR] Processing failed for {client_name}: {str(e)}")
-                        error_msg = self.build_sip_message("500 Internal Error", client_name, {
-                            "MESSAGE_TYPE": "ERROR", 
-                            "ERROR": "PROCESSING_FAILED",
-                            "DETAILS": str(e)[:100],
-                            "TIMESTAMP": int(time.time())
-                        })
-                        send_frame(client_socket, error_msg.encode('utf-8'))
-                        continue
-                
-                # === ANDERE QUEUE-TYPEN ===
-                elif queue_item.get('type') == 'send_message':
-                    # Direkter Sendevorgang
-                    message = queue_item.get('message')
-                    if message:
-                        try:
-                            if isinstance(message, str):
-                                message = message.encode('utf-8')
-                            send_frame(client_socket, message)
-                            print(f"[QUEUE] Direct message sent to {client_name}")
-                        except Exception as e:
-                            print(f"[QUEUE ERROR] Direct send failed: {e}")
-                
-                elif queue_item.get('type') == 'internal_command':
-                    # Interne Kommandos verarbeiten
-                    command = queue_item.get('command')
-                    print(f"[INTERNAL] Processing command: {command} for {client_name}")
-                    self._handle_internal_command(command, client_socket, client_name)
-                
-                else:
-                    print(f"[QUEUE WARNING] Unknown queue item type: {queue_item.get('type')}")
+                except UnicodeDecodeError as ude:
+                    print(f"[SERVER ERROR] UTF-8 decoding failed from {client_name}: {ude}")
+                    error_msg = self.build_sip_message("400 Bad Request", client_name, {
+                        "MESSAGE_TYPE": "ERROR",
+                        "ERROR": "INVALID_ENCODING",
+                        "DETAILS": "Message must be valid UTF-8",
+                        "TIMESTAMP": int(time.time())
+                    })
+                    send_frame(client_socket, error_msg.encode('utf-8'))
+                    continue
                     
+                except Exception as e:
+                    print(f"[SERVER ERROR] Processing failed for {client_name}: {str(e)}")
+                    error_msg = self.build_sip_message("500 Internal Error", client_name, {
+                        "MESSAGE_TYPE": "ERROR", 
+                        "ERROR": "PROCESSING_FAILED",
+                        "DETAILS": str(e)[:100],
+                        "TIMESTAMP": int(time.time())
+                    })
+                    send_frame(client_socket, error_msg.encode('utf-8'))
+                    continue
+
+                        
         except Exception as e:
             print(f"[CLIENT QUEUE CRITICAL ERROR] {str(e)}")
             import traceback
