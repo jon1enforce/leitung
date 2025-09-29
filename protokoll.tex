@@ -1,0 +1,257 @@
+\documentclass[10pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[german]{babel}
+\usepackage[margin=1cm]{geometry}
+\usepackage{amsmath}
+\usepackage{amssymb}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{graphicx}
+\usepackage{tabularx}
+\usepackage{pifont} % Für Symbole
+
+\lstset{
+    basicstyle=\ttfamily\footnotesize,
+    breaklines=true,
+    frame=single,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    keywordstyle=\color{blue},
+    commentstyle=\color{green!60!black},
+    stringstyle=\color{red}
+}
+
+\title{Sichere P2P-Kommunikationsplattform - Technisches Protokoll}
+\author{}
+\date{}
+
+\begin{document}
+
+\maketitle
+
+\section*{Übersicht}
+Dieses Protokoll beschreibt eine sichere P2P-Kommunikationsplattform mit Fokus auf Integrität, Vertraulichkeit und Verfügbarkeit. Das System kombiniert RSA-Verschlüsselung, AES-Session-Keys und Merkle-Tree-Integritätsverifikation.
+
+\section{Komponentenarchitektur}
+
+\subsection{Client-Komponenten}
+\begin{itemize}[left=0pt]
+\item \textbf{PHONEBOOK}: Hauptanwendung mit Benutzeroberfläche
+\item \textbf{CALL}: Anrufmanagement mit Audio-Streaming
+\item \textbf{ClientRelayManager}: Server-Discovery und Lastverteilung
+\item \textbf{SecureVault}: Sichere Schlüsselspeicherung
+\item \textbf{SecurityMonitor}: Systemhärtung (Linux-only)
+\end{itemize}
+
+\subsection{Sicherheitsfeatures}
+\begin{itemize}[left=0pt]
+\item RSA-4096 für Schlüsselaustausch
+\item AES-256-CBC für Audio-Streams
+\item Merkle-Tree für Schlüsselintegrität
+\item Quantum-Safe SHA3-256 Hashing
+\item Forward Secrecy durch Session-Keys
+\end{itemize}
+
+\section{Protokollabläufe}
+
+\subsection{Setup-Phase (Initialisierung)}
+\begin{lstlisting}[language=Python,caption=Client-Initialisierung]
+1. Lade/Generiere RSA-Schlüsselpaar (4096 Bit)
+2. Lade Client-Name aus client_name.txt
+3. Initialisiere Security Monitor (Linux)
+4. Starte Relay-Manager für Server-Discovery
+5. Baue Benutzeroberfläche auf
+\end{lstlisting}
+
+\subsection{Update-Phase (Identität \& Telefonbuch)}
+\begin{lstlisting}[language=Python,caption=Registrierung und Update]
+1. Sende REGISTER an Server mit:
+   - Öffentlichem Schlüssel
+   - Client-Name
+   - Version
+
+2. Server antwortet mit:
+   - Server Public Key
+   - Merkle-Tree aller öffentlichen Schlüssel
+
+3. Client verifiziert Merkle-Root:
+   quantum_safe_hash(sorted_keys) == received_hash
+
+4. Bei Erfolg: Identity Challenge
+   - Server verschlüsselt Challenge mit Client-Public-Key
+   - Client entschlüsselt mit Private-Key
+   - Response mit Server-Public-Key verschlüsselt zurücksenden
+
+5. Bei Verifikation: Telefonbuch-Update
+   - Server sendet verschlüsseltes Telefonbuch
+   - RSA(Secret) + AES(Phonebook)
+   - Client entschlüsselt und aktualisiert UI
+\end{lstlisting}
+
+\subsection{Call-Phase (Anrufinitiierung)}
+\begin{lstlisting}[language=Python,caption=Anrufablauf]
+1. on_call_click() - Benutzer wählt Kontakt aus
+
+2. GET_PUBLIC_KEY an Server:
+   - Target-Client-ID
+   - Caller-Name und ID
+
+3. Server sendet PUBLIC_KEY_RESPONSE:
+   - Öffentlicher Schlüssel des Empfängers
+
+4. Caller generiert Session-Key:
+   - 16 Byte IV + 32 Byte AES-Key = 48 Byte Secret
+   - Call-Daten: {caller_info, aes_iv, aes_key, timestamp}
+
+5. Verschlüsselung mit Empfänger-Public-Key:
+   encrypted_data = RSA_encrypt(call_data, recipient_pubkey)
+
+6. CALL_REQUEST an Server:
+   - Target-Client-ID
+   - Verschlüsselte Call-Daten
+   - Caller-Informationen
+
+7. Server leitet an Empfänger weiter:
+   - INCOMING_CALL Nachricht
+
+8. Empfänger entschlüsselt mit Private-Key:
+   call_data = RSA_decrypt(encrypted_data, recipient_privkey)
+
+9. Empfänger akzeptiert/lehnt ab:
+   - CALL_RESPONSE an Server
+
+10. Bei Annahme: Bidirektionale Audio-Streams
+    - AES-256-CBC Verschlüsselung
+    - UDP-Streaming über Relay oder direkt
+\end{lstlisting}
+
+\section{Relay-Management vs. Hole Punching - Sicherheitsanalyse}
+
+\subsection{Relay-Ansatz: Zentrale Kontrolle}
+\begin{itemize}[left=0pt]
+\item \textbf{Geschützte Clients}: Keine Exposition der Client-IPs nach außen
+\item \textbf{Kontrollierte Infrastruktur}: Feste Seed-Server (sichereleitung.duckdns.org:5060/5061)
+\item \textbf{Integritätskontrolle}: Server überwacht Protokollkonformität
+\item \textbf{Zentrale Gegenmaßnahmen}: Einheitlicher DOS-Schutz für alle Clients
+\item \textbf{Load Balancing}: Automatische Server-Auswahl basierend auf Ping und Last
+\item \textbf{Professionelle Sicherheitsverwaltung}: Zentrale Blacklists, Updates und Reaktionen
+\end{itemize}
+
+\subsection{Hole Punching: Dezentrale Risiken}
+\begin{itemize}[left=0pt]
+\item \textbf{IP-Exposition}: Clients geben ihre IP-Adressen preis → Direkte Angriffsfläche
+\item \textbf{Man-in-the-Middle}: Ungeschützte direkte Verbindungen anfällig für MITM
+\item \textbf{Protokollmanipulation}: Jeder Peer kann das Protokoll eigenständig modifizieren
+\item \textbf{Fehlende Integritätskontrolle}: Keine zentrale Instanz zur Überprüfung der Sicherheitskonformität
+\item \textbf{Dezentrale Schwachstellen}: Sicherheitslücken in einzelnen Clients gefährden das gesamte Netzwerk
+\item \textbf{Unkontrollierbare Sicherheit}: Keine Möglichkeit, systemweite Sicherheitsmaßnahmen zu implementieren
+\end{itemize}
+
+\subsection{Kritische Sicherheitsvergleiche}
+\begin{tabularx}{\textwidth}{|X|X|}
+\hline
+\textbf{Relay-Ansatz} & \textbf{Hole Punching} \\
+\hline
+\ding{51} \textbf{Geschützte Clients}: Keine IP-Exposition nach außen & \ding{55} \textbf{IP-Exposition}: Clients direkt im Internet sichtbar \\
+\hline
+\ding{51} \textbf{Integrität der Sicherheit}: Zentrale Protokollüberwachung & \ding{55} \textbf{Fehlende Integritätskontrolle}: Jeder Peer kann Protokoll manipulieren \\
+\hline
+\ding{51} \textbf{Einheitlicher DOS-Schutz}: Zentrale Abwehrmechanismen & \ding{55} \textbf{Individualisierte Angriffe}: Direkte Angriffe auf einzelne Clients \\
+\hline
+\ding{51} \textbf{Kontrollierte Infrastruktur}: Bekannte, gehärtete Server & \ding{55} \textbf{Unkontrollierte Peers}: Unbekannte, möglicherweise kompromittierte Clients \\
+\hline
+\ding{51} \textbf{Professionelle Sicherheitsverwaltung}: Zentrale Blacklists, Updates, Reaktionen & \ding{55} \textbf{Unkontrollierbare Sicherheit}: Keine systemweiten Sicherheitsmaßnahmen möglich \\
+\hline
+\ding{51} \textbf{Robuste Architektur}: Mehrere Server mit Load-Balancing & \ding{55} \textbf{Fragile Verbindungen}: Abhängig von NAT-Kompatibilität und Peer-Verfügbarkeit \\
+\hline
+\ding{108} \textbf{Praktisch vernachlässigbare Latenz}: 1-5ms bei lokalen Servern, 10-20ms bei geographischer Nähe & \ding{51} \textbf{Minimale Latenz}: Direkte Verbindung zwischen Peers \\
+\hline
+\end{tabularx}
+
+\subsection{Angriffsszenarien und Risiken}
+
+\subsubsection{Hole Punching - Kritische Schwachstellen}
+\begin{itemize}[left=0pt]
+\item \textbf{IP-Spoofing}: Angreifer können gefälschte IP-Pakete injizieren
+\item \textbf{Connection Hijacking}: Übernahme bestehender Verbindungen
+\item \textbf{Denial-of-Service}: Direkte Angriffe auf exponierten Client-IPs
+\item \textbf{Protokollmanipulation}: Böswillige Clients können Sicherheitsfeatures deaktivieren
+\item \textbf{Man-in-the-Middle}: Unverschlüsselte Verbindungsaufbauphase angreifbar
+\item \textbf{NAT-Bypass-Angriffe}: Ausnutzung der NAT-Traversal-Mechanismen
+\item \textbf{Unkontrollierbare Sicherheitslücken}: Keine zentrale Stelle für Patches und Updates
+\end{itemize}
+
+\subsubsection{Relay-Ansatz - Kontrollierte Sicherheit}
+\begin{itemize}[left=0pt]
+\item \textbf{Geschützter Verbindungsaufbau}: Alle Nachrichten über gesicherte Server-Kanäle
+\item \textbf{Protokollkonformität}: Server validiert alle Nachrichten auf Format und Sicherheit
+\item \textbf{Zentrale Abwehr}: DOS-Angriffe werden auf Server-Ebene abgewehrt
+\item \textbf{Integritätsmonitoring}: Kontinuierliche Überwachung der Sicherheitskonformität
+\item \textbf{Isolierte Clients}: Keine direkte Angriffsfläche für externe Angreifer
+\item \textbf{Schnelle Reaktion auf Angriffe}: Zentrale Blacklisting und Gegenmaßnahmen
+\item \textbf{Systemweite Updates}: Sofortige Verteilung von Sicherheitspatches
+\end{itemize}
+
+\subsection{Latenz- und Verfügbarkeitsanalyse}
+
+\subsubsection{Latenzoptimierung}
+\begin{itemize}[left=0pt]
+\item \textbf{Lokale Server}: 1-5ms Round-Trip-Time bei Servern im selben Netzwerk
+\item \textbf{Geographische Nähe}: 10-20ms bei regionaler Serverplatzierung
+\item \textbf{Intelligentes Routing}: Automatische Auswahl des nächstgelegenen Servers
+\item \textbf{Audio-Streaming}: 20-40ms Pufferung macht Relay-Latenz praktisch irrelevant
+\item \textbf{Praktischer Nutzen}: Sicherheitsvorteile überwiegen die minimale Latenzerhöhung bei weitem
+\end{itemize}
+
+\subsubsection{Verfügbarkeit und Robustheit}
+\begin{itemize}[left=0pt]
+\item \textbf{Multi-Server-Architektur}: Kein Single Point of Failure durch redundante Server
+\item \textbf{Automatisches Failover}: Client wechselt bei Serverausfall transparent
+\item \textbf{Load-Balancing}: Gleichmäßige Verteilung der Last auf mehrere Server
+\item \textbf{Professionelle Wartung}: 24/7 Überwachung und Wartung der Server-Infrastruktur
+\item \textbf{Schnelle Reaktionszeiten}: Sofortige Maßnahmen bei Sicherheitsvorfällen
+\end{itemize}
+
+\section{Integritäts- und Sicherheitsfeatures}
+
+\subsection{Merkle-Tree Schlüsselverifikation}
+\begin{lstlisting}[language=Python]
+def verify_merkle_integrity(all_keys, received_root_hash):
+  1. Normalisiere alle öffentlichen Schlüssel
+  2. Sortiere Schlüssel konsistent
+  3. Merge mit "|||" Separator
+  4. Berechne Merkle-Root:
+        quantum_safe_hash(merged_keys)
+  5. Vergleiche mit Server-Hash
+\end{lstlisting}
+
+\subsection{Quantum-Safe Hashing}
+\begin{lstlisting}[language=Python]
+def quantum_safe_hash(data):
+  # Fallback: pysha3 für Python 3.5
+  if USE_PYSHA3 == False:
+      return hashlib.sha3_256(data).hexdigest()
+  else:
+      return sha3.sha3_256(data).hexdigest()
+\end{lstlisting}
+
+\section{Zusammenfassung}
+
+Das System implementiert ein umfassendes Sicherheitskonzept mit besonderem Fokus auf \textbf{Integrität der Sicherheit}:
+
+\begin{itemize}[left=0pt]
+\item \textbf{Ende-zu-Ende-Verschlüsselung}: RSA für Schlüsselaustausch, AES für Daten
+\item \textbf{Forward Secrecy}: Session-Keys für jede Verbindung
+\item \textbf{Schlüsselintegrität}: Merkle-Tree Verifikation aller öffentlicher Schlüssel
+\item \textbf{Quantum-Resistance}: SHA3-256 für Hashing
+\item \textbf{Kontrollierte Infrastruktur}: Relay-Ansatz schützt Clients vor Exposition
+\item \textbf{Integritätskontrolle}: Zentrale Überwachung der Protokollkonformität
+\item \textbf{Professionelle Sicherheitsverwaltung}: Zentrale Blacklists, Updates und Gegenmaßnahmen
+\item \textbf{Robuste Architektur}: Multi-Server-Design ohne Single Point of Failure
+\item \textbf{Praktikable Performance}: Minimale Latenzerhöhung für erhebliche Sicherheitsgewinne
+\end{itemize}
+
+Der \textbf{Relay-Ansatz} bietet gegenüber Hole Punching entscheidende Sicherheitsvorteile durch geschützte Clients, kontrollierte Infrastruktur und garantierte Integrität der Sicherheitsimplementierung. Die zentrale Architektur ermöglicht professionelle Sicherheitsverwaltung und schnelle Reaktion auf Bedrohungen, was in dezentralen Peer-to-Peer-Systemen unmöglich ist.
+
+\end{document}

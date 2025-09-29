@@ -2731,139 +2731,6 @@ class Server:
         
         print("[KEY NORMALIZE] Key format could not be normalized")
         return None
-    def test_identity_sip(self, client_socket, client_pubkey, client_name):
-        """KORRIGIERTE Identity Challenge - EINHEITLICHER STANDARD"""
-        try:
-            print(f"[IDENTITY] Starting identity challenge for {client_name}")
-            
-            # 1. Server Private Key laden
-            private_key_path = "server_private_key.pem"
-            if not os.path.exists(private_key_path):
-                print(f"[IDENTITY ERROR] Private key file not found: {private_key_path}")
-                return False, None
-            
-            with open(private_key_path, "rb") as f:
-                priv_key_data = f.read()
-                priv_key = RSA.load_key_string(priv_key_data)
-            
-            # 2. Challenge generieren
-            challenge = base64.b64encode(os.urandom(16)).decode('ascii')
-            challenge_id = str(uuid.uuid4())
-            print(f"[IDENTITY] Generated challenge (ID: {challenge_id})")
-            
-            # 3. Challenge mit Client-Public-Key verschlüsseln
-            try:
-                # Public Key normalisieren
-                if '\\n' in client_pubkey:
-                    client_pubkey = client_pubkey.replace('\\n', '\n')
-                
-                pub_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(client_pubkey.encode()))
-                encrypted_challenge = pub_key.public_encrypt(
-                    challenge.encode('utf-8'), 
-                    RSA.pkcs1_padding
-                )
-            except Exception as e:
-                print(f"[IDENTITY ERROR] Encryption failed: {e}")
-                return False, challenge_id
-            
-            # 4. Challenge senden (EINHEITLICHES JSON-FORMAT)
-            challenge_msg = self.build_sip_message("MESSAGE", client_name, {
-                "MESSAGE_TYPE": "IDENTITY_CHALLENGE",
-                "CHALLENGE_ID": challenge_id,
-                "ENCRYPTED_CHALLENGE": base64.b64encode(encrypted_challenge).decode('ascii'),
-                "TIMESTAMP": int(time.time())
-            })
-            
-            if not send_frame(client_socket, challenge_msg.encode('utf-8')):
-                print("[IDENTITY ERROR] Failed to send challenge")
-                return False, challenge_id
-            
-            print("[IDENTITY] Challenge sent successfully")
-            
-            # 5. Response mit Timeout erwarten
-            client_socket.settimeout(30.0)
-            start_time = time.time()
-            
-            while time.time() - start_time < 30:
-                try:
-                    # Frame empfangen
-                    response_data = recv_frame(client_socket, timeout=5)
-                    if not response_data:
-                        continue
-                    
-                    # Nachricht parsen (EINHEITLICHER PARSER)
-                    response_msg = self.parse_sip_message(response_data)
-                    if not response_msg:
-                        continue
-                    
-                    response_custom_data = response_msg.get('custom_data', {})
-                    response_type = response_custom_data.get('MESSAGE_TYPE')
-                    response_challenge_id = response_custom_data.get('CHALLENGE_ID')
-                    
-                    # Ping ignorieren
-                    if response_type == 'PING':
-                        pong_msg = self.build_sip_message("MESSAGE", client_name, {
-                            "MESSAGE_TYPE": "PONG",
-                            "TIMESTAMP": int(time.time())
-                        })
-                        send_frame(client_socket, pong_msg.encode('utf-8'))
-                        continue
-                    
-                    # Identity Response prüfen
-                    if response_type == 'IDENTITY_RESPONSE' and response_challenge_id == challenge_id:
-                        encrypted_response_b64 = response_custom_data.get('ENCRYPTED_RESPONSE')
-                        
-                        if not encrypted_response_b64:
-                            print("[IDENTITY ERROR] No encrypted response in identity response")
-                            return False, challenge_id
-                        
-                        # Response entschlüsseln
-                        try:
-                            encrypted_response = base64.b64decode(encrypted_response_b64)
-                            decrypted_response = priv_key.private_decrypt(encrypted_response, RSA.pkcs1_padding)
-                            decrypted_text = decrypted_response.decode('utf-8')
-                            
-                            expected_response = challenge + "VALIDATED"
-                            
-                            if decrypted_text == expected_response:
-                                print("[IDENTITY] Challenge response validated successfully")
-                                
-                                # Erfolgsnachricht senden
-                                success_msg = self.build_sip_message("200 OK", client_name, {
-                                    "MESSAGE_TYPE": "IDENTITY_VERIFIED",
-                                    "CHALLENGE_ID": challenge_id,
-                                    "STATUS": "VERIFICATION_SUCCESSFUL",
-                                    "TIMESTAMP": int(time.time())
-                                })
-                                send_frame(client_socket, success_msg.encode('utf-8'))
-                                return True, challenge_id
-                            else:
-                                print("[IDENTITY ERROR] Response validation failed")
-                                print(f"Expected: {expected_response}")
-                                print(f"Received: {decrypted_text}")
-                                return False, challenge_id
-                                
-                        except Exception as e:
-                            print(f"[IDENTITY ERROR] Response decryption failed: {e}")
-                            return False, challenge_id
-                    
-                except socket.timeout:
-                    continue  # Timeout ist normal, weiter warten
-                except Exception as e:
-                    print(f"[IDENTITY ERROR] Response handling error: {e}")
-                    continue
-            
-            # Timeout erreicht
-            print("[IDENTITY ERROR] Timeout waiting for identity response")
-            return False, challenge_id
-            
-        except Exception as e:
-            print(f"[IDENTITY ERROR] Identity test failed: {e}")
-            import traceback
-            traceback.print_exc()
-            return False, None
-                
-
 
 
     def _process_frame_data(self, queue_item):
@@ -3247,7 +3114,7 @@ class Server:
         
         try:
             print(f"[IDENTITY] Starte Challenge für {client_name}")
-            identity_verified, challenge_id = self.test_identity_sip(client_socket, client_pubkey, client_name)
+            identity_verified, challenge_id = self._direct_identity_challenge(client_socket, client_pubkey, client_name)
             
             # Speichere Challenge-ID für spätere Verifikation
             if challenge_id:
