@@ -1942,7 +1942,26 @@ class Server:
                             })
                             send_frame(client_socket, error_msg.encode('utf-8'))
                             continue
-                        
+                        # === IDENTITY RESPONSE PROCESSING ===
+                        elif queue_item.get('type') == 'process_identity_response':
+                            print(f"[IDENTITY] Processing identity response from {client_name}")
+                            try:
+                                sip_data = queue_item.get('sip_data')
+                                encrypted_response_b64 = queue_item.get('encrypted_response_b64')
+                                response_challenge_id = queue_item.get('response_challenge_id')
+                                
+                                # Identity Response verarbeiten
+                                if self._verify_identity_response(client_socket, client_name, response_challenge_id, encrypted_response_b64):
+                                    print(f"[IDENTITY] {client_name} successfully verified via queue")
+                                    # Phonebook erneut senden falls nötig
+                                    client_id = queue_item.get('client_id')
+                                    if client_id:
+                                        self.send_phonebook(client_id)
+                                else:
+                                    print(f"[IDENTITY] {client_name} verification failed via queue")
+                                    
+                            except Exception as e:
+                                print(f"[IDENTITY QUEUE ERROR] Processing failed: {str(e)}")
                         # === LEGACY CALL SETUP ===
                         elif ('CALL_SETUP' in custom_data or 
                               message_type == 'CALL_SETUP'):
@@ -2068,7 +2087,50 @@ class Server:
         finally:
             self._processing_client_queue = False
             print(f"[QUEUE] Finished processing queue for {client_name}")
-
+    def _verify_identity_response(self, client_socket, client_name, challenge_id, encrypted_response_b64):
+        """Verifiziert die Identity Response des Clients"""
+        try:
+            print(f"[IDENTITY VERIFY] Verifying response for {client_name}, challenge: {challenge_id}")
+            
+            # Prüfe ob Challenge existiert
+            if not hasattr(self, 'pending_challenges') or challenge_id not in self.pending_challenges:
+                print(f"[IDENTITY ERROR] Unknown challenge ID: {challenge_id}")
+                return False
+            
+            challenge_data = self.pending_challenges[challenge_id]
+            original_challenge = challenge_data.get('challenge')
+            priv_key = challenge_data.get('private_key')
+            
+            if not original_challenge or not priv_key:
+                print("[IDENTITY ERROR] Missing challenge data")
+                return False
+            
+            # Entschlüssele die Response
+            try:
+                encrypted_response = base64.b64decode(encrypted_response_b64)
+                decrypted_response = priv_key.private_decrypt(encrypted_response, RSA.pkcs1_padding)
+                decrypted_text = decrypted_response.decode('utf-8')
+                
+                print(f"[IDENTITY DEBUG] Decrypted response: {decrypted_text}")
+                print(f"[IDENTITY DEBUG] Expected: {original_challenge}")
+                
+                # Validiere die Response
+                if decrypted_text == original_challenge:
+                    print(f"[IDENTITY SUCCESS] {client_name} identity verified")
+                    # Challenge aus pending entfernen
+                    del self.pending_challenges[challenge_id]
+                    return True
+                else:
+                    print(f"[IDENTITY FAIL] Response mismatch for {client_name}")
+                    return False
+                    
+            except Exception as e:
+                print(f"[IDENTITY DECRYPT ERROR] {str(e)}")
+                return False
+                
+        except Exception as e:
+            print(f"[IDENTITY VERIFY ERROR] {str(e)}")
+            return False
     def _handle_encrypted_secret(self, msg, client_socket, client_name):
         """Verarbeitet verschlüsselte Secrets"""
         try:
@@ -3034,42 +3096,32 @@ class Server:
             return False
 
     def _handle_identity_response(self, client_socket, client_name, msg):
-        """Thread-safe identity response handling - MINIMAL KORRIGIERT"""
-        # Extrahiere Daten aus der Nachricht
-        custom_data = msg.get('custom_data', {})
-        body = msg.get('body', '')
-        
-        encrypted_response_b64 = custom_data.get('ENCRYPTED_RESPONSE')
-        response_challenge_id = custom_data.get('CHALLENGE_ID')
-        
-        # ✅ ERWEITERT: Key-Value Parsing falls nicht in custom_data
-        if not encrypted_response_b64 or not response_challenge_id:
-            for line in body.split('\n'):
-                line = line.strip()
-                if ': ' in line:
-                    key, value = line.split(': ', 1)
-                    if key == 'ENCRYPTED_RESPONSE':
-                        encrypted_response_b64 = value.strip()
-                    elif key == 'CHALLENGE_ID':
-                        response_challenge_id = value.strip()
-        
-        if not encrypted_response_b64 or not response_challenge_id:
-            print("[IDENTITY ERROR] Missing response fields after body parsing")
-            return
-        
-        # ✅ SICHER: Client ID finden mit clients_lock
-        client_id = None
-        with self.clients_lock:
-            clients_copy = self.clients.copy()
-        
-        for cid, data in clients_copy.items():
-            if data.get('name') == client_name:
-                client_id = cid
-                break
-        
-        if client_id:
-            print(f"[IDENTITY] Client ID gefunden: {client_id}")
+        """Korrigiertes Identity Response Handling"""
+        try:
+            custom_data = msg.get('custom_data', {})
             
+            encrypted_response_b64 = custom_data.get('ENCRYPTED_RESPONSE')
+            response_challenge_id = custom_data.get('CHALLENGE_ID')
+            
+            print(f"[IDENTITY] Processing response from {client_name}, challenge: {response_challenge_id}")
+            
+            if not encrypted_response_b64 or not response_challenge_id:
+                print("[IDENTITY ERROR] Missing encrypted response or challenge ID")
+                return
+            
+            # Client-ID finden
+            client_id = None
+            with self.clients_lock:
+                for cid, data in self.clients.items():
+                    if data.get('name') == client_name:
+                        client_id = cid
+                        break
+            
+            if not client_id:
+                print(f"[IDENTITY ERROR] Client {client_name} not found")
+                return
+            
+            # Zur Queue-Verarbeitung hinzufügen
             self._message_queue.append({
                 'type': 'process_identity_response',
                 'sip_data': msg,
@@ -3079,8 +3131,11 @@ class Server:
                 'encrypted_response_b64': encrypted_response_b64,
                 'response_challenge_id': response_challenge_id
             })
-        else:
-            print(f"[IDENTITY ERROR] Client {client_name} nicht gefunden")
+            
+            print(f"[IDENTITY] Identity response queued for {client_name}")
+            
+        except Exception as e:
+            print(f"[IDENTITY RESPONSE ERROR] {str(e)}")
 
     def _process_send_response(self, queue_item):
         """Thread-safe response sending"""

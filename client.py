@@ -1755,44 +1755,59 @@ class CALL:
             return None
 
     def handle_incoming_call(self, msg):
-        """Verarbeitet eingehende Anrufe - VOLLSTÄNDIG FRAME-SIP KOMPATIBEL"""
+        """Verarbeitet eingehende Anrufe - KORRIGIERT FÜR TKINTER THREAD-SICHERHEIT"""
         try:
-            # ✅ IMMER SIP PARSEN!
+            print("[CALL] Processing incoming call message...")
+            
+            # ✅ SIP-NACHRICHT PARSEN
             if isinstance(msg, str):
                 sip_data = self.client.parse_sip_message(msg)
             else:
                 sip_data = msg
                 
             if not sip_data:
-                print("[CALL ERROR] Failed to parse framed SIP INCOMING_CALL")
+                print("[CALL ERROR] Failed to parse SIP message")
                 return
                 
             headers = sip_data.get('headers', {})
             custom_data = sip_data.get('custom_data', {})
             
-            # ✅ EINHEITLICHE DATENEXTRAKTION
+            # ✅ DATEN EXTRAHIEREN
             caller_name = custom_data.get('CALLER_NAME') or headers.get('CALLER_NAME')
             caller_id = custom_data.get('CALLER_CLIENT_ID') or headers.get('CALLER_CLIENT_ID')
             encrypted_data = custom_data.get('ENCRYPTED_CALL_DATA') or headers.get('ENCRYPTED_CALL_DATA')
             
             if not all([caller_name, caller_id, encrypted_data]):
-                print("[CALL ERROR] Missing call information in framed SIP")
+                print("[CALL ERROR] Missing call information")
                 self._send_call_response("error", caller_id)
                 return
                 
-            print(f"[CALL] Framed SIP incoming call from {caller_name} ({caller_id})")
+            print(f"[CALL] Incoming call from {caller_name} ({caller_id})")
             
-            # ✅ FRAME-SIP ANTWORT
+            # ✅ KRITISCHE KORREKTUR: Immer im Tkinter-Hauptthread ausführen
+            def show_call_dialog():
+                try:
+                    if not hasattr(self.client, 'winfo_exists') or not self.client.winfo_exists():
+                        print("[CALL WARNING] Main window destroyed, cannot show dialog")
+                        self._send_call_response("error", caller_id)
+                        return
+                        
+                    self._ask_call_acceptance(caller_name, caller_id, encrypted_data)
+                except Exception as e:
+                    print(f"[CALL DIALOG ERROR] {str(e)}")
+                    self._send_call_response("error", caller_id)
+            
+            # Immer über after() im Hauptthread aufrufen
             if hasattr(self.client, 'after'):
-                self.client.after(0, lambda: self._ask_call_acceptance(
-                    caller_name, caller_id, encrypted_data))
+                self.client.after(0, show_call_dialog)
             else:
-                self._ask_call_acceptance(caller_name, caller_id, encrypted_data)
+                # Fallback: Direkt aufrufen mit Fehlerbehandlung
+                print("[CALL WARNING] No after() method, calling dialog directly")
+                show_call_dialog()
                 
         except Exception as e:
-            print(f"[CALL ERROR] Framed SIP incoming call failed: {str(e)}")
+            print(f"[CALL ERROR] Incoming call handling failed: {str(e)}")
             try:
-                # Extrahiere caller_id aus msg falls möglich
                 caller_id = None
                 if isinstance(msg, dict):
                     custom_data = msg.get('custom_data', {})
@@ -1802,20 +1817,32 @@ class CALL:
                 pass
 
     def _ask_call_acceptance(self, caller_name, caller_id, encrypted_data):
-        """Fragt Benutzer nach Annahme des Anrufs"""
+        """Fragt Benutzer nach Annahme des Anrufs - MIT FEHLERBEHANDLUNG"""
         try:
+            print(f"[CALL] Showing call dialog for {caller_name}")
+            
+            # Überprüfe ob das Hauptfenster noch existiert
+            if not hasattr(self.client, 'winfo_exists') or not self.client.winfo_exists():
+                print("[CALL ERROR] Main window no longer exists")
+                self._reject_incoming_call(caller_id)
+                return
+                
+            # Dialog anzeigen
             accept = messagebox.askyesno(
                 "Eingehender Anruf",
                 f"Eingehender Anruf von {caller_name}.\nAnnehmen?"
             )
             
             if accept:
+                print(f"[CALL] User accepted call from {caller_name}")
                 self._accept_incoming_call(caller_name, caller_id, encrypted_data)
             else:
+                print(f"[CALL] User rejected call from {caller_name}")
                 self._reject_incoming_call(caller_id)
                 
         except Exception as e:
             print(f"[CALL ERROR] Acceptance dialog failed: {str(e)}")
+            # Im Fehlerfall automatisch ablehnen
             self._reject_incoming_call(caller_id)
 
     def _accept_incoming_call(self, caller_name, caller_id, encrypted_data):
@@ -1895,7 +1922,30 @@ class CALL:
         except Exception as e:
             print(f"[CALL ERROR] Rejection failed: {str(e)}")
             self.cleanup_call_resources()
-
+    def debug_incoming_call(self):
+        """Manueller Test für eingehende Anrufe - VERBESSERTE VERSION"""
+        try:
+            # Simuliere eine echte verschlüsselte Nachricht
+            test_encrypted_data = base64.b64encode(b"test_encrypted_content_" + os.urandom(32)).decode('utf-8')
+            
+            test_data = {
+                "CALLER_NAME": "TestCaller",
+                "CALLER_CLIENT_ID": "999", 
+                "ENCRYPTED_CALL_DATA": test_encrypted_data
+            }
+            print("[DEBUG] Testing incoming call with encrypted data...")
+            
+            # Teste sowohl String- als auch Dict-Format
+            print("[DEBUG] Testing with dict format...")
+            self.handle_incoming_call(test_data)
+            
+            # Teste mit SIP-String-Format
+            sip_test_msg = self.client.build_sip_message("MESSAGE", "client", test_data)
+            print("[DEBUG] Testing with SIP string format...")
+            self.handle_incoming_call(sip_test_msg)
+            
+        except Exception as e:
+            print(f"[DEBUG ERROR] Test call failed: {str(e)}")
     def _send_call_response(self, response, caller_id):
         """VOLLSTÄNDIG FRAME-SIP KOMPATIBEL: Sendet Response im korrekten Format"""
         try:
