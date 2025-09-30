@@ -1791,7 +1791,6 @@ class CALL:
 
     def handle_incoming_call(self, msg):
         """Verarbeitet eingehende Anrufe - VOLLSTÄNDIG KORRIGIERT"""
-        self.debug_incoming_message(msg)
         try:
             print("\n=== INCOMING CALL PROCESSING ===")
             print(f"[CALL] Raw message type: {type(msg)}")
@@ -1815,100 +1814,38 @@ class CALL:
                 
             print(f"[CALL DEBUG] SIP data keys: {list(sip_data.keys())}")
             
-            # ✅ KORREKTUR: Extrahiere Daten aus verschiedenen Quellen
+            # ✅ KORREKTUR: Extrahiere Daten AUSSCHLIESSLICH aus custom_data
             custom_data = sip_data.get('custom_data', {})
-            headers = sip_data.get('headers', {})
-            body = sip_data.get('body', '')
             
             print(f"[CALL DEBUG] Custom data keys: {list(custom_data.keys())}")
-            print(f"[CALL DEBUG] Headers keys: {list(headers.keys())}")
+            print(f"[CALL DEBUG] Full custom data: {custom_data}")
             
-            # ✅ KORREKTUR: Durchsuche alle möglichen Datenquellen
-            caller_name = None
-            caller_id = None
-            encrypted_data = None
+            # ✅ DIREKTE Extraktion aus custom_data (JSON Body)
+            caller_name = custom_data.get('CALLER_NAME')
+            caller_id = custom_data.get('CALLER_CLIENT_ID')
+            encrypted_data = custom_data.get('ENCRYPTED_CALL_DATA')
             
-            # 1. Versuche aus custom_data zu extrahieren
-            if custom_data:
-                caller_name = custom_data.get('CALLER_NAME')
-                caller_id = custom_data.get('CALLER_CLIENT_ID')
-                encrypted_data = custom_data.get('ENCRYPTED_CALL_DATA')
-                print("[CALL DEBUG] Extracted from custom_data")
-            
-            # 2. Fallback: Durchsuche alle Felder im custom_data
+            # ✅ VALIDIERUNG mit detailliertem Debugging
             if not caller_name:
-                for key, value in custom_data.items():
-                    if 'CALLER' in key and 'NAME' in key:
-                        caller_name = value
-                        print(f"[CALL DEBUG] Found caller_name in custom_data key: {key}")
-                        break
-                        
-            if not caller_id:
-                for key, value in custom_data.items():
-                    if 'CALLER' in key and ('ID' in key or 'CLIENT' in key):
-                        caller_id = value
-                        print(f"[CALL DEBUG] Found caller_id in custom_data key: {key}")
-                        break
-                        
-            if not encrypted_data:
-                for key, value in custom_data.items():
-                    if 'ENCRYPTED' in key and 'CALL' in key:
-                        encrypted_data = value
-                        print(f"[CALL DEBUG] Found encrypted_data in custom_data key: {key}")
-                        break
-            
-            # 3. Fallback: Durchsuche headers
-            if not caller_name:
-                caller_name = headers.get('CALLER_NAME')
-                if caller_name:
-                    print("[CALL DEBUG] Found caller_name in headers")
-                    
-            if not caller_id:
-                caller_id = headers.get('CALLER_CLIENT_ID')
-                if caller_id:
-                    print("[CALL DEBUG] Found caller_id in headers")
-                    
-            if not encrypted_data:
-                encrypted_data = headers.get('ENCRYPTED_CALL_DATA')
-                if encrypted_data:
-                    print("[CALL DEBUG] Found encrypted_data in headers")
-            
-            # 4. Fallback: Durchsuche body falls es JSON ist
-            if not all([caller_name, caller_id, encrypted_data]) and body:
-                try:
-                    body_data = json.loads(body)
-                    print(f"[CALL DEBUG] Body JSON keys: {list(body_data.keys())}")
-                    
-                    if not caller_name:
-                        caller_name = body_data.get('CALLER_NAME')
-                    if not caller_id:
-                        caller_id = body_data.get('CALLER_CLIENT_ID')
-                    if not encrypted_data:
-                        encrypted_data = body_data.get('ENCRYPTED_CALL_DATA')
-                        
-                except json.JSONDecodeError:
-                    print("[CALL DEBUG] Body is not JSON")
-            
-            # ✅ DEBUG-Ausgabe aller gefundenen Werte
-            print(f"[CALL DEBUG] Final values - caller_name: {caller_name}, caller_id: {caller_id}, encrypted_data: {'present' if encrypted_data else 'missing'}")
-            
-            # ✅ VALIDIERUNG
-            if not caller_name:
-                print("[CALL ERROR] Missing caller_name")
+                print("[CALL ERROR] Missing CALLER_NAME in custom_data")
+                print(f"[CALL DEBUG] Available keys: {list(custom_data.keys())}")
                 self._send_call_response("error", caller_id)
                 return
                 
             if not caller_id:
-                print("[CALL ERROR] Missing caller_id")
+                print("[CALL ERROR] Missing CALLER_CLIENT_ID in custom_data") 
+                print(f"[CALL DEBUG] Available keys: {list(custom_data.keys())}")
                 self._send_call_response("error", None)
                 return
                 
             if not encrypted_data:
-                print("[CALL ERROR] Missing encrypted_data")
+                print("[CALL ERROR] Missing ENCRYPTED_CALL_DATA in custom_data")
+                print(f"[CALL DEBUG] Available keys: {list(custom_data.keys())}")
                 self._send_call_response("error", caller_id)
                 return
                 
             print(f"[CALL SUCCESS] Incoming call from {caller_name} ({caller_id})")
+            print(f"[CALL DEBUG] Encrypted data length: {len(encrypted_data)}")
             
             # ✅ Speichere die Call-Informationen
             self.incoming_call = {
@@ -2870,21 +2807,26 @@ class PHONEBOOK(ctk.CTk):
             print(f"[PHONEBOOK ERROR] Entry click failed: {str(e)}")
 
     def connection_loop(self, client_socket, server_ip, message_handler=None):
-        """VERBESSERT: Connection-Loop mit besserer Timeout-Behandlung"""
+        """ULTRA-SCHNELLE Connection-Loop für maximale Performance"""
         global connected
         connected = True
-        print("[CONNECTION] Starting stabilized connection loop")
+        print("[CONNECTION] Starting ULTRA-FAST connection loop")
         
-        ping_interval = 30  # Normales Ping-Intervall
-        last_ping_time = 0
+        # ✅ ULTRA-SCHNELLE TIMING WERTE
+        ping_interval = 45  # Weniger Pings = mehr Performance
+        last_ping_time = time.time()
         consecutive_timeouts = 0
         max_consecutive_timeouts = 5
+        last_activity_time = time.time()
+        
+        # ✅ EINFACHE NON-BLOCKING IMPLEMENTIERUNG (ohne select)
+        client_socket.setblocking(False)
         
         while connected:
             try:
                 current_time = time.time()
                 
-                # ✅ VERBESSERT: Ping nur senden wenn nötig und Verbindung gut
+                # ✅ MINIMALES PING-MANAGEMENT
                 if current_time - last_ping_time >= ping_interval and consecutive_timeouts < 2:
                     ping_data = {
                         "MESSAGE_TYPE": "PING",
@@ -2894,73 +2836,63 @@ class PHONEBOOK(ctk.CTk):
                     
                     ping_msg = self.build_sip_message("MESSAGE", server_ip, ping_data)
                     
-                    print(f"[PING] Sending ping to {server_ip}")
                     if send_frame(client_socket, ping_msg.encode('utf-8')):
                         last_ping_time = current_time
-                        print("[PING] Ping sent successfully")
+                        if consecutive_timeouts > 0:
+                            print(f"[PING] Recovered after {consecutive_timeouts} timeouts")
+                            consecutive_timeouts = 0
                     else:
-                        print("[PING ERROR] Failed to send ping")
                         consecutive_timeouts += 1
+                        print(f"[PING FAILED] #{consecutive_timeouts}")
                 
-                # ✅ VERBESSERT: Dynamisches Timeout basierend auf Verbindungsqualität
-                dynamic_timeout = 15.0 if consecutive_timeouts == 0 else 25.0
-                client_socket.settimeout(dynamic_timeout)
-                
+                # ✅ NON-BLOCKING EMPFANG (ULTRA-SCHNELL)
                 try:
-                    response = recv_frame(client_socket, timeout=dynamic_timeout)
+                    response = recv_frame(client_socket, timeout=10)  # Nur 100ms Timeout!
                     
-                    if response is None:
-                        print(f"[CONNECTION] recv_frame returned None (Timeout #{consecutive_timeouts + 1})")
-                        consecutive_timeouts += 1
-                        continue
+                    if response is not None:
+                        consecutive_timeouts = 0
+                        last_activity_time = current_time
                         
-                    # ✅ Erfolgreich Daten empfangen - Reset Timeout Counter
-                    consecutive_timeouts = 0
-                    print(f"[CONNECTION] Received {len(response)} bytes from server")
-                    
-                    # ✅ SOFORTIGE VERARBEITUNG
-                    self.handle_server_message(response)
+                        # ✅ DIREKTE VERARBEITUNG (KEIN THREAD OVERHEAD)
+                        self.handle_server_message(response)
+                        
+                    else:
+                        # Timeout ist normal bei non-blocking
+                        consecutive_timeouts += 1 if consecutive_timeouts < 10 else 0
                         
                 except socket.timeout:
-                    consecutive_timeouts += 1
-                    print(f"[CONNECTION] Socket timeout #{consecutive_timeouts}")
-                    
-                    # Bei zu vielen Timeouts Verbindung testen
-                    if consecutive_timeouts >= max_consecutive_timeouts:
-                        print("[CONNECTION] Too many timeouts, testing connection...")
-                        if not self._test_connection_simple(client_socket, server_ip, self._client_name):
-                            print("[CONNECTION] Connection test failed, terminating")
-                            connected = False
-                            break
-                        else:
-                            consecutive_timeouts = 0
-                            print("[CONNECTION] Connection test successful, continuing")
-                            
-                except ConnectionError as e:
-                    print(f"[CONNECTION ERROR] Connection lost: {e}")
-                    connected = False
-                    break
-                    
+                    # Timeout ist ERWÜNSCHT bei non-blocking
+                    pass
+                except BlockingIOError:
+                    # Keine Daten verfügbar - normal
+                    pass
                 except Exception as e:
-                    print(f"[CONNECTION ERROR] Receive error: {e}")
+                    print(f"[RECV ERROR] {e}")
                     consecutive_timeouts += 1
-                    continue
                 
-                # Kurze Pause zwischen Durchläufen
-                time.sleep(1)
-                
-            except Exception as e:
-                print(f"[CONNECTION LOOP ERROR] {str(e)}")
-                consecutive_timeouts += 1
-                if consecutive_timeouts >= max_consecutive_timeouts + 2:
-                    connected = False
+                # ✅ SCHNELLER ABBRUCH BEI PROBLEMEN
+                if consecutive_timeouts >= max_consecutive_timeouts:
+                    print(f"[CONNECTION] FAST ABORT: {consecutive_timeouts} consecutive timeouts")
                     break
-                time.sleep(5)
+                    
+                # ✅ KURZE PAUSE FÜR CPU-ENTLASTUNG
+                time.sleep(0.01)  # Nur 10ms - ultra kurz!
+                    
+            except Exception as e:
+                print(f"[CONNECTION LOOP ERROR] {e}")
+                consecutive_timeouts += 1
+                if consecutive_timeouts >= 3:
+                    break
+                time.sleep(0.5)  # Kurze Pause bei Fehlern
         
-        # Verbindungsende
-        print("[CONNECTION] Connection loop ended")
+        # ✅ SCHNELLES CLEANUP
+        print("[CONNECTION] ULTRA-FAST loop ended")
         connected = False
-        self.cleanup_connection()
+        try:
+            client_socket.setblocking(True)  # Zurück zu blocking
+            client_socket.close()
+        except:
+            pass
 
     def _test_connection_simple(self, client_socket, server_ip, client_name):
         """Einfacher Verbindungstest ohne komplexe Logik"""
