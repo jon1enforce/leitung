@@ -1592,23 +1592,29 @@ class CALL:
                 
             print(f"[CALL] Processing public key response...")
             
-            # 2. Extrahiere Daten AUS custom_data
-            custom_data = msg.get('custom_data', {})
-            target_id = custom_data.get('TARGET_CLIENT_ID')
-            public_key = custom_data.get('PUBLIC_KEY')
-            caller_name = custom_data.get('CALLER_NAME')
+            # ✅ KORREKTUR: Extrahiere Daten direkt aus msg, nicht aus custom_data
+            print(f"[CALL DEBUG] Full message keys: {list(msg.keys())}")
             
-            # 3. Fallback für verschiedene Feldnamen
+            # 2. Extrahiere PUBLIC_KEY direkt aus msg
+            public_key = msg.get('PUBLIC_KEY')
+            target_id = msg.get('TARGET_CLIENT_ID')
+            caller_name = msg.get('CALLER_NAME')
+            
+            # ✅ KORREKTUR: Fallback für verschiedene Feldnamen
             if not public_key:
-                public_key = custom_data.get('public_key')
+                public_key = msg.get('public_key')
             if not target_id:
-                target_id = custom_data.get('target_client_id')
+                target_id = msg.get('target_client_id')
             if not caller_name:
-                caller_name = custom_data.get('caller_name')
+                caller_name = msg.get('caller_name')
                     
             if not public_key:
                 print("[CALL ERROR] No public key received in any field")
-                print(f"[CALL DEBUG] Available fields: {list(custom_data.keys())}")
+                print(f"[CALL DEBUG] Available fields in msg: {list(msg.keys())}")
+                # Debug: Zeige alle Felder die "KEY" enthalten
+                for key, value in msg.items():
+                    if 'KEY' in key.upper():
+                        print(f"[CALL DEBUG] Key-related field '{key}': {str(value)[:100]}...")
                 raise Exception("No public key received from server")
                     
             if not target_id:
@@ -1616,20 +1622,21 @@ class CALL:
                 target_id = self.pending_call['recipient'].get('id', 'unknown')
                     
             print(f"[CALL] Received public key for client {target_id} (length: {len(public_key)})")
+            print(f"[CALL DEBUG] Public key preview: {public_key[:100]}...")
             
-            # 4. Public Key Formatierung
+            # 3. Public Key Formatierung
             public_key = self._ensure_pem_format(public_key)
             if not public_key:
                 raise Exception("Invalid public key format - cannot convert to PEM")
                     
             print(f"[CALL] Formatted public key (PEM): {public_key[:100]}...")
                 
-            # 5. Session Key generieren (AES)
+            # 4. Session Key generieren (AES)
             session_secret = os.urandom(48)  # 16 IV + 32 AES Key
             iv = session_secret[:16]
             aes_key = session_secret[16:48]
                 
-            # 6. Call-Daten vorbereiten
+            # 5. Call-Daten vorbereiten
             call_data = {
                 "caller_name": self.client._client_name,
                 "caller_client_id": self.client._find_my_client_id(),
@@ -1640,9 +1647,9 @@ class CALL:
             }
                 
             print(f"[CALL] Prepared call data for encryption")
-            print(f"[CALL DEBUG] Call data: {call_data}")
+            print(f"[CALL DEBUG] Call data keys: {list(call_data.keys())}")
                 
-            # 7. Mit Public Key des Empfängers verschlüsseln (RSA)
+            # 6. Mit Public Key des Empfängers verschlüsseln (RSA)
             try:
                 print("[CALL] Loading recipient public key...")
                 recipient_key = self._load_public_key(public_key)
@@ -1665,7 +1672,7 @@ class CALL:
                 print(f"[CALL ERROR] Encryption failed: {str(e)}")
                 raise Exception(f"Verschlüsselung fehlgeschlagen: {str(e)}")
                 
-            # 8. CALL_REQUEST an Server senden
+            # 7. CALL_REQUEST an Server senden
             call_request_data = {
                 "MESSAGE_TYPE": "CALL_REQUEST",
                 "TARGET_CLIENT_ID": target_id,
@@ -1685,7 +1692,7 @@ class CALL:
                     
             print("[CALL] CALL_REQUEST sent to server")
                 
-            # 9. Call-Status aktualisieren
+            # 8. Call-Status aktualisieren
             self.pending_call.update({
                 'status': 'request_sent',
                 'session_secret': session_secret,
@@ -1695,7 +1702,7 @@ class CALL:
                 
             print("[CALL] Waiting for callee response...")
                 
-            # 10. UI aktualisieren
+            # 9. UI aktualisieren
             recipient_name = self.pending_call['recipient'].get('name', 'Unknown')
             if hasattr(self.client, 'update_call_ui'):
                 self.client.update_call_ui(True, "ringing", recipient_name)
@@ -1783,36 +1790,135 @@ class CALL:
             return None
 
     def handle_incoming_call(self, msg):
-        """Verarbeitet eingehende Anrufe - KORRIGIERT FÜR TKINTER THREAD-SICHERHEIT"""
+        """Verarbeitet eingehende Anrufe - VOLLSTÄNDIG KORRIGIERT"""
+        self.debug_incoming_message(msg)
         try:
-            print("[CALL] Processing incoming call message...")
+            print("\n=== INCOMING CALL PROCESSING ===")
+            print(f"[CALL] Raw message type: {type(msg)}")
             
-            # ✅ SIP-NACHRICHT PARSEN
+            # ✅ KORREKTUR: Bessere Nachrichten-Verarbeitung
+            sip_data = None
+            
             if isinstance(msg, str):
+                print("[CALL] Parsing SIP message from string...")
                 sip_data = self.client.parse_sip_message(msg)
-            else:
+            elif isinstance(msg, dict):
+                print("[CALL] Using pre-parsed message")
                 sip_data = msg
+            else:
+                print(f"[CALL ERROR] Unsupported message type: {type(msg)}")
+                return
                 
             if not sip_data:
                 print("[CALL ERROR] Failed to parse SIP message")
                 return
                 
-            headers = sip_data.get('headers', {})
+            print(f"[CALL DEBUG] SIP data keys: {list(sip_data.keys())}")
+            
+            # ✅ KORREKTUR: Extrahiere Daten aus verschiedenen Quellen
             custom_data = sip_data.get('custom_data', {})
+            headers = sip_data.get('headers', {})
+            body = sip_data.get('body', '')
             
-            # ✅ DATEN EXTRAHIEREN
-            caller_name = custom_data.get('CALLER_NAME') or headers.get('CALLER_NAME')
-            caller_id = custom_data.get('CALLER_CLIENT_ID') or headers.get('CALLER_CLIENT_ID')
-            encrypted_data = custom_data.get('ENCRYPTED_CALL_DATA') or headers.get('ENCRYPTED_CALL_DATA')
+            print(f"[CALL DEBUG] Custom data keys: {list(custom_data.keys())}")
+            print(f"[CALL DEBUG] Headers keys: {list(headers.keys())}")
             
-            if not all([caller_name, caller_id, encrypted_data]):
-                print("[CALL ERROR] Missing call information")
+            # ✅ KORREKTUR: Durchsuche alle möglichen Datenquellen
+            caller_name = None
+            caller_id = None
+            encrypted_data = None
+            
+            # 1. Versuche aus custom_data zu extrahieren
+            if custom_data:
+                caller_name = custom_data.get('CALLER_NAME')
+                caller_id = custom_data.get('CALLER_CLIENT_ID')
+                encrypted_data = custom_data.get('ENCRYPTED_CALL_DATA')
+                print("[CALL DEBUG] Extracted from custom_data")
+            
+            # 2. Fallback: Durchsuche alle Felder im custom_data
+            if not caller_name:
+                for key, value in custom_data.items():
+                    if 'CALLER' in key and 'NAME' in key:
+                        caller_name = value
+                        print(f"[CALL DEBUG] Found caller_name in custom_data key: {key}")
+                        break
+                        
+            if not caller_id:
+                for key, value in custom_data.items():
+                    if 'CALLER' in key and ('ID' in key or 'CLIENT' in key):
+                        caller_id = value
+                        print(f"[CALL DEBUG] Found caller_id in custom_data key: {key}")
+                        break
+                        
+            if not encrypted_data:
+                for key, value in custom_data.items():
+                    if 'ENCRYPTED' in key and 'CALL' in key:
+                        encrypted_data = value
+                        print(f"[CALL DEBUG] Found encrypted_data in custom_data key: {key}")
+                        break
+            
+            # 3. Fallback: Durchsuche headers
+            if not caller_name:
+                caller_name = headers.get('CALLER_NAME')
+                if caller_name:
+                    print("[CALL DEBUG] Found caller_name in headers")
+                    
+            if not caller_id:
+                caller_id = headers.get('CALLER_CLIENT_ID')
+                if caller_id:
+                    print("[CALL DEBUG] Found caller_id in headers")
+                    
+            if not encrypted_data:
+                encrypted_data = headers.get('ENCRYPTED_CALL_DATA')
+                if encrypted_data:
+                    print("[CALL DEBUG] Found encrypted_data in headers")
+            
+            # 4. Fallback: Durchsuche body falls es JSON ist
+            if not all([caller_name, caller_id, encrypted_data]) and body:
+                try:
+                    body_data = json.loads(body)
+                    print(f"[CALL DEBUG] Body JSON keys: {list(body_data.keys())}")
+                    
+                    if not caller_name:
+                        caller_name = body_data.get('CALLER_NAME')
+                    if not caller_id:
+                        caller_id = body_data.get('CALLER_CLIENT_ID')
+                    if not encrypted_data:
+                        encrypted_data = body_data.get('ENCRYPTED_CALL_DATA')
+                        
+                except json.JSONDecodeError:
+                    print("[CALL DEBUG] Body is not JSON")
+            
+            # ✅ DEBUG-Ausgabe aller gefundenen Werte
+            print(f"[CALL DEBUG] Final values - caller_name: {caller_name}, caller_id: {caller_id}, encrypted_data: {'present' if encrypted_data else 'missing'}")
+            
+            # ✅ VALIDIERUNG
+            if not caller_name:
+                print("[CALL ERROR] Missing caller_name")
                 self._send_call_response("error", caller_id)
                 return
                 
-            print(f"[CALL] Incoming call from {caller_name} ({caller_id})")
+            if not caller_id:
+                print("[CALL ERROR] Missing caller_id")
+                self._send_call_response("error", None)
+                return
+                
+            if not encrypted_data:
+                print("[CALL ERROR] Missing encrypted_data")
+                self._send_call_response("error", caller_id)
+                return
+                
+            print(f"[CALL SUCCESS] Incoming call from {caller_name} ({caller_id})")
             
-            # ✅ KRITISCHE KORREKTUR: Immer im Tkinter-Hauptthread ausführen
+            # ✅ Speichere die Call-Informationen
+            self.incoming_call = {
+                'caller_name': caller_name,
+                'caller_id': caller_id,
+                'encrypted_data': encrypted_data,
+                'timestamp': time.time()
+            }
+            
+            # ✅ Zeige den Anruf-Dialog an
             def show_call_dialog():
                 try:
                     if not hasattr(self.client, 'winfo_exists') or not self.client.winfo_exists():
@@ -1829,18 +1935,15 @@ class CALL:
             if hasattr(self.client, 'after'):
                 self.client.after(0, show_call_dialog)
             else:
-                # Fallback: Direkt aufrufen mit Fehlerbehandlung
                 print("[CALL WARNING] No after() method, calling dialog directly")
                 show_call_dialog()
                 
         except Exception as e:
             print(f"[CALL ERROR] Incoming call handling failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
             try:
-                caller_id = None
-                if isinstance(msg, dict):
-                    custom_data = msg.get('custom_data', {})
-                    caller_id = custom_data.get('CALLER_CLIENT_ID')
-                self._send_call_response("error", caller_id)
+                self._send_call_response("error", None)
             except:
                 pass
 
@@ -1950,30 +2053,33 @@ class CALL:
         except Exception as e:
             print(f"[CALL ERROR] Rejection failed: {str(e)}")
             self.cleanup_call_resources()
-    def debug_incoming_call(self):
-        """Manueller Test für eingehende Anrufe - VERBESSERTE VERSION"""
-        try:
-            # Simuliere eine echte verschlüsselte Nachricht
-            test_encrypted_data = base64.b64encode(b"test_encrypted_content_" + os.urandom(32)).decode('utf-8')
-            
-            test_data = {
-                "CALLER_NAME": "TestCaller",
-                "CALLER_CLIENT_ID": "999", 
-                "ENCRYPTED_CALL_DATA": test_encrypted_data
-            }
-            print("[DEBUG] Testing incoming call with encrypted data...")
-            
-            # Teste sowohl String- als auch Dict-Format
-            print("[DEBUG] Testing with dict format...")
-            self.handle_incoming_call(test_data)
-            
-            # Teste mit SIP-String-Format
-            sip_test_msg = self.client.build_sip_message("MESSAGE", "client", test_data)
-            print("[DEBUG] Testing with SIP string format...")
-            self.handle_incoming_call(sip_test_msg)
-            
-        except Exception as e:
-            print(f"[DEBUG ERROR] Test call failed: {str(e)}")
+    def debug_incoming_message(self, msg):
+        """Debug-Hilfe zur Analyse der eingehenden Nachricht"""
+        print("\n=== INCOMING MESSAGE DEBUG ===")
+        
+        def print_deep(obj, prefix="", depth=0, max_depth=3):
+            if depth > max_depth:
+                print(f"{prefix}... (max depth reached)")
+                return
+                
+            if isinstance(obj, dict):
+                for key, value in obj.items():
+                    print(f"{prefix}{key}: {type(value)}")
+                    if isinstance(value, (dict, list)) and depth < max_depth:
+                        print_deep(value, prefix + "  ", depth + 1, max_depth)
+            elif isinstance(obj, list):
+                for i, item in enumerate(obj[:5]):  # Nur erste 5 Elemente
+                    print(f"{prefix}[{i}]: {type(item)}")
+                    if isinstance(item, (dict, list)) and depth < max_depth:
+                        print_deep(item, prefix + "  ", depth + 1, max_depth)
+            else:
+                print(f"{prefix}{str(obj)[:200]}...")
+        
+        print("Message structure:")
+        print_deep(msg)
+        print("=== END DEBUG ===\n")
+
+    
     def _send_call_response(self, response, caller_id):
         """VOLLSTÄNDIG FRAME-SIP KOMPATIBEL: Sendet Response im korrekten Format"""
         try:
