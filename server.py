@@ -1125,7 +1125,7 @@ class CONVEY:
             return False
 
     def handle_call_request(self, msg, client_socket, client_name):
-        """KORRIGIERT: Target-Suche mit erweitertem Debugging"""
+        """KORRIGIERT: Target-Suche mit erweitertem Debugging - VOLLSTÄNDIG"""
         try:
             custom_data = msg.get('custom_data', {})
             target_id = custom_data.get('TARGET_CLIENT_ID')
@@ -1201,17 +1201,31 @@ class CONVEY:
                 send_frame(client_socket, error_msg.encode('utf-8'))
                 return False
 
-            # ✅ FRAME-SIP INCOMING_CALL NACHRICHT
-            incoming_call_msg = self.server.build_sip_message("MESSAGE", target_client_name, {
+            # ✅ FRAME-SIP INCOMING_CALL NACHRICHT MIT VERBESSERTEM DEBUGGING
+            print(f"[CONVEY] Preparing INCOMING_CALL message for {target_client_name}")
+            print(f"[CONVEY DEBUG] Caller name to send: {caller_name}")
+            print(f"[CONVEY DEBUG] Caller ID to send: {caller_client_id}")
+            print(f"[CONVEY DEBUG] Encrypted data to send: {len(encrypted_data)} chars")
+            
+            incoming_call_data = {
                 "MESSAGE_TYPE": "INCOMING_CALL",
-                "CALLER_NAME": caller_name,
-                "CALLER_CLIENT_ID": caller_client_id,
-                "ENCRYPTED_CALL_DATA": encrypted_data,
+                "CALLER_NAME": caller_name,  # ✅ WICHTIG: Muss exakt dieser Feldname sein
+                "CALLER_CLIENT_ID": caller_client_id,  # ✅ WICHTIG: Muss exakt dieser Feldname sein
+                "ENCRYPTED_CALL_DATA": encrypted_data,  # ✅ WICHTIG: Muss exakt dieser Feldname sein
                 "TIMESTAMP": int(time.time()),
                 "TIMEOUT": 120
-            })
+            }
             
-            print(f"[CONVEY] Sending framed SIP INCOMING_CALL to target {target_client_name}")
+            incoming_call_msg = self.server.build_sip_message("MESSAGE", target_client_name, incoming_call_data)
+            
+            # ✅ DEBUG: Zeige die gesendete Nachricht an
+            print(f"[CONVEY DEBUG] Outgoing INCOMING_CALL message preview:")
+            print(f"  MESSAGE_TYPE: {incoming_call_data['MESSAGE_TYPE']}")
+            print(f"  CALLER_NAME: {incoming_call_data['CALLER_NAME']}")
+            print(f"  CALLER_CLIENT_ID: {incoming_call_data['CALLER_CLIENT_ID']}")
+            print(f"  ENCRYPTED_CALL_DATA: {incoming_call_data['ENCRYPTED_CALL_DATA'][:50]}...")
+            print(f"  Full message length: {len(incoming_call_msg)} chars")
+            
             send_success = send_frame(target_socket, incoming_call_msg.encode('utf-8'))
             
             if not send_success:
@@ -1224,6 +1238,8 @@ class CONVEY:
                 })
                 send_frame(client_socket, error_msg.encode('utf-8'))
                 return False
+
+            print(f"[CONVEY] ✓ Framed SIP INCOMING_CALL successfully sent to target {target_client_name}")
 
             # ✅ KONSISTENTE CALL-VERWALTUNG
             call_id = f"{caller_client_id}_{target_id}_{int(time.time())}"
@@ -1239,7 +1255,9 @@ class CONVEY:
                 'timeout': 120
             }
 
-            # ✅ FRAME-SIP BESTÄTIGUNG
+            print(f"[CONVEY] Call {call_id} registered in active calls")
+
+            # ✅ FRAME-SIP BESTÄTIGUNG AN CALLER
             ack_msg = self.server.build_sip_message("MESSAGE", caller_name, {
                 "MESSAGE_TYPE": "CALL_REQUEST_ACK",
                 "STATUS": "CALL_FORWARDED",
@@ -1249,8 +1267,11 @@ class CONVEY:
                 "TIMESTAMP": int(time.time())
             })
             
-            send_frame(client_socket, ack_msg.encode('utf-8'))
-            print(f"[CONVEY] Framed SIP call request completed for {call_id}")
+            ack_success = send_frame(client_socket, ack_msg.encode('utf-8'))
+            if ack_success:
+                print(f"[CONVEY] ✓ Call request acknowledgment sent to caller {caller_name}")
+            else:
+                print(f"[CONVEY WARNING] Failed to send acknowledgment to caller {caller_name}")
 
             # Timeout-Überwachung
             threading.Thread(
@@ -1259,6 +1280,7 @@ class CONVEY:
                 daemon=True
             ).start()
 
+            print(f"[CONVEY] ✓ Framed SIP call request completed for {call_id}")
             return True
             
         except Exception as e:
@@ -1274,7 +1296,7 @@ class CONVEY:
                 })
                 send_frame(client_socket, error_msg.encode('utf-8'))
             except:
-                pass
+                print("[CONVEY CRITICAL] Could not send error message")
                 
             return False
 
