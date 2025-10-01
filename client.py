@@ -1198,10 +1198,10 @@ class CALL:
         self.relay_server_ip = None
         self.relay_server_port = 51822
         
-        # ✅ NEU: Audio Device Management
+        # ✅ KORREKTUR: Audio Device Management - Synchron mit PHONEBOOK
         self.audio = pyaudio.PyAudio()
-        self.selected_input_device = None
-        self.selected_output_device = None
+        self.selected_input_device = getattr(client_instance, 'selected_input_device', None)
+        self.selected_output_device = getattr(client_instance, 'selected_output_device', None)
         self.call_start_time = None
         self.call_timer_running = False
         self.call_timer_after_id = None
@@ -1210,117 +1210,14 @@ class CALL:
         self.connection_lock = threading.Lock()
         self.connection_state = "disconnected"
 
-    def show_audio_devices_popup(self):
-        """Zeigt Popup zur Auswahl der Audio-Geräte - KORRIGIERTE VERSION"""
+    def _get_device_index(self, device_string):
+        """Extrahiert Device-Index aus dem Auswahl-String"""
         try:
-            # Warte bis das Hauptfenster sichtbar ist
-            if hasattr(self.client, 'winfo_viewable') and not self.client.winfo_viewable():
-                print("[AUDIO POPUP] Main window not ready, delaying popup...")
-                self.client.after(500, self.show_audio_devices_popup)  # Retry after 500ms
-                return
-            
-            # Überprüfe ob das Fenster noch existiert
-            if not hasattr(self.client, 'tk') or not self.client.winfo_exists():
-                print("[AUDIO POPUP] Main window destroyed, aborting...")
-                return
-
-            # Erstelle neues Fenster
-            popup = tk.Toplevel(self.client)
-            popup.title("Audio-Geräte Auswahl")
-            popup.geometry("500x400")
-            
-            # Warte bis Popup sichtbar ist bevor grab_set aufgerufen wird
-            popup.update_idletasks()
-            
-            # Nur grab_set aufrufen wenn Fenster sichtbar ist
-            if popup.winfo_viewable():
-                popup.transient(self.client)
-                popup.grab_set()
-            else:
-                print("[AUDIO POPUP] Popup not viewable, skipping grab_set")
-            
-            # Zentriere das Fenster
-            popup.update_idletasks()
-            x = (popup.winfo_screenwidth() // 2) - (500 // 2)
-            y = (popup.winfo_screenheight() // 2) - (400 // 2)
-            popup.geometry(f"+{x}+{y}")
-            
-            # Eingabegeräte (Mikrofone)
-            tk.Label(popup, text="Eingabegerät (Mikrofon):", font=("Arial", 10, "bold")).pack(pady=(10, 5))
-            input_devices = self._get_input_devices()
-            input_combo = ttk.Combobox(popup, values=input_devices, width=60)
-            input_combo.pack(pady=5)
-            
-            if self.selected_input_device and self.selected_input_device in input_devices:
-                input_combo.set(self.selected_input_device)
-            elif input_devices:
-                input_combo.set(input_devices[0])
-            
-            # Ausgabegeräte (Lautsprecher/Kopfhörer)
-            tk.Label(popup, text="Ausgabegerät (Lautsprecher):", font=("Arial", 10, "bold")).pack(pady=(10, 5))
-            output_devices = self._get_output_devices()
-            output_combo = ttk.Combobox(popup, values=output_devices, width=60)
-            output_combo.pack(pady=5)
-            
-            if self.selected_output_device and self.selected_output_device in output_devices:
-                output_combo.set(self.selected_output_device)
-            elif output_devices:
-                output_combo.set(output_devices[0])
-            
-            # Info Text
-            info_label = tk.Label(popup, text="Hinweis: Es reicht ein bidirektionales Gerät (z.B. Headset) aus.\nWählen Sie für Eingabe und Ausgabe dasselbe Gerät.", 
-                                font=("Arial", 9), justify=tk.LEFT, fg="blue")
-            info_label.pack(pady=10)
-            
-            # Buttons
-            button_frame = tk.Frame(popup)
-            button_frame.pack(pady=20)
-            
-            def apply_selection():
-                self.selected_input_device = input_combo.get()
-                self.selected_output_device = output_combo.get()
-                try:
-                    if popup.winfo_exists():
-                        popup.destroy()
-                    messagebox.showinfo("Audio-Geräte", 
-                                      f"Eingabegerät: {self.selected_input_device}\n"
-                                      f"Ausgabegerät: {self.selected_output_device}")
-                except Exception as e:
-                    print(f"[AUDIO POPUP CLOSE ERROR] {str(e)}")
-            
-            def use_same_device():
-                selected = input_combo.get()
-                input_combo.set(selected)
-                output_combo.set(selected)
-            
-            def use_default():
-                self.selected_input_device = None
-                self.selected_output_device = None
-                try:
-                    if popup.winfo_exists():
-                        popup.destroy()
-                    messagebox.showinfo("Audio-Geräte", "Standard-Geräte werden verwendet")
-                except Exception as e:
-                    print(f"[AUDIO POPUP CLOSE ERROR] {str(e)}")
-            
-            ttk.Button(button_frame, text="Gleiches Gerät verwenden", command=use_same_device).pack(side=tk.LEFT, padx=5)
-            ttk.Button(button_frame, text="Übernehmen", command=apply_selection).pack(side=tk.LEFT, padx=5)
-            ttk.Button(button_frame, text="Standard verwenden", command=use_default).pack(side=tk.LEFT, padx=5)
-            
-            # Safe error handling for mainloop
-            try:
-                popup.mainloop()
-            except Exception as e:
-                print(f"[AUDIO POPUP MAINLOOP ERROR] {str(e)}")
-            
-        except Exception as e:
-            print(f"[AUDIO DEVICE POPUP ERROR] {str(e)}")
-            # Verwende after für messagebox um Tkinter-Probleme zu vermeiden
-            try:
-                if hasattr(self.client, 'after'):
-                    self.client.after(0, lambda: messagebox.showerror("Fehler", f"Audio-Geräte Auswahl fehlgeschlagen: {str(e)}"))
-            except:
-                pass  # Ignoriere Fehler wenn Tkinter bereits zerstört ist
+            if device_string and ":" in device_string:
+                return int(device_string.split(":")[0])
+        except:
+            pass
+        return None
     def _get_input_devices(self):
         """Gibt Liste aller Eingabegeräte (Mikrofone) zurück"""
         devices = []
@@ -1345,16 +1242,192 @@ class CALL:
                     devices.append(f"{i}: {device_name} (Output)")
         except Exception as e:
             print(f"[OUTPUT DEVICES ERROR] {str(e)}")
-        return devices
-
-    def _get_device_index(self, device_string):
-        """Extrahiert Device-Index aus dem Auswahl-String"""
+        return devices        
+    def show_audio_devices_popup(self):
+        """Audio-Geräte Auswahl - Wird von PHONEBOOK aufgerufen"""
         try:
-            if device_string and ":" in device_string:
-                return int(device_string.split(":")[0])
-        except:
-            pass
-        return None
+            # Warte bis das Hauptfenster sichtbar ist
+            if hasattr(self.client, 'winfo_viewable') and not self.client.winfo_viewable():
+                print("[AUDIO POPUP] Main window not ready, delaying popup...")
+                self.client.after(500, self.show_audio_devices_popup)
+                return
+            
+            # Überprüfe ob das Fenster noch existiert
+            if not hasattr(self.client, 'tk') or not self.client.winfo_exists():
+                print("[AUDIO POPUP] Main window destroyed, aborting...")
+                return
+
+            # Erstelle neues Fenster
+            popup = tk.Toplevel(self.client)
+            popup.title("Audio-Geräte Auswahl")
+            popup.geometry("500x450")
+            popup.resizable(False, False)
+            
+            # Warte bis Popup sichtbar ist
+            popup.update_idletasks()
+            
+            if popup.winfo_viewable():
+                popup.transient(self.client)
+                popup.grab_set()
+            
+            # Zentriere das Fenster
+            popup.update_idletasks()
+            x = (popup.winfo_screenwidth() // 2) - (500 // 2)
+            y = (popup.winfo_screenheight() // 2) - (450 // 2)
+            popup.geometry(f"+{x}+{y}")
+            
+            # Separate Variablen für jede Combobox
+            input_var = tk.StringVar(popup)
+            output_var = tk.StringVar(popup)
+            
+            # Eingabegeräte (Mikrofone)
+            tk.Label(popup, text="Eingabegerät (Mikrofon):", font=("Arial", 10, "bold")).pack(pady=(20, 5))
+            input_devices = self._get_input_devices()
+            
+            input_combo = ttk.Combobox(popup, textvariable=input_var, values=input_devices, width=60, state="readonly")
+            input_combo.pack(pady=5)
+            
+            # Vorauswahl setzen - UNABHÄNGIG von Ausgabegerät
+            current_input = getattr(self.client, 'selected_input_device', None)
+            if current_input and current_input in input_devices:
+                input_var.set(current_input)
+                input_combo.set(current_input)
+            elif input_devices:
+                input_var.set(input_devices[0])
+                input_combo.set(input_devices[0])
+            
+            # Ausgabegeräte (Lautsprecher/Kopfhörer)
+            tk.Label(popup, text="Ausgabegerät (Lautsprecher):", font=("Arial", 10, "bold")).pack(pady=(20, 5))
+            output_devices = self._get_output_devices()
+            
+            output_combo = ttk.Combobox(popup, textvariable=output_var, values=output_devices, width=60, state="readonly")
+            output_combo.pack(pady=5)
+            
+            # Vorauswahl setzen - UNABHÄNGIG von Eingabegerät
+            current_output = getattr(self.client, 'selected_output_device', None)
+            if current_output and current_output in output_devices:
+                output_var.set(current_output)
+                output_combo.set(current_output)
+            elif output_devices:
+                output_var.set(output_devices[0])
+                output_combo.set(output_devices[0])
+            
+            # Info Text
+            info_text = (
+                "Hinweise:\n"
+                "• Wählen Sie separate Geräte (z.B. Mikrofon + Lautsprecher)\n"
+                "• Oder wählen Sie dasselbe Gerät für beide (z.B. Headset)\n"
+                "• Einstellungen werden für zukünftige Anrufe übernommen"
+            )
+            info_label = tk.Label(popup, text=info_text, font=("Arial", 9), 
+                                justify=tk.LEFT, fg="blue", wraplength=450)
+            info_label.pack(pady=20)
+            
+            # Aktuelle Auswahl anzeigen
+            def update_selection_display():
+                input_text = input_var.get() or "Nicht ausgewählt"
+                output_text = output_var.get() or "Nicht ausgewählt"
+                selection_label.config(text=f"Aktuell: Eingabe: {input_text[:30]}... | Ausgabe: {output_text[:30]}...")
+            
+            selection_label = tk.Label(popup, text="", font=("Arial", 8), fg="green")
+            selection_label.pack(pady=5)
+            update_selection_display()
+            
+            # Buttons Frame
+            button_frame = tk.Frame(popup)
+            button_frame.pack(pady=20)
+            
+            def apply_selection():
+                """Übernimmt die aktuell ausgewählten Geräte"""
+                input_selection = input_var.get()
+                output_selection = output_var.get()
+                
+                if input_selection:
+                    self.client.selected_input_device = input_selection
+                    self.selected_input_device = input_selection
+                
+                if output_selection:
+                    self.client.selected_output_device = output_selection
+                    self.selected_output_device = output_selection
+                
+                try:
+                    if popup.winfo_exists():
+                        popup.destroy()
+                    messagebox.showinfo("Audio-Geräte", 
+                                      f"✅ Eingabegerät: {input_selection or 'Standard'}\n"
+                                      f"✅ Ausgabegerät: {output_selection or 'Standard'}")
+                except Exception as e:
+                    print(f"[AUDIO POPUP CLOSE ERROR] {str(e)}")
+            
+            def use_default():
+                """Setzt Standard-Geräte für diese Sitzung"""
+                self.client.selected_input_device = None
+                self.client.selected_output_device = None
+                self.selected_input_device = None
+                self.selected_output_device = None
+                
+                try:
+                    if popup.winfo_exists():
+                        popup.destroy()
+                    messagebox.showinfo("Audio-Geräte", "Standard-Geräte werden für diese Sitzung verwendet")
+                except Exception as e:
+                    print(f"[AUDIO POPUP CLOSE ERROR] {str(e)}")
+            
+            def save_as_default():
+                """Speichert die aktuellen Geräte als dauerhafte Standard-Einstellung"""
+                input_selection = input_var.get()
+                output_selection = output_var.get()
+                
+                if input_selection:
+                    self.client.selected_input_device = input_selection
+                    self.selected_input_device = input_selection
+                
+                if output_selection:
+                    self.client.selected_output_device = output_selection
+                    self.selected_output_device = output_selection
+                
+                # Hier könnte man die Einstellungen in einer Config-Datei speichern
+                # Für jetzt speichern wir sie nur in den Instanzvariablen
+                
+                try:
+                    if popup.winfo_exists():
+                        popup.destroy()
+                    messagebox.showinfo("Audio-Geräte", 
+                                      f"✅ Standard-Geräte gespeichert:\n"
+                                      f"Eingabe: {input_selection or 'Standard'}\n"
+                                      f"Ausgabe: {output_selection or 'Standard'}")
+                except Exception as e:
+                    print(f"[AUDIO POPUP CLOSE ERROR] {str(e)}")
+            
+            # Event-Handler für Combobox-Änderungen
+            def on_input_change(*args):
+                update_selection_display()
+            
+            def on_output_change(*args):
+                update_selection_display()
+            
+            input_var.trace('w', on_input_change)
+            output_var.trace('w', on_output_change)
+            
+            # ✅ KLARE UND SINNVOLLE BUTTONS:
+            ttk.Button(button_frame, text="Übernehmen", command=apply_selection, width=15).pack(side=tk.LEFT, padx=5)
+            ttk.Button(button_frame, text="Standard", command=use_default, width=15).pack(side=tk.LEFT, padx=5)
+            ttk.Button(button_frame, text="Als Standard speichern", command=save_as_default, width=18).pack(side=tk.LEFT, padx=5)
+            
+            # Safe error handling
+            try:
+                popup.mainloop()
+            except Exception as e:
+                print(f"[AUDIO POPUP MAINLOOP ERROR] {str(e)}")
+            
+        except Exception as e:
+            print(f"[AUDIO DEVICE POPUP ERROR] {str(e)}")
+            try:
+                if hasattr(self.client, 'after'):
+                    self.client.after(0, lambda: messagebox.showerror("Fehler", f"Audio-Geräte Auswahl fehlgeschlagen: {str(e)}"))
+            except:
+                pass
+
 
     def handle_message(self, raw_message):
         """Zentrale Message-Handling Methode - VOLLSTÄNDIG KORRIGIERT"""
@@ -1497,12 +1570,6 @@ class CALL:
                 self._in_call_click = False
                 return
 
-            # ✅ NEU: Audio-Geräte Auswahl anzeigen
-            if not self.selected_input_device or not self.selected_output_device:
-                if hasattr(self.client, 'after'):
-                    self.client.after(0, self.show_audio_devices_popup)
-                else:
-                    self.show_audio_devices_popup()
 
             if 'id' not in selected_entry:
                 messagebox.showerror("Error", "Ungültiger Kontakt (fehlende ID)")
@@ -2775,7 +2842,7 @@ class PHONEBOOK(ctk.CTk):
         self.menu_bar.add_cascade(label="Datei", menu=file_menu)
 
         settings_menu = tk.Menu(self.menu_bar, tearoff=0)
-        settings_menu.add_command(label="Tastatur", command=self.open_keyboard_settings)
+        settings_menu.add_command(label="Audio-Geräte", command=self.show_audio_devices_settings)
         settings_menu.add_command(label="Sprache", command=self.open_language_settings)
         self.menu_bar.add_cascade(label="Einstellungen", menu=settings_menu)
 
@@ -2794,7 +2861,149 @@ class PHONEBOOK(ctk.CTk):
             text_color="white"
         )
         
+    def show_audio_devices_settings(self):
+        """Zeigt Audio-Geräte Einstellungen - KORRIGIERT FÜR BEIDE GERÄTE"""
+        try:
+            # Verwende die CALL-Klasse für Audio-Geräte Management
+            if hasattr(self, 'call_manager'):
+                self.call_manager.show_audio_devices_popup()
+            else:
+                # Fallback falls CALL Manager nicht verfügbar
+                self._show_audio_devices_dialog()
+                
+        except Exception as e:
+            print(f"[AUDIO SETTINGS ERROR] {str(e)}")
+            messagebox.showerror("Fehler", f"Audio-Einstellungen konnten nicht geöffnet werden: {str(e)}")
+    def _show_audio_devices_dialog(self):
+        """Fallback Audio-Geräte Dialog"""
+        try:
+            dialog = tk.Toplevel(self)
+            dialog.title("Audio-Geräte Einstellungen")
+            dialog.geometry("500x400")
+            dialog.transient(self)
+            dialog.grab_set()
+            
+            # Zentriere das Fenster
+            dialog.update_idletasks()
+            x = (dialog.winfo_screenwidth() // 2) - (500 // 2)
+            y = (dialog.winfo_screenheight() // 2) - (400 // 2)
+            dialog.geometry(f"+{x}+{y}")
+            
+            # Eingabegeräte (Mikrofone)
+            tk.Label(dialog, text="Eingabegerät (Mikrofon):", font=("Arial", 10, "bold")).pack(pady=(20, 5))
+            input_devices = self._get_input_devices()
+            input_var = tk.StringVar(dialog)
+            
+            input_combo = ttk.Combobox(dialog, textvariable=input_var, values=input_devices, width=60)
+            input_combo.pack(pady=5)
+            
+            if self.selected_input_device and self.selected_input_device in input_devices:
+                input_combo.set(self.selected_input_device)
+            elif input_devices:
+                input_combo.set(input_devices[0])
+            
+            # Ausgabegeräte (Lautsprecher/Kopfhörer)
+            tk.Label(dialog, text="Ausgabegerät (Lautsprecher):", font=("Arial", 10, "bold")).pack(pady=(20, 5))
+            output_devices = self._get_output_devices()
+            output_var = tk.StringVar(dialog)
+            
+            output_combo = ttk.Combobox(dialog, textvariable=output_var, values=output_devices, width=60)
+            output_combo.pack(pady=5)
+            
+            if self.selected_output_device and self.selected_output_device in output_devices:
+                output_combo.set(self.selected_output_device)
+            elif output_devices:
+                output_combo.set(output_devices[0])
+            
+            # Info Text
+            info_text = (
+                "Hinweise:\n"
+                "• Wählen Sie für Eingabe und Ausgabe dasselbe Gerät (z.B. Headset)\n"
+                "• Oder wählen Sie separate Geräte (z.B. Mikrofon + Lautsprecher)\n"
+                "• Einstellungen werden für zukünftige Anrufe übernommen"
+            )
+            info_label = tk.Label(dialog, text=info_text, font=("Arial", 9), 
+                                justify=tk.LEFT, fg="blue", wraplength=450)
+            info_label.pack(pady=20)
+            
+            # Buttons
+            button_frame = tk.Frame(dialog)
+            button_frame.pack(pady=20)
+            
+            def apply_selection():
+                self.selected_input_device = input_var.get()
+                self.selected_output_device = output_var.get()
+                
+                # Speichere in CALL Manager falls vorhanden
+                if hasattr(self, 'call_manager'):
+                    self.call_manager.selected_input_device = self.selected_input_device
+                    self.call_manager.selected_output_device = self.selected_output_device
+                
+                dialog.destroy()
+                messagebox.showinfo("Audio-Geräte", 
+                                  f"Eingabegerät: {self.selected_input_device}\n"
+                                  f"Ausgabegerät: {self.selected_output_device}")
+            
+            def use_same_device():
+                selected = input_var.get()
+                input_var.set(selected)
+                output_var.set(selected)
+            
+            def use_default():
+                self.selected_input_device = None
+                self.selected_output_device = None
+                
+                # Zurücksetzen in CALL Manager
+                if hasattr(self, 'call_manager'):
+                    self.call_manager.selected_input_device = None
+                    self.call_manager.selected_output_device = None
+                
+                dialog.destroy()
+                messagebox.showinfo("Audio-Geräte", "Standard-Geräte werden verwendet")
+            
+            ttk.Button(button_frame, text="Gleiches Gerät verwenden", command=use_same_device).pack(side=tk.LEFT, padx=5)
+            ttk.Button(button_frame, text="Übernehmen", command=apply_selection).pack(side=tk.LEFT, padx=5)
+            ttk.Button(button_frame, text="Standard verwenden", command=use_default).pack(side=tk.LEFT, padx=5)
+            
+        except Exception as e:
+            print(f"[AUDIO DIALOG ERROR] {str(e)}")
+            messagebox.showerror("Fehler", f"Audio-Dialog konnte nicht geöffnet werden: {str(e)}")
 
+    def _get_input_devices(self):
+        """Gibt Liste aller Eingabegeräte (Mikrofone) zurück"""
+        devices = []
+        try:
+            audio = pyaudio.PyAudio()
+            for i in range(audio.get_device_count()):
+                device_info = audio.get_device_info_by_index(i)
+                if device_info.get('maxInputChannels', 0) > 0:
+                    device_name = device_info.get('name', f'Device {i}')
+                    devices.append(f"{i}: {device_name} (Input)")
+            audio.terminate()
+        except Exception as e:
+            print(f"[INPUT DEVICES ERROR] {str(e)}")
+            devices = ["0: Standard-Mikrofon (Input)"]
+        return devices
+
+    def _get_output_devices(self):
+        """Gibt Liste aller Ausgabegeräte (Lautsprecher) zurück"""
+        devices = []
+        try:
+            audio = pyaudio.PyAudio()
+            for i in range(audio.get_device_count()):
+                device_info = audio.get_device_info_by_index(i)
+                if device_info.get('maxOutputChannels', 0) > 0:
+                    device_name = device_info.get('name', f'Device {i}')
+                    devices.append(f"{i}: {device_name} (Output)")
+            audio.terminate()
+        except Exception as e:
+            print(f"[OUTPUT DEVICES ERROR] {str(e)}")
+            devices = ["0: Standard-Lautsprecher (Output)"]
+        return devices
+
+    def open_language_settings(self):
+        """Spracheinstellungen (kann später erweitert werden)"""
+        messagebox.showinfo("Sprache", "Spracheinstellungen (nicht implementiert)")            
     def create_phonebook_tab(self):
         # Frame für das Telefonbuch mit Scrollbar
         self.phonebook_frame = ctk.CTkFrame(self.phonebook_tab, fg_color='black')
@@ -4021,13 +4230,6 @@ class PHONEBOOK(ctk.CTk):
                 self.update_call_ui(active=False)
             except:
                 pass
-
-    def open_keyboard_settings(self):
-        messagebox.showinfo("Tastatur", "Tastatureinstellungen (nicht implementiert)")
-
-    def open_language_settings(self):
-        messagebox.showinfo("Sprache", "Spracheinstellungen (nicht implementiert)")
-
 
     def _handle_ping_message(self):
         """Handle PING messages by responding with PONG"""
