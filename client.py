@@ -671,6 +671,758 @@ def secure_del(var):
     elif hasattr(var, '__dict__'):
         var.__dict__.clear()  # Falls es ein Objekt ist
         del var
+class AudioConfig:
+    def __init__(self):
+        self.audio = pyaudio.PyAudio()
+        self.input_device_index = None
+        self.output_device_index = None
+        
+        # ✅ QUALITÄTSSTUFEN
+        # ✅ QUALITÄTSSTUFEN - KORRIGIERT FÜR SA9227 S32_LE
+        # ✅ QUALITÄTSSTUFEN - MIT EXPLIZITEN CHANNELS
+        self.QUALITY_PROFILES = {
+            "highest": {
+                "format": pyaudio.paInt32,
+                "rate": 192000, 
+                "channels": 2,  # ✅ EXPLIZIT Stereo
+                "name": "S32_LE @ 192kHz Stereo (Highest Quality - SA9227 Native)",
+                "actual_format": "S32_LE"
+            },
+            "high": {
+                "format": pyaudio.paInt24, 
+                "rate": 192000, 
+                "channels": 2,  # ✅ EXPLIZIT Stereo
+                "name": "24-bit @ 192kHz Stereo (High Quality)",
+                "actual_format": "24-bit"
+            },
+            "middle": {
+                "format": pyaudio.paInt24, 
+                "rate": 48000, 
+                "channels": 2,  # ✅ EXPLIZIT Stereo
+                "name": "24-bit @ 48kHz Stereo (Middle Quality)",
+                "actual_format": "24-bit"
+            }, 
+            "low": {
+                "format": pyaudio.paInt16, 
+                "rate": 48000, 
+                "channels": 1,  # ✅ Mono für Kompatibilität
+                "name": "16-bit @ 48kHz Mono (Low Quality)",
+                "actual_format": "16-bit"
+            }
+        }
+        
+        # Standard-Qualität
+        self.quality_profile = "middle"
+        self._apply_quality_profile()
+        
+        self.CHUNK = 128
+        self.PORT = 51821
+        
+        # Output Format-Check
+        self.output_supports_24bit = True
+        
+        # ✅ NOISE PROFILING & FILTERUNG
+        self.noise_profile = {
+            'enabled': False,
+            'profile_captured': False,
+            'noise_threshold': 0.01,
+            'noise_profile': None,
+            'adaptive_filter': True,
+            'aggressive_mode': False,
+            'capture_duration': 180  # 180 Sekunden für "Clear Room"
+        }
+        
+        # Filter-Koeffizienten
+        self.filter_coefficients = {
+            'low_freq_cutoff': 80,
+            'high_freq_cutoff': 16000,
+            'hum_filter_freq': 50,
+        }
+        
+        # Audio-Statistiken
+        self.audio_stats = {
+            'rms_level': 0.0,
+            'peak_level': 0.0,
+            'noise_floor': 0.001,
+            'signal_to_noise': 0.0,
+            'capture_progress': 0.0
+        }
+    def verify_audio_configuration(self):
+        """Überprüft Audio-Konfiguration OHNE Qualitätseinstellungen zu überschreiben"""
+        print("\n=== AUDIO CONFIGURATION VERIFICATION ===")
+        
+        try:
+            # 1. Prüfe verfügbare Geräte (NUR Information)
+            device_count = self.audio.get_device_count()
+            print(f"[AUDIO] Available devices: {device_count}")
+            
+            # 2. Device-Erkennung (falls nicht gesetzt) - NUR FALLS NOTWENDIG
+            if self.input_device_index is None:
+                for i in range(device_count):
+                    try:
+                        device_info = self.audio.get_device_info_by_index(i)
+                        if device_info.get('maxInputChannels', 0) > 0:
+                            self.input_device_index = i
+                            print(f"[AUDIO] Auto-selected input device {i}: {device_info['name']}")
+                            break
+                    except:
+                        continue
+            
+            if self.output_device_index is None:
+                for i in range(device_count):
+                    try:
+                        device_info = self.audio.get_device_info_by_index(i)
+                        if device_info.get('maxOutputChannels', 0) > 0:
+                            self.output_device_index = i
+                            print(f"[AUDIO] Auto-selected output device {i}: {device_info['name']}")
+                            break
+                    except:
+                        continue
+            
+            # 3. ✅ WICHTIG: QUALITÄTSEINSTELLUNGEN BEIBEHALTEN!
+            # Speichere die aktuellen Qualitätseinstellungen
+            current_format = self.FORMAT
+            current_rate = self.RATE
+            current_channels = self.CHANNELS
+            current_quality = self.quality_profile
+            
+            print(f"[AUDIO] Current quality settings:")
+            print(f"  Format: {current_format} ({self.actual_format})")
+            print(f"  Sample Rate: {current_rate} Hz")
+            print(f"  Channels: {current_channels}")
+            print(f"  Quality Profile: {current_quality}")
+            
+            # 4. Prüfe ob das gewählte Format unterstützt wird (NUR PRÜFEN!)
+            try:
+                # Prüfe Input mit den AKTUELLEN Einstellungen
+                if self.input_device_index is not None:
+                    input_supported = self.audio.is_format_supported(
+                        current_rate,
+                        input_device=self.input_device_index,
+                        input_channels=current_channels,  # ✅ Verwende aktuelle Channels
+                        input_format=current_format       # ✅ Verwende aktuelles Format
+                    )
+                    print(f"[AUDIO] Input format supported: {input_supported}")
+                
+                # Prüfe Output (Output immer 16-bit für Kompatibilität)
+                if self.output_device_index is not None:
+                    output_supported = self.audio.is_format_supported(
+                        current_rate,
+                        output_device=self.output_device_index,
+                        output_channels=1,  # Output immer Mono für Kompatibilität
+                        output_format=pyaudio.paInt16  # Output immer 16-bit
+                    )
+                    print(f"[AUDIO] Output format supported: {output_supported}")
+                        
+            except Exception as e:
+                print(f"[AUDIO CHECK WARNING] {e}")
+            
+            # 5. ✅ QUALITÄTSEINSTELLUNGEN WIEDERHERSTELLEN!
+            self.FORMAT = current_format
+            self.RATE = current_rate
+            self.CHANNELS = current_channels
+            self.quality_profile = current_quality
+            
+            # 6. Chunk-Größe anpassen (ohne Qualität zu ändern)
+            if self.RATE >= 96000:
+                self.CHUNK = 256
+            else:
+                self.CHUNK = 128
+            
+            print(f"[AUDIO] Final configuration (QUALITY PRESERVED):")
+            print(f"  Format: {self.FORMAT} ({self.actual_format})")
+            print(f"  Sample Rate: {self.RATE} Hz") 
+            print(f"  Channels: {self.CHANNELS}")
+            print(f"  Chunk Size: {self.CHUNK}")
+            print(f"  Quality: {self.sample_format_name}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"[AUDIO CONFIG ERROR] {e}")
+            # Kein Fallback - behalte die gewählte Qualität
+            return True
+    def _apply_quality_profile(self):
+        """Wendet die Qualitätsstufe an MIT Fallback bei Fehlern"""
+        profile = self.QUALITY_PROFILES[self.quality_profile]
+        
+        # Versuche die gewünschte Qualität
+        original_quality = self.quality_profile
+        
+        for attempt in range(3):  # Max 3 Versuche
+            try:
+                # Setze ALLE Qualitätseinstellungen aus dem Profile
+                self.FORMAT = profile["format"]
+                self.RATE = profile["rate"] 
+                self.CHANNELS = profile["channels"]
+                self.sample_format_name = profile["name"]
+                self.actual_format = profile["actual_format"]
+                
+                # Sample Width basierend auf Format
+                if self.actual_format == "S32_LE":
+                    self.sample_width = 4
+                elif self.actual_format == "24-bit":
+                    self.sample_width = 3
+                else:  # 16-bit
+                    self.sample_width = 2
+                
+                # Chunk-Größe anpassen
+                if self.RATE >= 96000:
+                    self.CHUNK = 256
+                else:
+                    self.CHUNK = 128
+                
+                # ✅ TESTE OB DIE KONFIGURATION FUNKTIONIERT
+                if self._test_audio_configuration():
+                    print(f"✅ [AUDIO] Applied quality: {self.sample_format_name}")
+                    print(f"[AUDIO] Channels: {self.CHANNELS}, Sample Rate: {self.RATE}Hz")
+                    return True
+                else:
+                    raise Exception("Audio configuration test failed")
+                    
+            except Exception as e:
+                print(f"❌ [AUDIO] Quality '{self.quality_profile}' failed: {e}")
+                
+                # Fallback zu nächstniedrigerer Qualität
+                fallback_chain = {
+                    "highest": "high",
+                    "high": "middle", 
+                    "middle": "low",
+                    "low": "low"  # Letzter Fallback
+                }
+                
+                fallback = fallback_chain.get(self.quality_profile, "low")
+                if fallback == self.quality_profile:  # Kein weiterer Fallback möglich
+                    print("💥 [AUDIO] No working audio configuration found!")
+                    return False
+                    
+                print(f"🔄 [AUDIO] Falling back to: {fallback}")
+                self.quality_profile = fallback
+                profile = self.QUALITY_PROFILES[fallback]
+        
+        return False
+
+    def _test_audio_configuration(self):
+        """Testet ob die aktuelle Audio-Konfiguration funktioniert"""
+        try:
+            # Teste Input Stream
+            if self.input_device_index is not None:
+                test_stream = self.audio.open(
+                    format=self.FORMAT,
+                    channels=self.CHANNELS,
+                    rate=self.RATE,
+                    input=True,
+                    frames_per_buffer=self.CHUNK,
+                    input_device_index=self.input_device_index
+                )
+                test_stream.stop_stream()
+                test_stream.close()
+            
+            # Teste Output Stream (immer 16-bit Mono für Kompatibilität)
+            if self.output_device_index is not None:
+                test_stream = self.audio.open(
+                    format=pyaudio.paInt16,
+                    channels=1,  # Output immer Mono
+                    rate=self.RATE,
+                    output=True,
+                    frames_per_buffer=self.CHUNK,
+                    output_device_index=self.output_device_index
+                )
+                test_stream.stop_stream()
+                test_stream.close()
+                
+            return True
+            
+        except Exception as e:
+            print(f"[AUDIO TEST] Configuration failed: {e}")
+            return False
+    def set_quality(self, quality_level):
+        """Setzt die Audio-Qualitätsstufe MIT DEBUG"""
+        print(f"[DEBUG] set_quality called: {self.quality_profile} -> {quality_level}")
+        import traceback
+        traceback.print_stack()  # Zeigt wo der Aufruf herkommt
+        
+        if quality_level in self.QUALITY_PROFILES:
+            self.quality_profile = quality_level
+            self._apply_quality_profile()
+            return True
+        
+        print(f"[AUDIO WARNING] Invalid quality level: {quality_level}")
+        return False
+        
+    def configure_output(self, device_index):
+        """Konfiguriert Ausgabegerät und prüft 24-bit Support"""
+        self.output_device_index = device_index
+        
+        try:
+            # Prüfe ob 24-bit unterstützt wird
+            self.output_supports_24bit = self.audio.is_format_supported(
+                self.RATE,
+                output_device=device_index,
+                output_channels=1,
+                output_format=pyaudio.paInt24
+            )
+            
+            if self.output_supports_24bit:
+                print("✅ Output device supports 24-bit")
+            else:
+                print("⚠️ Output device only supports 16-bit, will convert if needed")
+                
+        except Exception as e:
+            print(f"[OUTPUT CHECK ERROR] {e}, assuming 16-bit")
+            self.output_supports_24bit = False
+    
+    def detect_best_format(self, device_index, is_input=True):
+        """Erkennt das beste verfügbare Format für ein Gerät"""
+        formats_to_try = [
+            (pyaudio.paFloat32, 192000),
+            (pyaudio.paInt24, 192000),
+            (pyaudio.paInt24, 96000),
+            (pyaudio.paInt24, 48000),
+            (pyaudio.paInt16, 48000),
+            (pyaudio.paInt16, 44100),
+        ]
+        
+        for fmt, rate in formats_to_try:
+            try:
+                if is_input:
+                    supported = self.audio.is_format_supported(
+                        rate,
+                        input_device=device_index,
+                        input_channels=1,
+                        input_format=fmt
+                    )
+                else:
+                    supported = self.audio.is_format_supported(
+                        rate,
+                        output_device=device_index,
+                        output_channels=1,
+                        output_format=fmt
+                    )
+                
+                if supported:
+                    print(f"[AUDIO] Best format detected: {fmt} @ {rate}Hz")
+                    return fmt, rate
+            except:
+                continue
+        
+        # Fallback
+        return pyaudio.paInt16, 44100
+    
+    def auto_configure_input(self, device_index):
+        """Automatische Konfiguration für Eingabegerät"""
+        self.input_device_index = device_index
+        self.FORMAT, self.RATE = self.detect_best_format(device_index, is_input=True)
+        
+        # Passe Chunk-Größe basierend auf Sample-Rate an
+        if self.RATE >= 96000:
+            self.CHUNK = 256    
+        else:
+            self.CHUNK = 128
+            
+        self._print_config("Input")
+    
+    def auto_configure_output(self, device_index):
+        """Automatische Konfiguration für Ausgabegerät"""
+        self.output_device_index = device_index
+        self.FORMAT, self.RATE = self.detect_best_format(device_index, is_input=False)
+        self._print_config("Output")
+    
+    def _print_config(self, device_type):
+        """Gibt die aktuelle Konfiguration aus"""
+        print(f"\n🎵 {device_type} Audio Configuration:")
+        print(f"   Format: {self.sample_format_name}")
+        print(f"   Sample Rate: {self.RATE} Hz")
+        print(f"   Channels: {self.CHANNELS}")
+        print(f"   Chunk Size: {self.CHUNK} frames")
+        print(f"   Data Rate: {(self.RATE * self.sample_width * self.CHANNELS) / 1000:.1f} kB/s")
+    
+    def cleanup(self):
+        """Ressourcen freigeben"""
+        try:
+            self.audio.terminate()
+        except:
+            pass
+
+    # ✅ NOISE PROFILING METHODEN
+    def enable_noise_filter(self, enabled=True):
+        """Aktiviert/Deaktiviert die Rauschfilterung"""
+        self.noise_profile['enabled'] = enabled
+        print(f"[NOISE FILTER] {'Aktiviert' if enabled else 'Deaktiviert'}")
+    
+    def set_aggressive_noise_reduction(self, aggressive=True):
+        """Setzt aggressiven Rauschfilter-Modus"""
+        self.noise_profile['aggressive_mode'] = aggressive
+        print(f"[NOISE FILTER] Aggressive Mode: {aggressive}")
+    
+    def capture_noise_profile(self, duration=180, progress_callback=None):
+        """
+        Erstellt ein Rauschprofil mit 180 Sekunden Clear Room Aufnahme
+        """
+        try:
+            print(f"[NOISE PROFILING] Starte 180 Sekunden Rauschprofil-Erstellung...")
+            print("[NOISE PROFILING] Bitte absolute Stille im Raum während der Aufnahme!")
+            
+            # Temporären Stream für Profil-Erstellung öffnen
+            stream = self.audio.open(
+                format=self.FORMAT,
+                channels=1,
+                rate=self.RATE,
+                input=True,
+                frames_per_buffer=self.CHUNK,
+                input_device_index=self.input_device_index
+            )
+            
+            noise_samples = []
+            start_time = time.time()
+            total_frames = int((self.RATE / self.CHUNK) * duration)
+            update_interval = max(1, total_frames // 100)  # 100 Updates
+            
+            # Sammle Rauschdaten für 180 Sekunden
+            for frame_count in range(total_frames):
+                try:
+                    data = stream.read(self.CHUNK, exception_on_overflow=False)
+                    noise_samples.append(data)
+                    
+                    # Fortschritt berechnen und callback aufrufen
+                    if frame_count % update_interval == 0:
+                        progress = (frame_count / total_frames) * 100
+                        self.audio_stats['capture_progress'] = progress
+                        elapsed = time.time() - start_time
+                        remaining = (duration - elapsed) if elapsed < duration else 0
+                        
+                        print(f"[NOISE PROFILING] Fortschritt: {progress:.1f}% - Verbleibend: {remaining:.0f}s")
+                        
+                        if progress_callback:
+                            progress_callback(progress, remaining)
+                            
+                except Exception as e:
+                    print(f"[NOISE PROFILING] Fehler beim Lesen: {e}")
+                    break
+            
+            stream.stop_stream()
+            stream.close()
+            
+            if not noise_samples:
+                print("[NOISE PROFILING] Keine Daten gesammelt")
+                return False
+            
+            # Analysiere Rauschprofil
+            self._analyze_noise_profile(noise_samples)
+            self.noise_profile['profile_captured'] = True
+            
+            # Profil speichern
+            self._save_noise_profile()
+            
+            total_time = time.time() - start_time
+            print(f"[NOISE PROFILING] Profil erfolgreich erstellt ({total_time:.1f}s)")
+            print(f"[NOISE PROFILING] Rauschschwelle: {self.noise_profile['noise_threshold']:.6f}")
+            print(f"[NOISE PROFILING] Rausch-Level: {self.audio_stats['noise_floor']:.6f}")
+            
+            return True
+            
+        except Exception as e:
+            print(f"[NOISE PROFILING ERROR] {str(e)}")
+            return False
+
+    def _analyze_noise_profile(self, noise_samples):
+        """Analysiert die gesammelten Rauschdaten und erstellt Profil"""
+        try:
+            import numpy as np
+            
+            # Kombiniere alle Samples
+            all_data = b''.join(noise_samples)
+            
+            # Konvertiere zu numpy array basierend auf Format
+            if self.FORMAT == pyaudio.paFloat32:
+                audio_data = np.frombuffer(all_data, dtype=np.float32)
+            elif self.FORMAT == pyaudio.paInt24:
+                audio_data = self._convert_24bit_to_32float(all_data)
+            else:  # paInt16
+                audio_data = np.frombuffer(all_data, dtype=np.int16).astype(np.float32) / 32768.0
+            
+            # Berechne RMS (Root Mean Square) des Rauschens
+            rms = np.sqrt(np.mean(audio_data ** 2))
+            
+            # Setze Rauschschwelle basierend auf RMS mit Sicherheitsmargin
+            self.noise_profile['noise_threshold'] = float(rms * 2.0)  # 100% Sicherheitsmargin für 180s
+            self.audio_stats['noise_floor'] = float(rms)
+            self.audio_stats['rms_level'] = float(rms)
+            
+            # Signal/Rausch-Verhältnis berechnen (theoretisch)
+            self.audio_stats['signal_to_noise'] = -20 * np.log10(rms) if rms > 0 else 0
+            
+            # Detaillierte Frequenzanalyse für 180s Profil
+            self._calculate_detailed_frequency_profile(audio_data)
+            
+        except Exception as e:
+            print(f"[NOISE ANALYSIS ERROR] {str(e)}")
+            # Fallback-Werte
+            self.noise_profile['noise_threshold'] = 0.005
+            self.audio_stats['noise_floor'] = 0.002
+
+    def _calculate_detailed_frequency_profile(self, audio_data):
+        """Detaillierte Frequenzanalyse für 180s Profil"""
+        try:
+            import numpy as np
+            from scipy import fftpack
+            
+            # Verwende nur einen Teil der Daten für FFT (Performance)
+            sample_size = min(len(audio_data), 44100 * 10)  # 10 Sekunden für FFT
+            analysis_data = audio_data[:sample_size]
+            
+            # FFT für Frequenzanalyse
+            fft_data = fftpack.fft(analysis_data)
+            frequencies = fftpack.fftfreq(len(analysis_data), 1.0 / self.RATE)
+            
+            # Power Spectrum
+            power_spectrum = np.abs(fft_data) ** 2
+            
+            # Identifiziere dominante Rauschfrequenzen
+            positive_freq = frequencies[:len(frequencies)//2]
+            positive_power = power_spectrum[:len(power_spectrum)//2]
+            
+            # Finde Peaks im Frequenzbereich
+            noise_peaks = []
+            for i in range(1, len(positive_power)-1):
+                if (positive_power[i] > positive_power[i-1] and 
+                    positive_power[i] > positive_power[i+1] and
+                    positive_power[i] > np.mean(positive_power) * 10):
+                    noise_peaks.append((positive_freq[i], positive_power[i]))
+            
+            self.noise_profile['frequency_profile'] = {
+                'frequencies': positive_freq,
+                'power': positive_power,
+                'peaks': sorted(noise_peaks, key=lambda x: x[1], reverse=True)[:10]  # Top 10 Peaks
+            }
+            
+            print(f"[NOISE PROFILE] Gefundene Rausch-Peaks: {len(noise_peaks)}")
+            
+        except ImportError:
+            print("[NOISE FILTER] scipy nicht verfügbar - Detaillierte Frequenzanalyse deaktiviert")
+        except Exception as e:
+            print(f"[FREQUENCY PROFILE ERROR] {str(e)}")
+
+    def _save_noise_profile(self):
+        """Speichert das Rauschprofil in einer kompakten Datei"""
+        try:
+            import pickle
+            import numpy as np
+            
+            profile_data = {
+                'noise_threshold': self.noise_profile['noise_threshold'],
+                'noise_floor': self.audio_stats['noise_floor'],
+                'sample_rate': self.RATE,
+                'format': self.FORMAT,
+                'timestamp': time.time(),
+                'duration': 180,
+                'frequency_profile': self.noise_profile.get('frequency_profile'),
+                'filter_settings': self.filter_coefficients.copy(),
+                'audio_stats': self.audio_stats.copy()
+            }
+            
+            with open('noise_profile_180s.pkl', 'wb') as f:
+                pickle.dump(profile_data, f)
+            
+            print(f"[NOISE PROFILE] 180s Profil gespeichert: noise_profile_180s.pkl")
+            
+        except Exception as e:
+            print(f"[NOISE PROFILE SAVE ERROR] {str(e)}")
+
+    def load_noise_profile(self, filename='noise_profile_180s.pkl'):
+        """Lädt ein gespeichertes Rauschprofil"""
+        try:
+            import pickle
+            
+            with open(filename, 'rb') as f:
+                profile_data = pickle.load(f)
+            
+            # Profil-Daten anwenden
+            self.noise_profile['noise_threshold'] = profile_data['noise_threshold']
+            self.noise_profile['profile_captured'] = True
+            self.audio_stats['noise_floor'] = profile_data['noise_floor']
+            
+            if 'frequency_profile' in profile_data:
+                self.noise_profile['frequency_profile'] = profile_data['frequency_profile']
+            
+            if 'filter_settings' in profile_data:
+                self.filter_coefficients.update(profile_data['filter_settings'])
+            
+            if 'audio_stats' in profile_data:
+                self.audio_stats.update(profile_data['audio_stats'])
+            
+            print(f"[NOISE PROFILE] 180s Profil geladen: {filename}")
+            print(f"[NOISE PROFILE] Rauschschwelle: {self.noise_profile['noise_threshold']:.6f}")
+            print(f"[NOISE PROFILE] Aufnahmedauer: {profile_data.get('duration', 'unbekannt')}s")
+            
+            return True
+            
+        except FileNotFoundError:
+            print(f"[NOISE PROFILE] Datei nicht gefunden: {filename}")
+            return False
+        except Exception as e:
+            print(f"[NOISE PROFILE LOAD ERROR] {str(e)}")
+            return False
+
+    def apply_noise_filter(self, audio_data):
+        """
+        Wendet Rauschfilter auf Audio-Daten an
+        Gibt gefilterte Daten zurück
+        """
+        if not self.noise_profile['enabled'] or not self.noise_profile['profile_captured']:
+            return audio_data
+        
+        try:
+            import numpy as np
+            
+            # Konvertiere zu numpy array basierend auf Format
+            if self.FORMAT == pyaudio.paFloat32:
+                data_array = np.frombuffer(audio_data, dtype=np.float32)
+            elif self.FORMAT == pyaudio.paInt24:
+                data_array = self._convert_24bit_to_32float(audio_data)
+            else:  # paInt16
+                data_array = np.frombuffer(audio_data, dtype=np.int16).astype(np.float32) / 32768.0
+            
+            # 1. Spektrale Rauschunterdrückung
+            filtered_data = self._apply_spectral_noise_reduction(data_array)
+            
+            # 2. Adaptives Noise Gate
+            filtered_data = self._apply_adaptive_gate(filtered_data)
+            
+            # 3. Frequenz-basierte Filterung (nur bei aggressivem Modus)
+            if self.noise_profile['aggressive_mode']:
+                filtered_data = self._apply_frequency_filters(filtered_data)
+            
+            # Konvertiere zurück zum ursprünglichen Format
+            if self.FORMAT == pyaudio.paFloat32:
+                return filtered_data.astype(np.float32).tobytes()
+            elif self.FORMAT == pyaudio.paInt24:
+                return self._convert_32float_to_24bit(filtered_data)
+            else:  # paInt16
+                return (filtered_data * 32768.0).astype(np.int16).tobytes()
+            
+        except Exception as e:
+            print(f"[NOISE FILTER ERROR] {str(e)}")
+            return audio_data  # Fallback: ungefilterte Daten
+
+    def _apply_spectral_noise_reduction(self, data):
+        """Wendet spektrale Rauschunterdrückung an"""
+        try:
+            import numpy as np
+            from scipy import fftpack
+            
+            # Einfache spektrale Subtraktion
+            fft_data = fftpack.fft(data)
+            magnitude = np.abs(fft_data)
+            phase = np.angle(fft_data)
+            
+            # Rauschschwelle im Frequenzbereich
+            noise_threshold_freq = self.noise_profile['noise_threshold'] * np.mean(magnitude)
+            
+            # Spektrale Subtraktion
+            magnitude_clean = magnitude - noise_threshold_freq
+            magnitude_clean = np.maximum(magnitude_clean, 0)
+            
+            # Rücktransformation
+            clean_fft = magnitude_clean * np.exp(1j * phase)
+            clean_data = np.real(fftpack.ifft(clean_fft))
+            
+            return clean_data
+            
+        except ImportError:
+            # Fallback: einfache Amplituden-Begrenzung
+            threshold = self.noise_profile['noise_threshold']
+            return np.where(np.abs(data) < threshold, 0, data)
+
+    def _apply_adaptive_gate(self, data):
+        """Wendet adaptives Noise Gate an"""
+        import numpy as np
+        
+        rms = np.sqrt(np.mean(data ** 2))
+        self.audio_stats['rms_level'] = float(rms)
+        
+        # Adaptive Schwelle basierend auf Signalstärke
+        base_threshold = self.noise_profile['noise_threshold']
+        if self.noise_profile['aggressive_mode']:
+            base_threshold *= 0.7  # Niedrigere Schwelle im aggressiven Modus
+        
+        adaptive_threshold = base_threshold
+        
+        # Dynamische Anpassung basierend auf Signalstärke
+        if rms > self.audio_stats['noise_floor'] * 20:  # Sehr starke Signale
+            adaptive_threshold *= 0.3
+        elif rms > self.audio_stats['noise_floor'] * 10:  # Starke Signale
+            adaptive_threshold *= 0.5
+        elif rms < self.audio_stats['noise_floor'] * 3:  # Sehr schwache Signale
+            adaptive_threshold *= 3.0
+        
+        # Noise Gate anwenden
+        gated_data = np.where(np.abs(data) < adaptive_threshold, 0, data)
+        
+        return gated_data
+
+    def _apply_frequency_filters(self, data):
+        """Wendet frequenzspezifische Filter an (aggressiver Modus)"""
+        try:
+            from scipy import signal
+            import numpy as np
+            
+            # Notch Filter für Netzbrummen (50Hz)
+            nyquist = self.RATE / 2
+            notch_freq = self.filter_coefficients['hum_filter_freq'] / nyquist
+            
+            if notch_freq < 1.0:
+                # Design Notch Filter
+                quality = 30  # Qualitätsfaktor
+                b, a = signal.iirnotch(notch_freq, quality)
+                data = signal.filtfilt(b, a, data)
+            
+            # Hochpass-Filter für Tieffrequenz-Rauschen
+            low_cutoff = self.filter_coefficients['low_freq_cutoff'] / nyquist
+            if low_cutoff < 1.0:
+                b, a = signal.butter(4, low_cutoff, btype='high')
+                data = signal.filtfilt(b, a, data)
+            
+            return data
+            
+        except ImportError:
+            return data
+
+    # ✅ KONVERTIERUNGS-METHODEN
+    def _convert_24bit_to_32float(self, data_24bit):
+        """Konvertiert 24-bit zu 32-bit Float"""
+        import numpy as np
+        
+        # 24-bit zu 32-bit Integer
+        audio_32int = np.frombuffer(data_24bit, dtype=np.int32)
+        # Skaliere zu Float (-1.0 bis +1.0)
+        return audio_32int.astype(np.float32) / 8388607.0
+
+    def _convert_32float_to_24bit(self, data_32float):
+        """Konvertiert 32-bit Float zu 24-bit"""
+        import numpy as np
+        
+        # Begrenze und skaliere zu 24-bit Integer
+        audio_clipped = np.clip(data_32float, -1.0, 1.0)
+        audio_24bit = (audio_clipped * 8388607.0).astype(np.int32)
+        return audio_24bit.tobytes()
+
+    def get_noise_profile_info(self):
+        """Gibt Informationen über das aktuelle Rauschprofil zurück"""
+        if not self.noise_profile['profile_captured']:
+            return "Kein Rauschprofil vorhanden"
+        
+        info = f"""
+Rauschprofil Informationen (180s Clear Room):
+- Aktiv: {'Ja' if self.noise_profile['enabled'] else 'Nein'}
+- Rauschschwelle: {self.noise_profile['noise_threshold']:.6f}
+- Rausch-Level: {self.audio_stats['noise_floor']:.6f}
+- Signal/Rausch: {self.audio_stats.get('signal_to_noise', 0):.2f} dB
+- Aggressiv: {'Ja' if self.noise_profile['aggressive_mode'] else 'Nein'}
+- Adaptiv: {'Ja' if self.noise_profile['adaptive_filter'] else 'Nein'}
+- Frequenz-Peaks: {len(self.noise_profile.get('frequency_profile', {}).get('peaks', []))}
+"""
+        return info
 class ClientRelayManager:
     def __init__(self, client_instance):
         self.client = client_instance
@@ -1179,6 +1931,8 @@ class ClientRelayManager:
 
 class CALL:
     def __init__(self, client_instance):
+
+
         self.client = client_instance
         self.active_call = False
         self.pending_call = None
@@ -1186,13 +1940,13 @@ class CALL:
         self.current_secret = None
         self.audio_threads = []
         
-        # Audio settings
-        self.FORMAT = pyaudio.paInt16
-        self.CHANNELS = 1
-        self.RATE = 16000
-        self.CHUNK = 1024
-        self.PORT = 51821  # Audio port
+        # ✅ Flexible Audio-Konfiguration
+        self.audio_config = AudioConfig()
+        self.PORT = 51821
         
+        # Audio-Streams
+        self.input_stream = None
+        self.output_stream = None        
         # ✅ SIMPLIFIED: Nur UDP Relay, kein WireGuard
         self.use_udp_relay = False
         self.relay_server_ip = None
@@ -1232,19 +1986,37 @@ class CALL:
         return devices
 
     def _get_output_devices(self):
-        """Gibt Liste aller Ausgabegeräte (Lautsprecher) zurück"""
+        """Gibt Liste aller Ausgabegeräte mit 24-bit Info zurück"""
         devices = []
         try:
-            for i in range(self.audio.get_device_count()):
-                device_info = self.audio.get_device_info_by_index(i)
+            audio = pyaudio.PyAudio()
+            for i in range(audio.get_device_count()):
+                device_info = audio.get_device_info_by_index(i)
                 if device_info.get('maxOutputChannels', 0) > 0:
                     device_name = device_info.get('name', f'Device {i}')
-                    devices.append(f"{i}: {device_name} (Output)")
+                    
+                    # Prüfe 24-bit Support
+                    supports_24bit = False
+                    try:
+                        supports_24bit = audio.is_format_supported(
+                            48000,
+                            output_device=i,
+                            output_channels=1, 
+                            output_format=pyaudio.paInt24
+                        )
+                    except:
+                        pass
+                    
+                    bit_info = " [24-bit]" if supports_24bit else " [16-bit]"
+                    devices.append(f"{i}: {device_name}{bit_info}")
+            
+            audio.terminate()
         except Exception as e:
             print(f"[OUTPUT DEVICES ERROR] {str(e)}")
-        return devices        
+            devices = ["0: Standard-Lautsprecher (Output)"]
+        return devices     
     def show_audio_devices_popup(self):
-        """Audio-Geräte Auswahl - Wird von PHONEBOOK aufgerufen"""
+        """Audio-Geräte, Qualitätsauswahl und Rauschfilterung - Wird von PHONEBOOK aufgerufen"""
         try:
             # Warte bis das Hauptfenster sichtbar ist
             if hasattr(self.client, 'winfo_viewable') and not self.client.winfo_viewable():
@@ -1257,10 +2029,10 @@ class CALL:
                 print("[AUDIO POPUP] Main window destroyed, aborting...")
                 return
 
-            # Erstelle neues Fenster
+            # Erstelle neues Fenster (größer für alle Optionen)
             popup = tk.Toplevel(self.client)
-            popup.title("Audio-Geräte Auswahl")
-            popup.geometry("500x450")
+            popup.title("Audio-Einstellungen")
+            popup.geometry("600x960")
             popup.resizable(False, False)
             
             # Warte bis Popup sichtbar ist
@@ -1272,20 +2044,63 @@ class CALL:
             
             # Zentriere das Fenster
             popup.update_idletasks()
-            x = (popup.winfo_screenwidth() // 2) - (500 // 2)
-            y = (popup.winfo_screenheight() // 2) - (450 // 2)
+            x = (popup.winfo_screenwidth() // 2) - (650 // 2)
+            y = (popup.winfo_screenheight() // 2) - (800 // 2)
             popup.geometry(f"+{x}+{y}")
             
             # Separate Variablen für jede Combobox
             input_var = tk.StringVar(popup)
             output_var = tk.StringVar(popup)
+            quality_var = tk.StringVar(value=self.audio_config.quality_profile)
+            
+            # ✅ NOISE FILTER VARIABLEN
+            noise_var = tk.BooleanVar(value=self.audio_config.noise_profile['enabled'])
+            aggressive_var = tk.BooleanVar(value=self.audio_config.noise_profile['aggressive_mode'])
+            
+            # ===== AUDIO-QUALITÄTSAUSWAHL =====
+            quality_frame = tk.LabelFrame(popup, text="Audio-Qualität", font=("Arial", 10, "bold"), padx=10, pady=10)
+            quality_frame.pack(fill="x", padx=20, pady=(20, 10))
+            
+            # Qualitätsbeschreibungen
+            quality_descriptions = {
+                "highest": "🏆 Highest Quality: 32-bit Float @ 192kHz (Experimentell, beste Qualität)",
+                "high": "🔊 High Quality: 24-bit @ 192kHz (Beste Qualität, höhere Bandbreite)",
+                "middle": "🎵 Middle Quality: 24-bit @ 48kHz (Ausgeglichen, empfohlen)",
+                "low": "📱 Low Quality: 16-bit @ 48kHz (Geringe Bandbreite, stabil)"
+            }
+            
+            # Qualitäts-Optionen
+            highest_radio = tk.Radiobutton(quality_frame, text=quality_descriptions["highest"], 
+                                          variable=quality_var, value="highest", font=("Arial", 9))
+            highest_radio.pack(anchor="w", pady=5)
+            
+            high_radio = tk.Radiobutton(quality_frame, text=quality_descriptions["high"], 
+                                       variable=quality_var, value="high", font=("Arial", 9))
+            high_radio.pack(anchor="w", pady=5)
+            
+            middle_radio = tk.Radiobutton(quality_frame, text=quality_descriptions["middle"], 
+                                         variable=quality_var, value="middle", font=("Arial", 9))
+            middle_radio.pack(anchor="w", pady=5)
+            
+            low_radio = tk.Radiobutton(quality_frame, text=quality_descriptions["low"], 
+                                      variable=quality_var, value="low", font=("Arial", 9))
+            low_radio.pack(anchor="w", pady=5)
+            
+            # Aktuelle Qualitäts-Anzeige
+            current_quality_label = tk.Label(quality_frame, text=f"Aktuell: {self.audio_config.QUALITY_PROFILES[self.audio_config.quality_profile]['name']}", 
+                                           font=("Arial", 8), fg="blue")
+            current_quality_label.pack(anchor="w", pady=(5, 0))
+            
+            # ===== GERÄTEAUSWAHL =====
+            devices_frame = tk.LabelFrame(popup, text="Audio-Geräte", font=("Arial", 10, "bold"), padx=10, pady=10)
+            devices_frame.pack(fill="x", padx=20, pady=10)
             
             # Eingabegeräte (Mikrofone)
-            tk.Label(popup, text="Eingabegerät (Mikrofon):", font=("Arial", 10, "bold")).pack(pady=(20, 5))
+            tk.Label(devices_frame, text="Eingabegerät (Mikrofon):", font=("Arial", 9, "bold")).pack(anchor="w", pady=(5, 2))
             input_devices = self._get_input_devices()
             
-            input_combo = ttk.Combobox(popup, textvariable=input_var, values=input_devices, width=60, state="readonly")
-            input_combo.pack(pady=5)
+            input_combo = ttk.Combobox(devices_frame, textvariable=input_var, values=input_devices, width=70, state="readonly")
+            input_combo.pack(fill="x", pady=(0, 10))
             
             # Vorauswahl setzen - UNABHÄNGIG von Ausgabegerät
             current_input = getattr(self.client, 'selected_input_device', None)
@@ -1297,11 +2112,11 @@ class CALL:
                 input_combo.set(input_devices[0])
             
             # Ausgabegeräte (Lautsprecher/Kopfhörer)
-            tk.Label(popup, text="Ausgabegerät (Lautsprecher):", font=("Arial", 10, "bold")).pack(pady=(20, 5))
+            tk.Label(devices_frame, text="Ausgabegerät (Lautsprecher):", font=("Arial", 9, "bold")).pack(anchor="w", pady=(5, 2))
             output_devices = self._get_output_devices()
             
-            output_combo = ttk.Combobox(popup, textvariable=output_var, values=output_devices, width=60, state="readonly")
-            output_combo.pack(pady=5)
+            output_combo = ttk.Combobox(devices_frame, textvariable=output_var, values=output_devices, width=70, state="readonly")
+            output_combo.pack(fill="x", pady=(0, 5))
             
             # Vorauswahl setzen - UNABHÄNGIG von Eingabegerät
             current_output = getattr(self.client, 'selected_output_device', None)
@@ -1312,36 +2127,200 @@ class CALL:
                 output_var.set(output_devices[0])
                 output_combo.set(output_devices[0])
             
-            # Info Text
-            info_text = (
-                "Hinweise:\n"
-                "• Wählen Sie separate Geräte (z.B. Mikrofon + Lautsprecher)\n"
-                "• Oder wählen Sie dasselbe Gerät für beide (z.B. Headset)\n"
-                "• Einstellungen werden für zukünftige Anrufe übernommen"
-            )
-            info_label = tk.Label(popup, text=info_text, font=("Arial", 9), 
-                                justify=tk.LEFT, fg="blue", wraplength=450)
-            info_label.pack(pady=20)
+            # ===== RAUSCHFILTER AUSWAHL =====
+            noise_frame = tk.LabelFrame(popup, text="Rauschfilterung für analoge Mikrofone", font=("Arial", 10, "bold"), padx=10, pady=10)
+            noise_frame.pack(fill="x", padx=20, pady=10)
             
-            # Aktuelle Auswahl anzeigen
+            # Noise Filter Aktivierung
+            noise_check = tk.Checkbutton(noise_frame, text="🎤 Rauschfilterung aktivieren (für analoge Mikrofone)", 
+                                        variable=noise_var, font=("Arial", 9))
+            noise_check.pack(anchor="w", pady=5)
+            
+            # Aggressive Filterung
+            aggressive_check = tk.Checkbutton(noise_frame, text="🔊 Aggressive Rauschunterdrückung (für laute Umgebungen)", 
+                                             variable=aggressive_var, font=("Arial", 8))
+            aggressive_check.pack(anchor="w", pady=2)
+            
+            # Profil-Status Anzeige
+            profile_status_label = tk.Label(noise_frame, text="", font=("Arial", 8))
+            profile_status_label.pack(anchor="w", pady=5)
+            
+            # Progress Bar für Profil-Erstellung
+            progress_frame = tk.Frame(noise_frame)
+            progress_frame.pack(fill="x", pady=5)
+            
+            progress_label = tk.Label(progress_frame, text="", font=("Arial", 8))
+            progress_label.pack(anchor="w")
+            
+            progress_bar = ttk.Progressbar(progress_frame, orient="horizontal", length=300, mode="determinate")
+            progress_bar.pack(fill="x", pady=2)
+            
+            # Profil-Buttons
+            noise_button_frame = tk.Frame(noise_frame)
+            noise_button_frame.pack(fill="x", pady=10)
+            
+            def update_profile_status():
+                """Aktualisiert den Profil-Status"""
+                if self.audio_config.noise_profile['profile_captured']:
+                    threshold = self.audio_config.noise_profile['noise_threshold']
+                    status_text = f"✅ Profil vorhanden - Rauschschwelle: {threshold:.6f}"
+                    profile_status_label.config(text=status_text, fg="green")
+                else:
+                    profile_status_label.config(text="❌ Kein Rauschprofil vorhanden", fg="red")
+            
+            def capture_profile():
+                """Startet 180 Sekunden Rauschprofil-Erstellung"""
+                if not input_var.get():
+                    messagebox.showerror("Fehler", "Bitte zuerst ein Eingabegerät auswählen!")
+                    return
+                
+                # Bestätigung für 180 Sekunden Aufnahme
+                confirm = messagebox.askyesno(
+                    "Rauschprofil erstellen", 
+                    "Das Rauschprofil wird 180 Sekunden (3 Minuten) aufnehmen.\n\n"
+                    "Bitte stellen Sie sicher, dass:\n"
+                    "• Absolute Stille im Raum herrscht\n" 
+                    "• Keine Geräusche vorhanden sind\n"
+                    "• Das Mikrofon nicht bewegt wird\n\n"
+                    "Fortfahren mit der 3-minütigen Aufnahme?"
+                )
+                if not confirm:
+                    return
+                
+                # Progress Bar zurücksetzen
+                progress_bar['value'] = 0
+                progress_label.config(text="Vorbereitung...")
+                popup.update()
+                
+                def progress_callback(progress, remaining):
+                    """Callback für Fortschrittsupdates"""
+                    progress_bar['value'] = progress
+                    progress_label.config(text=f"Aufnahme läuft... {progress:.1f}% - Noch {remaining:.0f} Sekunden")
+                    popup.update()
+                
+                # Starte Profil-Erstellung in einem separaten Thread
+                def capture_thread():
+                    try:
+                        success = self.audio_config.capture_noise_profile(
+                            duration=180, 
+                            progress_callback=progress_callback
+                        )
+                        
+                        # UI Updates im Hauptthread
+                        popup.after(0, lambda: on_capture_complete(success))
+                        
+                    except Exception as e:
+                        popup.after(0, lambda: on_capture_complete(False, str(e)))
+                
+                threading.Thread(target=capture_thread, daemon=True).start()
+            
+            def on_capture_complete(success, error_msg=None):
+                """Wird aufgerufen wenn die Profil-Erstellung abgeschlossen ist"""
+                progress_bar['value'] = 0
+                progress_label.config(text="")
+                
+                if success:
+                    messagebox.showinfo("Rauschprofil", "✅ 180-Sekunden Rauschprofil erfolgreich erstellt!")
+                    update_profile_status()
+                else:
+                    error_text = "Fehler beim Erstellen des Rauschprofils"
+                    if error_msg:
+                        error_text += f": {error_msg}"
+                    messagebox.showerror("Rauschprofil", error_text)
+            
+            def load_profile():
+                """Lädt gespeichertes Rauschprofil"""
+                success = self.audio_config.load_noise_profile()
+                if success:
+                    messagebox.showinfo("Rauschprofil", "✅ Rauschprofil erfolgreich geladen!")
+                    update_profile_status()
+                else:
+                    messagebox.showwarning("Rauschprofil", "❌ Kein Rauschprofil gefunden oder Fehler beim Laden")
+            
+            def show_profile_info():
+                """Zeigt Profil-Informationen"""
+                info = self.audio_config.get_noise_profile_info()
+                messagebox.showinfo("Rauschprofil Info", info)
+            
+            def clear_profile():
+                """Löscht das aktuelle Rauschprofil"""
+                self.audio_config.noise_profile['profile_captured'] = False
+                self.audio_config.noise_profile['noise_threshold'] = 0.01
+                update_profile_status()
+                messagebox.showinfo("Rauschprofil", "Rauschprofil zurückgesetzt")
+            
+            # Noise Profil Buttons
+            ttk.Button(noise_button_frame, text="🎙️ 180s Profil erstellen", 
+                      command=capture_profile, width=18).pack(side=tk.LEFT, padx=2)
+            ttk.Button(noise_button_frame, text="📂 Profil laden", 
+                      command=load_profile, width=12).pack(side=tk.LEFT, padx=2)
+            ttk.Button(noise_button_frame, text="ℹ️ Info", 
+                      command=show_profile_info, width=8).pack(side=tk.LEFT, padx=2)
+            ttk.Button(noise_button_frame, text="🗑️ Löschen", 
+                      command=clear_profile, width=8).pack(side=tk.LEFT, padx=2)
+            
+            # ===== INFO TEXT =====
+            info_frame = tk.Frame(popup)
+            info_frame.pack(fill="x", padx=20, pady=10)
+            
+            info_text = (
+                "ℹ️ Hinweise:\n"
+                "• Qualität wird automatisch an Gesprächspartner angepasst\n"
+                "• Highest: 32-bit Float @ 192kHz (nur mit kompatiblen Geräten)\n"
+                "• High: 24-bit @ 192kHz (beste Qualität für die meisten Systeme)\n" 
+                "• Middle: 24-bit @ 48kHz (ausgeglichene Qualität und Stabilität)\n"
+                "• Low: 16-bit @ 48kHz (geringste Bandbreite, stabilste Verbindung)\n"
+                "• Rauschfilter: Für analoge Mikrofone - 180s 'Clear Room' Profil empfohlen"
+            )
+            info_label = tk.Label(info_frame, text=info_text, font=("Arial", 8), 
+                                justify=tk.LEFT, fg="green", wraplength=600)
+            info_label.pack()
+            
+            # ===== AKTUELLE AUSWAHL ANZEIGE =====
             def update_selection_display():
                 input_text = input_var.get() or "Nicht ausgewählt"
                 output_text = output_var.get() or "Nicht ausgewählt"
-                selection_label.config(text=f"Aktuell: Eingabe: {input_text[:30]}... | Ausgabe: {output_text[:30]}...")
+                quality_text = quality_var.get()
+                quality_name = self.audio_config.QUALITY_PROFILES[quality_text]['name']
+                
+                noise_status = "Aktiv" if noise_var.get() else "Inaktiv"
+                aggressive_status = "Aktiv" if aggressive_var.get() else "Inaktiv"
+                profile_status = "Vorhanden" if self.audio_config.noise_profile['profile_captured'] else "Fehlt"
+                
+                selection_text = (f"Eingabe: {input_text[:20]}... | "
+                                f"Ausgabe: {output_text[:20]}... | "
+                                f"Qualität: {quality_name} | "
+                                f"Rauschfilter: {noise_status} ({profile_status})")
+                selection_label.config(text=selection_text)
             
-            selection_label = tk.Label(popup, text="", font=("Arial", 8), fg="green")
-            selection_label.pack(pady=5)
+            selection_label = tk.Label(popup, text="", font=("Arial", 8), fg="blue", wraplength=600)
+            selection_label.pack(pady=10)
             update_selection_display()
-            
-            # Buttons Frame
+
+            # ===== BUTTONS =====
             button_frame = tk.Frame(popup)
             button_frame.pack(pady=20)
             
             def apply_selection():
-                """Übernimmt die aktuell ausgewählten Geräte"""
+                """Übernimmt die aktuell ausgewählten Geräte, Qualität und Rauschfilterung"""
                 input_selection = input_var.get()
                 output_selection = output_var.get()
+                quality_selection = quality_var.get()
                 
+                # Warnung für Highest Quality
+                if quality_selection == "highest":
+                    confirm = messagebox.askyesno(
+                        "Experimentelle Qualität", 
+                        "Highest Quality (32-bit Float @ 192kHz) ist experimentell:\n\n"
+                        "• Erfordert sehr schnelle Internetverbindung\n"
+                        "• Nur mit kompatiblen Gesprächspartnern nutzbar\n"
+                        "• Höhere Bandbreite und CPU-Auslastung\n\n"
+                        "Fortfahren?"
+                    )
+                    if not confirm:
+                        return
+                
+                # Geräte speichern
                 if input_selection:
                     self.client.selected_input_device = input_selection
                     self.selected_input_device = input_selection
@@ -1350,69 +2329,206 @@ class CALL:
                     self.client.selected_output_device = output_selection
                     self.selected_output_device = output_selection
                 
+                # Qualität speichern und anwenden
+                if quality_selection in self.audio_config.QUALITY_PROFILES:
+                    
+                    profile = self.audio_config.QUALITY_PROFILES[quality_selection]
+                    self.audio_config.quality_profile = quality_selection
+                    self.audio_config.FORMAT = profile["format"]
+                    self.audio_config.RATE = profile["rate"]
+                    self.audio_config.CHANNELS = profile["channels"]
+                    self.audio_config.sample_format_name = profile["name"]
+                    self.audio_config.actual_format = profile["actual_format"]
+                    print(f"[AUDIO] Quality set: {self.audio_config.sample_format_name}")
+                    if hasattr(self.client, 'audio_quality'):
+                        self.client.audio_quality = quality_selection
+                
+                # Rauschfilterung speichern
+                self.audio_config.enable_noise_filter(noise_var.get())
+                self.audio_config.set_aggressive_noise_reduction(aggressive_var.get())
+                
                 try:
                     if popup.winfo_exists():
                         popup.destroy()
-                    messagebox.showinfo("Audio-Geräte", 
+                    
+                    quality_name = self.audio_config.QUALITY_PROFILES[quality_selection]['name']
+                    noise_status = "aktiviert" if noise_var.get() else "deaktiviert"
+                    profile_status = "mit Profil" if self.audio_config.noise_profile['profile_captured'] else "ohne Profil"
+                    
+                    messagebox.showinfo("Audio-Einstellungen", 
                                       f"✅ Eingabegerät: {input_selection or 'Standard'}\n"
-                                      f"✅ Ausgabegerät: {output_selection or 'Standard'}")
+                                      f"✅ Ausgabegerät: {output_selection or 'Standard'}\n"
+                                      f"✅ Qualität: {quality_name}\n"
+                                      f"✅ Rauschfilter: {noise_status} {profile_status}")
+                except Exception as e:
+                    print(f"[AUDIO POPUP CLOSE ERROR] {str(e)}")
+            
+            def save_as_default():
+                """Speichert die aktuellen Einstellungen als dauerhafte Standard-Einstellung"""
+                input_selection = input_var.get()
+                output_selection = output_var.get()
+                quality_selection = quality_var.get()
+                
+                # Warnung für Highest Quality als Standard
+                if quality_selection == "highest":
+                    confirm = messagebox.askyesno(
+                        "Experimentelle Standard-Einstellung", 
+                        "Highest Quality als Standard setzen?\n\n"
+                        "Dies kann zu Verbindungsproblemen führen, wenn Ihr Gesprächspartner\n"
+                        "diese Qualität nicht unterstützt oder die Bandbreite nicht ausreicht.\n\n"
+                        "Trotzdem als Standard setzen?"
+                    )
+                    if not confirm:
+                        return
+                
+                # Geräte speichern
+                if input_selection:
+                    self.client.selected_input_device = input_selection
+                    self.selected_input_device = input_selection
+                
+                if output_selection:
+                    self.client.selected_output_device = output_selection
+                    self.selected_output_device = output_selection
+                
+                # Qualität speichern
+                if quality_selection in self.audio_config.QUALITY_PROFILES:
+                    
+                    profile = self.audio_config.QUALITY_PROFILES[quality_selection]
+                    self.audio_config.quality_profile = quality_selection
+                    self.audio_config.FORMAT = profile["format"]
+                    self.audio_config.RATE = profile["rate"]
+                    self.audio_config.CHANNELS = profile["channels"]
+                    self.audio_config.sample_format_name = profile["name"]
+                    self.audio_config.actual_format = profile["actual_format"]
+                    print(f"[AUDIO] Quality set: {self.audio_config.sample_format_name}")
+                    if hasattr(self.client, 'audio_quality'):
+                        self.client.audio_quality = quality_selection
+                
+                # Rauschfilterung speichern
+                self.audio_config.enable_noise_filter(noise_var.get())
+                self.audio_config.set_aggressive_noise_reduction(aggressive_var.get())
+                
+                try:
+                    if popup.winfo_exists():
+                        popup.destroy()
+                    
+                    quality_name = self.audio_config.QUALITY_PROFILES[quality_selection]['name']
+                    noise_status = "aktiviert" if noise_var.get() else "deaktiviert"
+                    
+                    messagebox.showinfo("Audio-Einstellungen", 
+                                      f"✅ Standard-Einstellungen gespeichert:\n"
+                                      f"Eingabe: {input_selection or 'Standard'}\n"
+                                      f"Ausgabe: {output_selection or 'Standard'}\n"
+                                      f"Qualität: {quality_name}\n"
+                                      f"Rauschfilter: {noise_status}")
+                except Exception as e:
+                    print(f"[AUDIO POPUP CLOSE ERROR] {str(e)}")
+            
+            def cancel_selection():
+                """Schließt das Fenster ohne Änderungen"""
+                try:
+                    if popup.winfo_exists():
+                        popup.destroy()
+                    print("[AUDIO POPUP] Abgebrochen - keine Änderungen übernommen")
                 except Exception as e:
                     print(f"[AUDIO POPUP CLOSE ERROR] {str(e)}")
             
             def use_default():
-                """Setzt Standard-Geräte für diese Sitzung"""
+                """Setzt Standard-Geräte und Qualität für diese Sitzung"""
                 self.client.selected_input_device = None
                 self.client.selected_output_device = None
                 self.selected_input_device = None
                 self.selected_output_device = None
                 
-                try:
-                    if popup.winfo_exists():
-                        popup.destroy()
-                    messagebox.showinfo("Audio-Geräte", "Standard-Geräte werden für diese Sitzung verwendet")
-                except Exception as e:
-                    print(f"[AUDIO POPUP CLOSE ERROR] {str(e)}")
-            
-            def save_as_default():
-                """Speichert die aktuellen Geräte als dauerhafte Standard-Einstellung"""
-                input_selection = input_var.get()
-                output_selection = output_var.get()
+                # Standard-Qualität (middle)
+                self.audio_config.set_quality("middle")
+                if hasattr(self.client, 'audio_quality'):
+                    self.client.audio_quality = "middle"
                 
-                if input_selection:
-                    self.client.selected_input_device = input_selection
-                    self.selected_input_device = input_selection
-                
-                if output_selection:
-                    self.client.selected_output_device = output_selection
-                    self.selected_output_device = output_selection
-                
-                # Hier könnte man die Einstellungen in einer Config-Datei speichern
-                # Für jetzt speichern wir sie nur in den Instanzvariablen
+                # Rauschfilterung deaktivieren
+                self.audio_config.enable_noise_filter(False)
                 
                 try:
                     if popup.winfo_exists():
                         popup.destroy()
-                    messagebox.showinfo("Audio-Geräte", 
-                                      f"✅ Standard-Geräte gespeichert:\n"
-                                      f"Eingabe: {input_selection or 'Standard'}\n"
-                                      f"Ausgabe: {output_selection or 'Standard'}")
+                    messagebox.showinfo("Audio-Einstellungen", 
+                                      "Standard-Einstellungen werden für diese Sitzung verwendet\n"
+                                      "Qualität: Middle (24-bit @ 48kHz)\n"
+                                      "Rauschfilter: Deaktiviert")
                 except Exception as e:
                     print(f"[AUDIO POPUP CLOSE ERROR] {str(e)}")
             
-            # Event-Handler für Combobox-Änderungen
+            def test_audio():
+                """Testet die Audio-Einstellungen"""
+                quality_text = quality_var.get()
+                quality_name = self.audio_config.QUALITY_PROFILES[quality_text]['name']
+                noise_status = "Aktiv" if noise_var.get() else "Inaktiv"
+                profile_status = "Vorhanden" if self.audio_config.noise_profile['profile_captured'] else "Fehlt"
+                
+                messagebox.showinfo("Audio-Test", 
+                                  "Audio-Test-Funktion wird in zukünftigen Versionen verfügbar sein.\n\n"
+                                  f"Aktuelle Einstellungen:\n"
+                                  f"• Qualität: {quality_name}\n"
+                                  f"• Eingabe: {input_var.get() or 'Standard'}\n"
+                                  f"• Ausgabe: {output_var.get() or 'Standard'}\n"
+                                  f"• Rauschfilter: {noise_status} ({profile_status})\n"
+                                  f"• Aggressiv: {'Ja' if aggressive_var.get() else 'Nein'}")
+            
+            # ✅ EXPLIZITE BUTTON-DEFINITIONEN
+            # Erster Button-Reihe: Hauptaktionen
+            action_frame = tk.Frame(button_frame)
+            action_frame.pack(pady=10)
+            
+            # Große, gut sichtbare Buttons
+            apply_btn = ttk.Button(action_frame, text="✅ ÜBERNEHMEN", 
+                                 command=apply_selection, width=15)
+            apply_btn.pack(side=tk.LEFT, padx=10)
+            
+            save_btn = ttk.Button(action_frame, text="💾 SPEICHERN", 
+                                command=save_as_default, width=15)
+            save_btn.pack(side=tk.LEFT, padx=10)
+            
+            cancel_btn = ttk.Button(action_frame, text="❌ ABBRECHEN", 
+                                  command=cancel_selection, width=15)
+            cancel_btn.pack(side=tk.LEFT, padx=10)
+            
+            # Zweite Button-Reihe: Zusätzliche Optionen
+            options_frame = tk.Frame(button_frame)
+            options_frame.pack(pady=5)
+            
+            test_btn = ttk.Button(options_frame, text="🎵 Test", 
+                                command=test_audio, width=12)
+            test_btn.pack(side=tk.LEFT, padx=5)
+            
+            default_btn = ttk.Button(options_frame, text="⚙️ Standard", 
+                                   command=use_default, width=12)
+            default_btn.pack(side=tk.LEFT, padx=5)
+            
+            # Event-Handler für Änderungen
             def on_input_change(*args):
                 update_selection_display()
             
             def on_output_change(*args):
                 update_selection_display()
             
+            def on_quality_change(*args):
+                update_selection_display()
+                current_quality_label.config(
+                    text=f"Aktuell: {self.audio_config.QUALITY_PROFILES[quality_var.get()]['name']}"
+                )
+            
+            def on_noise_change(*args):
+                update_selection_display()
+            
             input_var.trace('w', on_input_change)
             output_var.trace('w', on_output_change)
+            quality_var.trace('w', on_quality_change)
+            noise_var.trace('w', on_noise_change)
+            aggressive_var.trace('w', on_noise_change)
             
-            # ✅ KLARE UND SINNVOLLE BUTTONS:
-            ttk.Button(button_frame, text="Übernehmen", command=apply_selection, width=15).pack(side=tk.LEFT, padx=5)
-            ttk.Button(button_frame, text="Standard", command=use_default, width=15).pack(side=tk.LEFT, padx=5)
-            ttk.Button(button_frame, text="Als Standard speichern", command=save_as_default, width=18).pack(side=tk.LEFT, padx=5)
+            # Initiale Anzeige aktualisieren
+            update_selection_display()
+            update_profile_status()
             
             # Safe error handling
             try:
@@ -1424,10 +2540,9 @@ class CALL:
             print(f"[AUDIO DEVICE POPUP ERROR] {str(e)}")
             try:
                 if hasattr(self.client, 'after'):
-                    self.client.after(0, lambda: messagebox.showerror("Fehler", f"Audio-Geräte Auswahl fehlgeschlagen: {str(e)}"))
+                    self.client.after(0, lambda: messagebox.showerror("Fehler", f"Audio-Einstellungen fehlgeschlagen: {str(e)}"))
             except:
                 pass
-
 
     def handle_message(self, raw_message):
         """Zentrale Message-Handling Methode - VOLLSTÄNDIG KORRIGIERT"""
@@ -1606,11 +2721,18 @@ class CALL:
                 raise RuntimeError("Bereits in einem Anruf aktiv")
 
             # EINHEITLICHE GET_PUBLIC_KEY Nachricht
+
             key_request_data = {
                 "MESSAGE_TYPE": "GET_PUBLIC_KEY",
                 "TARGET_CLIENT_ID": recipient['id'],
                 "CALLER_NAME": self.client._client_name,
-                "CALLER_CLIENT_ID": self.client._find_my_client_id()
+                "CALLER_CLIENT_ID": self.client._find_my_client_id(),
+                "AUDIO_CAPABILITIES": {
+                    "format": self.audio_config.sample_format_name,
+                    "sample_rate": self.audio_config.RATE,
+                    "channels": self.audio_config.CHANNELS,
+                    "chunk_size": self.audio_config.CHUNK
+                }
             }
             
             key_request_msg = self.client.build_sip_message(
@@ -2373,123 +3495,160 @@ class CALL:
             print(f"[AUDIO ERROR] Failed to start streams: {e}")
 
     def audio_stream_out(self, target_ip, target_port, iv, key):
-        """Sendet Audio an Ziel-IP mit ausgewähltem Gerät"""
-        audio = None
-        stream = None
+        """Sendet Audio - öffnet Streams NUR wenn Call aktiv ist"""
         audio_socket = None
         
+        # ✅ PRÜFE OB CALL AKTIV IST
+        if not self.active_call:
+            print("❌ [AUDIO OUT] No active call - cannot open audio stream")
+            return False
+        
         try:
-            audio = pyaudio.PyAudio()
+            print(f"[AUDIO OUT] Starting: {self.audio_config.sample_format_name}")
+            print(f"[AUDIO OUT] Channels: {self.audio_config.CHANNELS}, Rate: {self.audio_config.RATE}")
             
-            # Device Index für Eingabe
-            input_device_index = None
-            if self.selected_input_device:
-                input_device_index = self._get_device_index(self.selected_input_device)
-            
-            stream = audio.open(
-                format=self.FORMAT,
-                channels=self.CHANNELS,
-                rate=self.RATE,
-                input=True,
-                frames_per_buffer=self.CHUNK,
-                input_device_index=input_device_index
-            )
+            # ✅ STREAM NUR ÖFFNEN WENN CALL AKTIV
+            if self.active_call:
+                self.input_stream = self.audio_config.audio.open(
+                    format=self.audio_config.FORMAT,
+                    channels=self.audio_config.CHANNELS,
+                    rate=self.audio_config.RATE,
+                    input=True,
+                    frames_per_buffer=self.audio_config.CHUNK,
+                    input_device_index=self.audio_config.input_device_index
+                )
+                print("✅ [AUDIO OUT] Input stream opened")
+            else:
+                print("❌ [AUDIO OUT] Call ended - skipping stream opening")
+                return False
             
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             audio_socket.settimeout(0.1)
             
-            print(f"[AUDIO OUT] Streaming to {target_ip}:{target_port} (Device: {input_device_index})")
+            print(f"🎤 [AUDIO OUT] Transmission active: {self.audio_config.sample_format_name}")
             
-            while self.active_call:
+            while self.active_call:  # ✅ NUR SOLANGE CALL AKTIV
                 try:
-                    data = stream.read(self.CHUNK, exception_on_overflow=False)
+                    raw_data = self.input_stream.read(
+                        self.audio_config.CHUNK, 
+                        exception_on_overflow=False
+                    )
                     
-                    # Verschlüsseln
+                    # Rauschfilterung anwenden (falls aktiv)
+                    if (self.audio_config.noise_profile['enabled'] and 
+                        self.audio_config.noise_profile['profile_captured']):
+                        filtered_data = self.audio_config.apply_noise_filter(raw_data)
+                    else:
+                        filtered_data = raw_data
+                    
+                    # Verschlüsseln und senden
                     cipher = EVP.Cipher("aes_256_cbc", key, iv, 1)
-                    encrypted_data = cipher.update(data) + cipher.final()
+                    encrypted_data = cipher.update(filtered_data) + cipher.final()
                     
                     audio_socket.sendto(encrypted_data, (target_ip, target_port))
                     
                 except socket.timeout:
                     continue
                 except Exception as e:
-                    if self.active_call:
+                    if self.active_call:  # ✅ NUR LOGGEN WENN CALL NOCH AKTIV
                         print(f"[AUDIO OUT ERROR] {str(e)}")
                     break
                     
         except Exception as e:
             print(f"[AUDIO OUT SETUP ERROR] {str(e)}")
+            return False
         finally:
-            try:
-                if stream:
-                    stream.stop_stream()
-                    stream.close()
-                if audio:
-                    audio.terminate()
-                if audio_socket:
-                    audio_socket.close()
-            except:
-                pass
+            # ✅ STREAMS SICHER SCHLIESSEN
+            if hasattr(self, 'input_stream') and self.input_stream:
+                try:
+                    self.input_stream.stop_stream()
+                    self.input_stream.close()
+                    self.input_stream = None
+                except:
+                    pass
+            if audio_socket:
+                audio_socket.close()
+        
+        return True
 
     def audio_stream_in(self, iv, key):
-        """Empfängt Audio mit ausgewähltem Ausgabegerät"""
-        audio = None
-        stream = None
+        """Empfängt Audio - öffnet Streams NUR wenn Call aktiv ist"""
         audio_socket = None
         
+        # ✅ PRÜFE OB CALL AKTIV IST
+        if not self.active_call:
+            print("❌ [AUDIO IN] No active call - cannot open audio stream")
+            return False
+        
         try:
-            audio = pyaudio.PyAudio()
+            print(f"[AUDIO IN] Output: 16-bit Mono @ {self.audio_config.RATE}Hz")
             
-            # Device Index für Ausgabe
-            output_device_index = None
-            if self.selected_output_device:
-                output_device_index = self._get_device_index(self.selected_output_device)
-            
-            stream = audio.open(
-                format=self.FORMAT,
-                channels=self.CHANNELS,
-                rate=self.RATE,
-                output=True,
-                frames_per_buffer=self.CHUNK,
-                output_device_index=output_device_index
-            )
+            # ✅ STREAM NUR ÖFFNEN WENN CALL AKTIV
+            if self.active_call:
+                self.output_stream = self.audio_config.audio.open(
+                    format=pyaudio.paInt16,  # Output immer 16-bit
+                    channels=1,              # Output immer Mono
+                    rate=self.audio_config.RATE,
+                    output=True,
+                    frames_per_buffer=self.audio_config.CHUNK,
+                    output_device_index=self.audio_config.output_device_index
+                )
+                print("✅ [AUDIO IN] Output stream opened")
+            else:
+                print("❌ [AUDIO IN] Call ended - skipping stream opening")
+                return False
             
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             audio_socket.bind(('0.0.0.0', self.PORT))
             audio_socket.settimeout(0.1)
             
-            print(f"[AUDIO IN] Listening for audio... (Device: {output_device_index})")
-            
-            while self.active_call:
+            while self.active_call:  # ✅ NUR SOLANGE CALL AKTIV
                 try:
                     encrypted_data, addr = audio_socket.recvfrom(4096)
                     
                     # Entschlüsseln
                     cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
-                    decrypted_data = cipher.update(encrypted_data) + cipher.final()
+                    received_data = cipher.update(encrypted_data) + cipher.final()
                     
-                    stream.write(decrypted_data)
+                    self.output_stream.write(received_data)
                     
                 except socket.timeout:
                     continue
                 except Exception as e:
-                    if self.active_call:
+                    if self.active_call:  # ✅ NUR LOGGEN WENN CALL NOCH AKTIV
                         print(f"[AUDIO IN ERROR] {str(e)}")
                     break
                     
         except Exception as e:
             print(f"[AUDIO IN SETUP ERROR] {str(e)}")
+            return False
         finally:
-            try:
-                if stream:
-                    stream.stop_stream()
-                    stream.close()
-                if audio:
-                    audio.terminate()
-                if audio_socket:
-                    audio_socket.close()
-            except:
-                pass
+            # ✅ STREAMS SICHER SCHLIESSEN
+            if hasattr(self, 'output_stream') and self.output_stream:
+                try:
+                    self.output_stream.stop_stream()
+                    self.output_stream.close()
+                    self.output_stream = None
+                except:
+                    pass
+            if audio_socket:
+                audio_socket.close()
+        
+        return True
+
+    def _convert_24bit_to_16bit(self, audio_24bit):
+        """Konvertiert 24-bit Audio zu 16-bit"""
+        try:
+            audio_16bit = b''
+            for i in range(0, len(audio_24bit), 3):
+                if i + 3 <= len(audio_24bit):
+                    audio_16bit += audio_24bit[i+1:i+3]
+            return audio_16bit
+        except Exception as e:
+            print(f"[CONVERSION ERROR] {e}, returning original data")
+            return audio_24bit
+
+
 
     def _start_call_timer(self):
         """Startet die Call-Timer-Anzeige auf beiden Clients"""
@@ -2931,18 +4090,81 @@ class PHONEBOOK(ctk.CTk):
             button_frame.pack(pady=20)
             
             def apply_selection():
-                self.selected_input_device = input_var.get()
-                self.selected_output_device = output_var.get()
+                """Übernimmt die aktuell ausgewählten Geräte, Qualität und Rauschfilterung"""
+                input_selection = input_var.get()
+                output_selection = output_var.get()
+                quality_selection = quality_var.get()
                 
-                # Speichere in CALL Manager falls vorhanden
-                if hasattr(self, 'call_manager'):
-                    self.call_manager.selected_input_device = self.selected_input_device
-                    self.call_manager.selected_output_device = self.selected_output_device
+                # Warnung für Highest Quality
+                if quality_selection == "highest":
+                    confirm = messagebox.askyesno(
+                        "Experimentelle Qualität", 
+                        "Highest Quality (32-bit @ 192kHz Stereo) ist experimentell:\n\n"
+                        "• Erfordert sehr schnelle Internetverbindung\n"
+                        "• Nur mit kompatiblen Gesprächspartnern nutzbar\n"
+                        "• Höhere Bandbreite und CPU-Auslastung\n\n"
+                        "Fortfahren?"
+                    )
+                    if not confirm:
+                        return
                 
-                dialog.destroy()
-                messagebox.showinfo("Audio-Geräte", 
-                                  f"Eingabegerät: {self.selected_input_device}\n"
-                                  f"Ausgabegerät: {self.selected_output_device}")
+                # Geräte speichern
+                if input_selection:
+                    self.client.selected_input_device = input_selection
+                    self.selected_input_device = input_selection
+                
+                if output_selection:
+                    self.client.selected_output_device = output_selection
+                    self.selected_output_device = output_selection
+                
+                # ✅ QUALITÄT SICHER SETZEN (ohne set_quality aufzurufen!)
+                if quality_selection in self.audio_config.QUALITY_PROFILES:
+                    # Direkt die Werte setzen ohne set_quality Methode
+                    profile = self.audio_config.QUALITY_PROFILES[quality_selection]
+                    
+                    # Nur die Konfigurationswerte setzen
+                    self.audio_config.quality_profile = quality_selection
+                    self.audio_config.FORMAT = profile["format"]
+                    self.audio_config.RATE = profile["rate"] 
+                    self.audio_config.CHANNELS = profile["channels"]
+                    self.audio_config.sample_format_name = profile["name"]
+                    self.audio_config.actual_format = profile["actual_format"]
+                    
+                    # Sample Width basierend auf Format
+                    if self.audio_config.actual_format == "S32_LE":
+                        self.audio_config.sample_width = 4
+                    elif self.audio_config.actual_format == "24-bit":
+                        self.audio_config.sample_width = 3
+                    else:  # 16-bit
+                        self.audio_config.sample_width = 2
+                    
+                    # Chunk-Größe anpassen
+                    if self.audio_config.RATE >= 96000:
+                        self.audio_config.CHUNK = 2048
+                    else:
+                        self.audio_config.CHUNK = 1024
+                    
+                    print(f"[AUDIO] Quality set (safe): {self.audio_config.sample_format_name}")
+                
+                # Rauschfilterung speichern
+                self.audio_config.enable_noise_filter(noise_var.get())
+                self.audio_config.set_aggressive_noise_reduction(aggressive_var.get())
+                
+                try:
+                    if popup.winfo_exists():
+                        popup.destroy()
+                    
+                    quality_name = self.audio_config.QUALITY_PROFILES[quality_selection]['name']
+                    noise_status = "aktiviert" if noise_var.get() else "deaktiviert"
+                    profile_status = "mit Profil" if self.audio_config.noise_profile['profile_captured'] else "ohne Profil"
+                    
+                    messagebox.showinfo("Audio-Einstellungen", 
+                                      f"✅ Eingabegerät: {input_selection or 'Standard'}\n"
+                                      f"✅ Ausgabegerät: {output_selection or 'Standard'}\n"
+                                      f"✅ Qualität: {quality_name}\n"
+                                      f"✅ Rauschfilter: {noise_status} {profile_status}")
+                except Exception as e:
+                    print(f"[AUDIO POPUP CLOSE ERROR] {str(e)}")
             
             def use_same_device():
                 selected = input_var.get()
@@ -2986,7 +4208,7 @@ class PHONEBOOK(ctk.CTk):
         return devices
 
     def _get_output_devices(self):
-        """Gibt Liste aller Ausgabegeräte (Lautsprecher) zurück"""
+        """Gibt Liste aller Ausgabegeräte mit 24-bit Info zurück"""
         devices = []
         try:
             audio = pyaudio.PyAudio()
@@ -2994,7 +4216,22 @@ class PHONEBOOK(ctk.CTk):
                 device_info = audio.get_device_info_by_index(i)
                 if device_info.get('maxOutputChannels', 0) > 0:
                     device_name = device_info.get('name', f'Device {i}')
-                    devices.append(f"{i}: {device_name} (Output)")
+                    
+                    # Prüfe 24-bit Support
+                    supports_24bit = False
+                    try:
+                        supports_24bit = audio.is_format_supported(
+                            48000,
+                            output_device=i,
+                            output_channels=1, 
+                            output_format=pyaudio.paInt24
+                        )
+                    except:
+                        pass
+                    
+                    bit_info = " [24-bit]" if supports_24bit else " [16-bit]"
+                    devices.append(f"{i}: {device_name}{bit_info}")
+            
             audio.terminate()
         except Exception as e:
             print(f"[OUTPUT DEVICES ERROR] {str(e)}")
