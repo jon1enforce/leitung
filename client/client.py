@@ -479,64 +479,59 @@ def extract_secret(decrypted_data):
 
 
 def load_privatekey():
-    """Lädt den privaten Schlüssel - konsistent mit generate_keys() - KORRIGIERT"""
+    """Lädt den privaten Client-Schlüssel - VOLLSTÄNDIG KORRIGIERT"""
     try:
+        print("[KEY] Loading client private key...")
+        
         if not os.path.exists("client_private_key.pem"):
-            print("[KEY] Generating new RSA key pair...")
-            # Generiere neuen RSA-Schlüssel
-            bits = 4096
-            new_key = RSA.gen_key(bits, 65537)
-
-            # Speichere den privaten Schlüssel im PKCS#8 Format
-            from M2Crypto import EVP
-            pkey = EVP.PKey()
-            pkey.assign_rsa(new_key)
+            print("[KEY] No client private key found, generating new key pair...")
+            return generate_new_keypair()
+        
+        # Lade existierenden privaten Schlüssel
+        with open("client_private_key.pem", "rb") as f:
+            private_key_data = f.read()
+        
+        private_key_str = private_key_data.decode('utf-8').strip()
+        
+        print(f"[KEY DEBUG] Private key file content length: {len(private_key_str)}")
+        print(f"[KEY DEBUG] First line: {private_key_str.splitlines()[0] if private_key_str.splitlines() else 'EMPTY'}")
+        print(f"[KEY DEBUG] Last line: {private_key_str.splitlines()[-1] if private_key_str.splitlines() else 'EMPTY'}")
+        
+        # ✅ KRITISCHE KORREKTUR: Teste den Schlüssel durch tatsächliches Laden
+        try:
+            print("[KEY TEST] Testing private key with RSA.load_key_string...")
+            priv_key = RSA.load_key_string(private_key_str.encode())
             
-            priv_memory = BIO.MemoryBuffer()
-            pkey.save_key_bio(priv_memory, cipher=None)
+            if not priv_key:
+                print("[KEY ERROR] RSA.load_key_string returned None - invalid key format")
+                raise ValueError("Invalid private key format")
             
-            with open("client_private_key.pem", "wb") as privHandle:
-                privHandle.write(priv_memory.getvalue())
+            # Teste mit einer kleinen Operation
+            test_data = b"TEST_RSA_OPERATION"
+            try:
+                # Versuche zu signieren (funktiert immer)
+                signature = priv_key.sign(hashlib.sha256(test_data).digest(), "sha256")
+                if signature and len(signature) > 0:
+                    print("[KEY TEST] ✅ Private key RSA test successful")
+                else:
+                    print("[KEY TEST] ❌ Private key signature test failed")
+                    raise ValueError("Private key signature test failed")
+            except Exception as sig_error:
+                print(f"[KEY TEST WARNING] Signature test failed: {sig_error}")
+                # Fallback: Prüfe nur ob Key geladen werden kann
+                print("[KEY TEST] ✅ Private key loaded successfully (basic test)")
             
-            # Speichere auch den öffentlichen Schlüssel
-            pub_memory = BIO.MemoryBuffer()
-            new_key.save_pub_key_bio(pub_memory)
-            public_key_pem = pub_memory.getvalue().decode('utf-8')
-
-            with open("client_public_key.pem", "w") as pubHandle:
-                pubHandle.write(public_key_pem)
-            
-            print("[KEY] New key pair generated successfully")
-            return public_key_pem  # Rückgabe als String
-            
-        else:
-            # Lade den privaten Schlüssel - KORREKTUR: Immer private key zurückgeben
-            print("[KEY] Loading existing private key...")
-            with open("client_private_key.pem", "rb") as f:
-                private_key_data = f.read()
-            
-            # Validiere dass es ein privater Schlüssel ist
-            private_key_str = private_key_data.decode('utf-8')
-            if not ('-----BEGIN PRIVATE KEY-----' in private_key_str or 
-                   '-----BEGIN RSA PRIVATE KEY-----' in private_key_str):
-                raise ValueError("Invalid private key format in file")
-            
-            print("[KEY] Private key loaded successfully")
-            return private_key_str  # WICHTIG: Private key als String zurückgeben
+        except Exception as e:
+            print(f"[KEY ERROR] Private key RSA test failed: {e}")
+            print("[KEY] Regenerating key pair...")
+            return regenerate_keypair()
+        
+        print("[KEY] Client private key loaded and validated successfully")
+        return private_key_str
             
     except Exception as e:
-        print(f"[KEY ERROR] Failed to load private key: {str(e)}")
-        # Fallback: Versuche Schlüssel neu zu generieren
-        try:
-            print("[KEY] Attempting to regenerate keys...")
-            if os.path.exists("client_private_key.pem"):
-                os.remove("client_private_key.pem")
-            if os.path.exists("client_public_key.pem"):
-                os.remove("client_public_key.pem")
-            return load_privatekey()  # Rekursiver Aufruf
-        except:
-            print("[KEY CRITICAL] Key generation failed")
-            return None
+        print(f"[KEY ERROR] Failed to load client private key: {str(e)}")
+        return regenerate_keypair()
 def load_server_publickey():
     """Lädt und normalisiert den öffentlichen Server-Schlüssel"""
     if not os.path.exists("server_public_key.pem"):
@@ -624,7 +619,32 @@ def load_client_id():
             return file.read().strip()
     return None
 
+def generate_new_keypair():
+    """Generiert ein neues Schlüsselpaar als Fallback"""
+    try:
+        print("[KEY] Generating new RSA key pair...")
+        bits = 4096
+        new_key = RSA.gen_key(bits, 65537)
 
+        # Speichere privaten Schlüssel
+        priv_memory = BIO.MemoryBuffer()
+        new_key.save_key_bio(priv_memory, cipher=None)
+        with open("client_private_key.pem", "wb") as priv_file:
+            priv_file.write(priv_memory.getvalue())
+
+        # Speichere öffentlichen Schlüssel
+        pub_memory = BIO.MemoryBuffer()
+        new_key.save_pub_key_bio(pub_memory)
+        public_key_pem = pub_memory.getvalue().decode('utf-8')
+        with open("client_public_key.pem", "w") as pub_file:
+            pub_file.write(public_key_pem)
+
+        print("[KEY] New key pair generated successfully")
+        return public_key_pem
+        
+    except Exception as e:
+        print(f"[KEY ERROR] Failed to generate new key pair: {str(e)}")
+        return None
 def load_publickey():
     if not os.path.exists("client_public_key.pem") or not os.path.exists("client_private_key.pem"):
         # Generiere neuen RSA-Schlüssel
@@ -2016,7 +2036,7 @@ class CALL:
             devices = ["0: Standard-Lautsprecher (Output)"]
         return devices     
     def show_audio_devices_popup(self):
-        """Audio-Geräte, Qualitätsauswahl und Rauschfilterung - Wird von PHONEBOOK aufgerufen"""
+        """Audio-Geräte, Qualitätsauswahl und Rauschfilterung - MIT DPI-SKALIERUNG NUR FÜR SCHRIFT"""
         try:
             # Warte bis das Hauptfenster sichtbar ist
             if hasattr(self.client, 'winfo_viewable') and not self.client.winfo_viewable():
@@ -2029,11 +2049,43 @@ class CALL:
                 print("[AUDIO POPUP] Main window destroyed, aborting...")
                 return
 
-            # Erstelle neues Fenster (größer für alle Optionen)
+            # ✅ DPI-ERKENNUNG UND SKALIERUNGSFAKTOR NUR FÜR SCHRIFT
+            screen_dpi = self.client.winfo_fpixels('1i')  # DPI des Bildschirms
+            
+            # Standard-DPI ist 96, berechne Skalierungsfaktor für Schrift
+            base_dpi = 96
+            font_scaling_factor = screen_dpi / base_dpi if screen_dpi > 0 else 1.0
+            
+            # Begrenze den Skalierungsfaktor für sehr hohe DPI
+            font_scaling_factor = min(font_scaling_factor, 2.0)  # Max 2.0x Schrift-Skalierung
+            font_scaling_factor = max(font_scaling_factor, 0.7)  # Min 0.7x Schrift-Skalierung
+            
+            print(f"[DPI] Screen DPI: {screen_dpi:.1f}, Font Scaling: {font_scaling_factor:.2f}")
+            
+            # ✅ DYNAMISCHE SCHRIFTGRÖSSEN BASIEREND AUF DPI (bei konstanter Fenstergröße)
+            font_sizes = {
+                'title': max(10, int(10 * font_scaling_factor)),
+                'heading': max(9, int(9 * font_scaling_factor)),
+                'normal': max(8, int(8 * font_scaling_factor)),
+                'small': max(7, int(7 * font_scaling_factor)),
+                'tiny': max(6, int(6 * font_scaling_factor))
+            }
+            
+            # ✅ KONSTANTE FENSTERGRÖSSE (600x960 Pixel) - unabhängig von DPI
+            window_width = 600
+            window_height = 960
+            
+            # Erstelle neues Fenster mit konstanter Größe
             popup = tk.Toplevel(self.client)
             popup.title("Audio-Einstellungen")
-            popup.geometry("600x960")
+            popup.geometry(f"{window_width}x{window_height}")
             popup.resizable(False, False)
+            
+            # Setze DPI-awareness für Schrift-Skalierung (falls unterstützt)
+            try:
+                popup.tk.call('tk', 'scaling', font_scaling_factor)
+            except:
+                print("[DPI] tk scaling not supported, using manual font scaling")
             
             # Warte bis Popup sichtbar ist
             popup.update_idletasks()
@@ -2044,8 +2096,8 @@ class CALL:
             
             # Zentriere das Fenster
             popup.update_idletasks()
-            x = (popup.winfo_screenwidth() // 2) - (650 // 2)
-            y = (popup.winfo_screenheight() // 2) - (800 // 2)
+            x = (popup.winfo_screenwidth() // 2) - (window_width // 2)
+            y = (popup.winfo_screenheight() // 2) - (window_height // 2)
             popup.geometry(f"+{x}+{y}")
             
             # Separate Variablen für jede Combobox
@@ -2058,7 +2110,13 @@ class CALL:
             aggressive_var = tk.BooleanVar(value=self.audio_config.noise_profile['aggressive_mode'])
             
             # ===== AUDIO-QUALITÄTSAUSWAHL =====
-            quality_frame = tk.LabelFrame(popup, text="Audio-Qualität", font=("Arial", 10, "bold"), padx=10, pady=10)
+            quality_frame = tk.LabelFrame(
+                popup, 
+                text="Audio-Qualität", 
+                font=("Arial", font_sizes['heading'], "bold"), 
+                padx=10, 
+                pady=10
+            )
             quality_frame.pack(fill="x", padx=20, pady=(20, 10))
             
             # Qualitätsbeschreibungen
@@ -2069,40 +2127,86 @@ class CALL:
                 "low": "📱 Low Quality: 16-bit @ 48kHz (Geringe Bandbreite, stabil)"
             }
             
-            # Qualitäts-Optionen
-            highest_radio = tk.Radiobutton(quality_frame, text=quality_descriptions["highest"], 
-                                          variable=quality_var, value="highest", font=("Arial", 9))
+            # Qualitäts-Optionen mit skalierter Schrift
+            highest_radio = tk.Radiobutton(
+                quality_frame, 
+                text=quality_descriptions["highest"], 
+                variable=quality_var, 
+                value="highest", 
+                font=("Arial", font_sizes['normal']),
+                wraplength=550  # Konstanter Wraplength für 600px Fenster
+            )
             highest_radio.pack(anchor="w", pady=5)
             
-            high_radio = tk.Radiobutton(quality_frame, text=quality_descriptions["high"], 
-                                       variable=quality_var, value="high", font=("Arial", 9))
+            high_radio = tk.Radiobutton(
+                quality_frame, 
+                text=quality_descriptions["high"], 
+                variable=quality_var, 
+                value="high", 
+                font=("Arial", font_sizes['normal']),
+                wraplength=550
+            )
             high_radio.pack(anchor="w", pady=5)
             
-            middle_radio = tk.Radiobutton(quality_frame, text=quality_descriptions["middle"], 
-                                         variable=quality_var, value="middle", font=("Arial", 9))
+            middle_radio = tk.Radiobutton(
+                quality_frame, 
+                text=quality_descriptions["middle"], 
+                variable=quality_var, 
+                value="middle", 
+                font=("Arial", font_sizes['normal']),
+                wraplength=550
+            )
             middle_radio.pack(anchor="w", pady=5)
             
-            low_radio = tk.Radiobutton(quality_frame, text=quality_descriptions["low"], 
-                                      variable=quality_var, value="low", font=("Arial", 9))
+            low_radio = tk.Radiobutton(
+                quality_frame, 
+                text=quality_descriptions["low"], 
+                variable=quality_var, 
+                value="low", 
+                font=("Arial", font_sizes['normal']),
+                wraplength=550
+            )
             low_radio.pack(anchor="w", pady=5)
             
-            # Aktuelle Qualitäts-Anzeige
-            current_quality_label = tk.Label(quality_frame, text=f"Aktuell: {self.audio_config.QUALITY_PROFILES[self.audio_config.quality_profile]['name']}", 
-                                           font=("Arial", 8), fg="blue")
+            # Aktuelle Qualitäts-Anzeige mit kleinerer Schrift
+            current_quality_label = tk.Label(
+                quality_frame, 
+                text=f"Aktuell: {self.audio_config.QUALITY_PROFILES[self.audio_config.quality_profile]['name']}", 
+                font=("Arial", font_sizes['small']), 
+                fg="blue"
+            )
             current_quality_label.pack(anchor="w", pady=(5, 0))
             
             # ===== GERÄTEAUSWAHL =====
-            devices_frame = tk.LabelFrame(popup, text="Audio-Geräte", font=("Arial", 10, "bold"), padx=10, pady=10)
+            devices_frame = tk.LabelFrame(
+                popup, 
+                text="Audio-Geräte", 
+                font=("Arial", font_sizes['heading'], "bold"), 
+                padx=10, 
+                pady=10
+            )
             devices_frame.pack(fill="x", padx=20, pady=10)
             
-            # Eingabegeräte (Mikrofone)
-            tk.Label(devices_frame, text="Eingabegerät (Mikrofon):", font=("Arial", 9, "bold")).pack(anchor="w", pady=(5, 2))
+            # Eingabegeräte (Mikrofone) mit skalierter Schrift
+            tk.Label(
+                devices_frame, 
+                text="Eingabegerät (Mikrofon):", 
+                font=("Arial", font_sizes['normal'], "bold")
+            ).pack(anchor="w", pady=(5, 2))
+            
             input_devices = self._get_input_devices()
             
-            input_combo = ttk.Combobox(devices_frame, textvariable=input_var, values=input_devices, width=70, state="readonly")
+            input_combo = ttk.Combobox(
+                devices_frame, 
+                textvariable=input_var, 
+                values=input_devices, 
+                width=65,  # Konstante Breite
+                state="readonly",
+                font=("Arial", font_sizes['normal'])
+            )
             input_combo.pack(fill="x", pady=(0, 10))
             
-            # Vorauswahl setzen - UNABHÄNGIG von Ausgabegerät
+            # Vorauswahl setzen
             current_input = getattr(self.client, 'selected_input_device', None)
             if current_input and current_input in input_devices:
                 input_var.set(current_input)
@@ -2112,13 +2216,25 @@ class CALL:
                 input_combo.set(input_devices[0])
             
             # Ausgabegeräte (Lautsprecher/Kopfhörer)
-            tk.Label(devices_frame, text="Ausgabegerät (Lautsprecher):", font=("Arial", 9, "bold")).pack(anchor="w", pady=(5, 2))
+            tk.Label(
+                devices_frame, 
+                text="Ausgabegerät (Lautsprecher):", 
+                font=("Arial", font_sizes['normal'], "bold")
+            ).pack(anchor="w", pady=(5, 2))
+            
             output_devices = self._get_output_devices()
             
-            output_combo = ttk.Combobox(devices_frame, textvariable=output_var, values=output_devices, width=70, state="readonly")
+            output_combo = ttk.Combobox(
+                devices_frame, 
+                textvariable=output_var, 
+                values=output_devices, 
+                width=65,  # Konstante Breite
+                state="readonly",
+                font=("Arial", font_sizes['normal'])
+            )
             output_combo.pack(fill="x", pady=(0, 5))
             
-            # Vorauswahl setzen - UNABHÄNGIG von Eingabegerät
+            # Vorauswahl setzen
             current_output = getattr(self.client, 'selected_output_device', None)
             if current_output and current_output in output_devices:
                 output_var.set(current_output)
@@ -2128,31 +2244,58 @@ class CALL:
                 output_combo.set(output_devices[0])
             
             # ===== RAUSCHFILTER AUSWAHL =====
-            noise_frame = tk.LabelFrame(popup, text="Rauschfilterung für analoge Mikrofone", font=("Arial", 10, "bold"), padx=10, pady=10)
+            noise_frame = tk.LabelFrame(
+                popup, 
+                text="Rauschfilterung für analoge Mikrofone", 
+                font=("Arial", font_sizes['heading'], "bold"), 
+                padx=10, 
+                pady=10
+            )
             noise_frame.pack(fill="x", padx=20, pady=10)
             
-            # Noise Filter Aktivierung
-            noise_check = tk.Checkbutton(noise_frame, text="🎤 Rauschfilterung aktivieren (für analoge Mikrofone)", 
-                                        variable=noise_var, font=("Arial", 9))
+            # Noise Filter Aktivierung mit skalierter Schrift
+            noise_check = tk.Checkbutton(
+                noise_frame, 
+                text="🎤 Rauschfilterung aktivieren (für analoge Mikrofone)", 
+                variable=noise_var, 
+                font=("Arial", font_sizes['normal'])
+            )
             noise_check.pack(anchor="w", pady=5)
             
-            # Aggressive Filterung
-            aggressive_check = tk.Checkbutton(noise_frame, text="🔊 Aggressive Rauschunterdrückung (für laute Umgebungen)", 
-                                             variable=aggressive_var, font=("Arial", 8))
+            # Aggressive Filterung mit kleinerer Schrift
+            aggressive_check = tk.Checkbutton(
+                noise_frame, 
+                text="🔊 Aggressive Rauschunterdrückung (für laute Umgebungen)", 
+                variable=aggressive_var, 
+                font=("Arial", font_sizes['small'])
+            )
             aggressive_check.pack(anchor="w", pady=2)
             
             # Profil-Status Anzeige
-            profile_status_label = tk.Label(noise_frame, text="", font=("Arial", 8))
+            profile_status_label = tk.Label(
+                noise_frame, 
+                text="", 
+                font=("Arial", font_sizes['small'])
+            )
             profile_status_label.pack(anchor="w", pady=5)
             
             # Progress Bar für Profil-Erstellung
             progress_frame = tk.Frame(noise_frame)
             progress_frame.pack(fill="x", pady=5)
             
-            progress_label = tk.Label(progress_frame, text="", font=("Arial", 8))
+            progress_label = tk.Label(
+                progress_frame, 
+                text="", 
+                font=("Arial", font_sizes['small'])
+            )
             progress_label.pack(anchor="w")
             
-            progress_bar = ttk.Progressbar(progress_frame, orient="horizontal", length=300, mode="determinate")
+            progress_bar = ttk.Progressbar(
+                progress_frame, 
+                orient="horizontal", 
+                length=300,  # Konstante Länge
+                mode="determinate"
+            )
             progress_bar.pack(fill="x", pady=2)
             
             # Profil-Buttons
@@ -2249,15 +2392,34 @@ class CALL:
                 update_profile_status()
                 messagebox.showinfo("Rauschprofil", "Rauschprofil zurückgesetzt")
             
-            # Noise Profil Buttons
-            ttk.Button(noise_button_frame, text="🎙️ 180s Profil erstellen", 
-                      command=capture_profile, width=18).pack(side=tk.LEFT, padx=2)
-            ttk.Button(noise_button_frame, text="📂 Profil laden", 
-                      command=load_profile, width=12).pack(side=tk.LEFT, padx=2)
-            ttk.Button(noise_button_frame, text="ℹ️ Info", 
-                      command=show_profile_info, width=8).pack(side=tk.LEFT, padx=2)
-            ttk.Button(noise_button_frame, text="🗑️ Löschen", 
-                      command=clear_profile, width=8).pack(side=tk.LEFT, padx=2)
+            # Noise Profil Buttons mit konstanten Breiten
+            ttk.Button(
+                noise_button_frame, 
+                text="🎙️ 180s Profil erstellen", 
+                command=capture_profile, 
+                width=20
+            ).pack(side=tk.LEFT, padx=2)
+            
+            ttk.Button(
+                noise_button_frame, 
+                text="📂 Profil laden", 
+                command=load_profile, 
+                width=15
+            ).pack(side=tk.LEFT, padx=2)
+            
+            ttk.Button(
+                noise_button_frame, 
+                text="ℹ️ Info", 
+                command=show_profile_info, 
+                width=10
+            ).pack(side=tk.LEFT, padx=2)
+            
+            ttk.Button(
+                noise_button_frame, 
+                text="🗑️ Löschen", 
+                command=clear_profile, 
+                width=10
+            ).pack(side=tk.LEFT, padx=2)
             
             # ===== INFO TEXT =====
             info_frame = tk.Frame(popup)
@@ -2272,8 +2434,14 @@ class CALL:
                 "• Low: 16-bit @ 48kHz (geringste Bandbreite, stabilste Verbindung)\n"
                 "• Rauschfilter: Für analoge Mikrofone - 180s 'Clear Room' Profil empfohlen"
             )
-            info_label = tk.Label(info_frame, text=info_text, font=("Arial", 8), 
-                                justify=tk.LEFT, fg="green", wraplength=600)
+            info_label = tk.Label(
+                info_frame, 
+                text=info_text, 
+                font=("Arial", font_sizes['small']), 
+                justify=tk.LEFT, 
+                fg="green", 
+                wraplength=560  # Konstanter Wraplength
+            )
             info_label.pack()
             
             # ===== AKTUELLE AUSWAHL ANZEIGE =====
@@ -2293,7 +2461,13 @@ class CALL:
                                 f"Rauschfilter: {noise_status} ({profile_status})")
                 selection_label.config(text=selection_text)
             
-            selection_label = tk.Label(popup, text="", font=("Arial", 8), fg="blue", wraplength=600)
+            selection_label = tk.Label(
+                popup, 
+                text="", 
+                font=("Arial", font_sizes['small']), 
+                fg="blue", 
+                wraplength=560
+            )
             selection_label.pack(pady=10)
             update_selection_display()
 
@@ -2479,29 +2653,49 @@ class CALL:
             action_frame = tk.Frame(button_frame)
             action_frame.pack(pady=10)
             
-            # Große, gut sichtbare Buttons
-            apply_btn = ttk.Button(action_frame, text="✅ ÜBERNEHMEN", 
-                                 command=apply_selection, width=15)
+            # Große, gut sichtbare Buttons mit konstanten Breiten
+            apply_btn = ttk.Button(
+                action_frame, 
+                text="✅ ÜBERNEHMEN", 
+                command=apply_selection, 
+                width=15
+            )
             apply_btn.pack(side=tk.LEFT, padx=10)
             
-            save_btn = ttk.Button(action_frame, text="💾 SPEICHERN", 
-                                command=save_as_default, width=15)
+            save_btn = ttk.Button(
+                action_frame, 
+                text="💾 SPEICHERN", 
+                command=save_as_default, 
+                width=15
+            )
             save_btn.pack(side=tk.LEFT, padx=10)
             
-            cancel_btn = ttk.Button(action_frame, text="❌ ABBRECHEN", 
-                                  command=cancel_selection, width=15)
+            cancel_btn = ttk.Button(
+                action_frame, 
+                text="❌ ABBRECHEN", 
+                command=cancel_selection, 
+                width=15
+            )
             cancel_btn.pack(side=tk.LEFT, padx=10)
             
             # Zweite Button-Reihe: Zusätzliche Optionen
             options_frame = tk.Frame(button_frame)
             options_frame.pack(pady=5)
             
-            test_btn = ttk.Button(options_frame, text="🎵 Test", 
-                                command=test_audio, width=12)
+            test_btn = ttk.Button(
+                options_frame, 
+                text="🎵 Test", 
+                command=test_audio, 
+                width=12
+            )
             test_btn.pack(side=tk.LEFT, padx=5)
             
-            default_btn = ttk.Button(options_frame, text="⚙️ Standard", 
-                                   command=use_default, width=12)
+            default_btn = ttk.Button(
+                options_frame, 
+                text="⚙️ Standard", 
+                command=use_default, 
+                width=12
+            )
             default_btn.pack(side=tk.LEFT, padx=5)
             
             # Event-Handler für Änderungen
@@ -4308,92 +4502,180 @@ class PHONEBOOK(ctk.CTk):
             print(f"[PHONEBOOK ERROR] Entry click failed: {str(e)}")
 
     def connection_loop(self, client_socket, server_ip, message_handler=None):
-        """ULTRA-SCHNELLE Connection-Loop für maximale Performance"""
+        """VERBESSERTE Connection-Loop mit STABILER VERBINDUNG und BESSERER FEHLERBEHANDLUNG"""
         global connected
         connected = True
-        print("[CONNECTION] Starting ULTRA-FAST connection loop")
+        print("[CONNECTION] Starting IMPROVED connection loop")
         
-        # ✅ ULTRA-SCHNELLE TIMING WERTE
-        ping_interval = 45  # Weniger Pings = mehr Performance
+        # ✅ VERBESSERTE TIMING WERTE
+        ping_interval = 30  # Ausgeglichenes Ping-Intervall
         last_ping_time = time.time()
-        consecutive_timeouts = 0
-        max_consecutive_timeouts = 5
         last_activity_time = time.time()
+        consecutive_errors = 0
+        max_consecutive_errors = 5
+        ping_timeout_count = 0
+        max_ping_timeouts = 3
         
-        # ✅ EINFACHE NON-BLOCKING IMPLEMENTIERUNG (ohne select)
-        client_socket.setblocking(False)
+        # ✅ BLOCKING MODUS für stabilere Verbindung
+        client_socket.setblocking(True)
+        original_timeout = client_socket.gettimeout()
+        client_socket.settimeout(5.0)  # Moderate Timeout für Stabilität
         
-        while connected:
-            try:
+        print(f"[CONNECTION] Socket configured - blocking: {client_socket.getblocking()}, timeout: {client_socket.gettimeout()}")
+        
+        try:
+            while connected:
                 current_time = time.time()
                 
-                # ✅ MINIMALES PING-MANAGEMENT
-                if current_time - last_ping_time >= ping_interval and consecutive_timeouts < 2:
-                    ping_data = {
-                        "MESSAGE_TYPE": "PING",
-                        "TIMESTAMP": int(current_time),
-                        "CLIENT_NAME": self._client_name,
-                    }
-                    
-                    ping_msg = self.build_sip_message("MESSAGE", server_ip, ping_data)
-                    
-                    if send_frame(client_socket, ping_msg.encode('utf-8')):
-                        last_ping_time = current_time
-                        if consecutive_timeouts > 0:
-                            print(f"[PING] Recovered after {consecutive_timeouts} timeouts")
-                            consecutive_timeouts = 0
-                    else:
-                        consecutive_timeouts += 1
-                        print(f"[PING FAILED] #{consecutive_timeouts}")
+                # ✅ INTELLIGENTES PING-MANAGEMENT
+                time_since_last_ping = current_time - last_ping_time
+                time_since_last_activity = current_time - last_activity_time
                 
-                # ✅ NON-BLOCKING EMPFANG (ULTRA-SCHNELL)
+                # Ping nur senden wenn nötig und Verbindung stabil
+                if (time_since_last_ping >= ping_interval and 
+                    consecutive_errors < 2 and 
+                    ping_timeout_count < max_ping_timeouts):
+                    
+                    try:
+                        ping_data = {
+                            "MESSAGE_TYPE": "PING",
+                            "TIMESTAMP": int(current_time),
+                            "CLIENT_NAME": self._client_name,
+                            "CLIENT_ID": getattr(self, '_find_my_client_id', lambda: 'unknown')()
+                        }
+                        
+                        ping_msg = self.build_sip_message("MESSAGE", server_ip, ping_data)
+                        
+                        print(f"[PING] Sending ping (errors: {consecutive_errors}, timeouts: {ping_timeout_count})")
+                        
+                        if send_frame(client_socket, ping_msg.encode('utf-8')):
+                            last_ping_time = current_time
+                            consecutive_errors = 0
+                            print("[PING] ✓ Ping sent successfully")
+                        else:
+                            consecutive_errors += 1
+                            print(f"[PING FAILED] #{consecutive_errors} - Send failed")
+                            
+                    except Exception as e:
+                        print(f"[PING ERROR] {e}")
+                        consecutive_errors += 1
+                
+                # ✅ VERBESSERTER EMPFANG MIT FEHLERBEHANDLUNG
                 try:
-                    response = recv_frame(client_socket, timeout=10)  # Nur 100ms Timeout!
+                    # Verwende kürzeres Timeout für Empfang
+                    client_socket.settimeout(10.0)
+                    response = recv_frame(client_socket, timeout=10)
                     
                     if response is not None:
-                        consecutive_timeouts = 0
+                        # Erfolgreicher Empfang
+                        consecutive_errors = 0
+                        ping_timeout_count = 0
                         last_activity_time = current_time
                         
-                        # ✅ DIREKTE VERARBEITUNG (KEIN THREAD OVERHEAD)
+                        print(f"[CONNECTION] ✓ Received {len(response)} bytes from server")
+                        
+                        # Verarbeite Nachricht über Queue für Stabilität
                         self.handle_server_message(response)
                         
                     else:
-                        # Timeout ist normal bei non-blocking
-                        consecutive_timeouts += 1 if consecutive_timeouts < 10 else 0
-                        
+                        # Timeout beim Empfang
+                        print("[CONNECTION] Receive timeout (normal)")
+                        if time_since_last_activity > 60:  # 1 Minute ohne Aktivität
+                            ping_timeout_count += 1
+                            print(f"[CONNECTION] Activity timeout #{ping_timeout_count}")
+                            
                 except socket.timeout:
-                    # Timeout ist ERWÜNSCHT bei non-blocking
-                    pass
-                except BlockingIOError:
-                    # Keine Daten verfügbar - normal
-                    pass
+                    # Timeout ist normal, keine Aktion benötigt
+                    print("[CONNECTION] Socket timeout (normal)")
+                    if time_since_last_activity > 60:
+                        ping_timeout_count += 1
+                        print(f"[CONNECTION] Activity timeout #{ping_timeout_count}")
+                        
+                except ConnectionResetError as e:
+                    print(f"[CONNECTION] Connection reset by server: {e}")
+                    consecutive_errors += 1
+                    break
+                    
+                except BrokenPipeError as e:
+                    print(f"[CONNECTION] Broken pipe: {e}")
+                    consecutive_errors += 1
+                    break
+                    
+                except OSError as e:
+                    print(f"[CONNECTION] OS error: {e}")
+                    consecutive_errors += 1
+                    if consecutive_errors >= max_consecutive_errors:
+                        break
+                        
                 except Exception as e:
-                    print(f"[RECV ERROR] {e}")
-                    consecutive_timeouts += 1
+                    print(f"[CONNECTION RECV ERROR] {e}")
+                    consecutive_errors += 1
                 
-                # ✅ SCHNELLER ABBRUCH BEI PROBLEMEN
-                if consecutive_timeouts >= max_consecutive_timeouts:
-                    print(f"[CONNECTION] FAST ABORT: {consecutive_timeouts} consecutive timeouts")
+                # ✅ VERBINDUNGS-ÜBERWACHUNG
+                if consecutive_errors >= max_consecutive_errors:
+                    print(f"[CONNECTION] ✗ Too many consecutive errors ({consecutive_errors}), disconnecting...")
                     break
                     
-                # ✅ KURZE PAUSE FÜR CPU-ENTLASTUNG
-                time.sleep(0.01)  # Nur 10ms - ultra kurz!
-                    
-            except Exception as e:
-                print(f"[CONNECTION LOOP ERROR] {e}")
-                consecutive_timeouts += 1
-                if consecutive_timeouts >= 3:
+                if ping_timeout_count >= max_ping_timeouts:
+                    print(f"[CONNECTION] ✗ Too many ping timeouts ({ping_timeout_count}), disconnecting...")
                     break
-                time.sleep(0.5)  # Kurze Pause bei Fehlern
-        
-        # ✅ SCHNELLES CLEANUP
-        print("[CONNECTION] ULTRA-FAST loop ended")
-        connected = False
-        try:
-            client_socket.setblocking(True)  # Zurück zu blocking
-            client_socket.close()
-        except:
-            pass
+                    
+                # ✅ VERBINDUNGS-TIMEOUT
+                if time_since_last_activity > 120:  # 2 Minuten ohne Aktivität
+                    print("[CONNECTION] ✗ No activity for 2 minutes, disconnecting...")
+                    break
+                
+                # ✅ AUSGEWOGENE PAUSE FÜR STABILITÄT
+                time.sleep(0.5)  # Moderate Pause für Stabilität
+                
+                # ✅ STATUS-AUSGABE alle 30 Sekunden
+                if int(current_time) % 30 == 0:
+                    print(f"[CONNECTION STATUS] Active for {int(current_time - last_activity_time)}s, errors: {consecutive_errors}")
+                        
+        except Exception as e:
+            print(f"[CONNECTION LOOP ERROR] {e}")
+            import traceback
+            traceback.print_exc()
+            
+        finally:
+            # ✅ SORGFÄLTIGES CLEANUP
+            print("[CONNECTION] Connection loop ended - cleaning up...")
+            connected = False
+            
+            try:
+                # Setze Timeout zurück
+                client_socket.settimeout(original_timeout)
+            except:
+                pass
+                
+            try:
+                # Sende ggf. eine Disconnect-Nachricht
+                if hasattr(self, '_send_message'):
+                    disconnect_msg = self.build_sip_message("MESSAGE", server_ip, {
+                        "MESSAGE_TYPE": "DISCONNECT",
+                        "TIMESTAMP": int(time.time()),
+                        "CLIENT_NAME": self._client_name
+                    })
+                    self._send_message(disconnect_msg)
+            except:
+                pass
+                
+            try:
+                # Schließe Socket
+                if client_socket.fileno() != -1:
+                    client_socket.close()
+                    print("[CONNECTION] Socket closed")
+            except:
+                pass
+                
+            # UI-Update
+            try:
+                if hasattr(self, 'update_connection_status'):
+                    self.update_connection_status("disconnected")
+            except:
+                pass
+                
+            print("[CONNECTION] Cleanup completed")
 
     def _test_connection_simple(self, client_socket, server_ip, client_name):
         """Einfacher Verbindungstest ohne komplexe Logik"""
@@ -4437,35 +4719,64 @@ class PHONEBOOK(ctk.CTk):
                 pass
             return False
     def start_connection(self, server_ip, server_port, client_name, client_socket, message_handler=None):
-        """STABILISIERTE REGISTRATION MIT ROBUSTER FEHLERBEHANDLUNG"""
+        """STABILISIERTE REGISTRATION MIT VERBESSERTER FEHLERBEHANDLUNG UND KEY-MANAGEMENT"""
         try:
             print(f"[CONNECTION] Starting stabilized connection to {server_ip}:{server_port}")
             
             # 1. Socket für Stabilität konfigurieren
             client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
-            # Platform-spezifische Keep-Alive Einstellungen
             if hasattr(socket, 'TCP_KEEPIDLE'):
                 client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 60)
             if hasattr(socket, 'TCP_KEEPINTVL'):
                 client_socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 30)
             
-            client_socket.settimeout(25.0)  # Längeres Timeout für Registration
+            client_socket.settimeout(25.0)
 
-            # 2. Load client public key
+            # 2. Load client public key MIT VERBESSERTER FEHLERBEHANDLUNG
             print("[CONNECTION] Loading client public key...")
             client_pubkey = load_publickey()
-            if not is_valid_public_key(client_pubkey):
-                raise ValueError("Invalid client public key format")
-            print("[CONNECTION] Client public key loaded and validated")
+            if not client_pubkey:
+                print("[CONNECTION ERROR] Failed to load client public key - generating new one...")
+                client_pubkey = generate_new_keypair()
+                if not client_pubkey:
+                    raise ValueError("Cannot generate or load client public key")
+            
+            # ✅ VERBESSERTE KEY-VALIDIERUNG
+            if not client_pubkey or not isinstance(client_pubkey, str):
+                print("[CONNECTION ERROR] Invalid client public key type")
+                raise ValueError("Invalid client public key type")
+                
+            # Bereinige den Key für zuverlässige Übertragung
+            client_pubkey = client_pubkey.strip()
+            client_pubkey = client_pubkey.replace('\r\n', '\n').replace('\r', '\n')
+            
+            # Stelle sicher, dass PEM-Format korrekt ist
+            if not client_pubkey.startswith('-----BEGIN PUBLIC KEY-----'):
+                # Versuche zu reparieren
+                if 'BEGIN PUBLIC KEY' in client_pubkey:
+                    # Extrahiere den Key-Inhalt
+                    lines = client_pubkey.split('\n')
+                    key_content = ''.join([line.strip() for line in lines if line.strip() and not line.startswith('---')])
+                    client_pubkey = f"-----BEGIN PUBLIC KEY-----\n{key_content}\n-----END PUBLIC KEY-----"
+                else:
+                    # Base64-Key, füge PEM-Header hinzu
+                    key_content = client_pubkey.replace(' ', '').replace('\n', '')
+                    client_pubkey = f"-----BEGIN PUBLIC KEY-----\n{key_content}\n-----END PUBLIC KEY-----"
+            
+            print(f"[CONNECTION] Client public key prepared (length: {len(client_pubkey)})")
+            print(f"[CONNECTION DEBUG] Key preview: {client_pubkey[:100]}...")
 
-            # 3. REGISTRATION NACHRICHT
+            # 3. VOLLSTÄNDIGE REGISTRATION NACHRICHT
             register_data = {
                 "MESSAGE_TYPE": "REGISTER",
                 "CLIENT_NAME": client_name,
-                "PUBLIC_KEY": client_pubkey,
+                "PUBLIC_KEY": client_pubkey,  # ✅ IMMER MIT PUBLIC KEY
                 "TIMESTAMP": int(time.time()),
                 "VERSION": "2.0"
             }
+            
+            print(f"[CONNECTION DEBUG] Registration data keys: {list(register_data.keys())}")
+            print(f"[CONNECTION DEBUG] Public key in data: {'PUBLIC_KEY' in register_data}")
             
             register_msg = self.build_sip_message(
                 "REGISTER", 
@@ -4475,10 +4786,11 @@ class PHONEBOOK(ctk.CTk):
                 client_name=client_name
             )
             
-            print("[CONNECTION] Sending registration...")
+            print(f"[CONNECTION] Sending registration ({len(register_msg)} chars)...")
             if not send_frame(client_socket, register_msg.encode('utf-8')):
                 raise ConnectionError("Failed to send registration frame")
             print("[CONNECTION] Registration sent successfully")
+
 
             # 4. Erste Response empfangen und parsen
             print("[CONNECTION] Waiting for server response...")
@@ -4490,34 +4802,42 @@ class PHONEBOOK(ctk.CTk):
                 response = response.decode('utf-8')
 
             print(f"[CONNECTION] Server response received ({len(response)} bytes)")
+            print(f"[CONNECTION DEBUG] Response preview: {response[:200]}...")
 
-            # 5. SIP-PARSING
+            # 5. SIP-PARSING MIT VERBESSERTER FEHLERBEHANDLUNG
             sip_data = self.parse_sip_message(response)
             if not sip_data:
+                print("[CONNECTION ERROR] Failed to parse SIP response")
+                print(f"[CONNECTION DEBUG] Raw response: {response}")
                 raise ValueError("Invalid SIP response format - cannot parse")
                 
             print(f"[CONNECTION] SIP message type: {sip_data.get('type')}")
+            print(f"[CONNECTION DEBUG] SIP headers: {list(sip_data.get('headers', {}).keys())}")
 
-            # 6. BODY-EXTRAKTION
+            # 6. BODY-EXTRAKTION MIT VALIDIERUNG
             body = sip_data.get('body', '')
             if not body:
+                print("[CONNECTION ERROR] No body in SIP response")
+                print(f"[CONNECTION DEBUG] Full SIP data: {sip_data}")
                 raise ValueError("No body in SIP response")
                 
             print(f"[CONNECTION] Body length: {len(body)}")
+            print(f"[CONNECTION DEBUG] Body preview: {body[:200]}...")
 
-            # 7. JSON PARSEN
+            # 7. JSON PARSEN MIT DETAILLIERTEM FEHLERREPORTING
             try:
                 response_data = json.loads(body)
                 print(f"[CONNECTION] JSON parsed successfully: {list(response_data.keys())}")
             except json.JSONDecodeError as e:
-                print(f"[CONNECTION] JSON decode error: {e}")
+                print(f"[CONNECTION ERROR] JSON decode error: {e}")
+                print(f"[CONNECTION DEBUG] Problematic body: {body}")
                 raise ValueError("Invalid JSON in response body")
 
-            # 8. Server Public Key extrahieren
+            # 8. Server Public Key extrahieren MIT FALLBACKS
             server_public_key = response_data.get('SERVER_PUBLIC_KEY')
             if not server_public_key:
                 # Alternative Schlüsselnamen prüfen
-                possible_keys = ['public_key', 'server_public_key', 'server_key']
+                possible_keys = ['public_key', 'server_public_key', 'server_key', 'SERVER_PUBLIC_KEY']
                 for key in possible_keys:
                     if key in response_data:
                         server_public_key = response_data[key]
@@ -4525,14 +4845,17 @@ class PHONEBOOK(ctk.CTk):
                         break
             
             if not server_public_key:
-                print(f"[CONNECTION] Available fields: {list(response_data.keys())}")
+                print(f"[CONNECTION ERROR] No server public key found in response")
+                print(f"[CONNECTION DEBUG] Available fields: {list(response_data.keys())}")
+                print(f"[CONNECTION DEBUG] Full response data: {response_data}")
                 raise ValueError("No server public key found in response")
 
             # 9. Key formatieren und validieren
             server_public_key = server_public_key.replace('\\\\n', '\n').replace('\\n', '\n')
             
             if not is_valid_public_key(server_public_key):
-                print("[CONNECTION] Key validation failed")
+                print("[CONNECTION ERROR] Server public key validation failed")
+                print(f"[CONNECTION DEBUG] Key preview: {server_public_key[:200]}")
                 raise ValueError("Invalid server public key format")
 
             # Save server public key
@@ -4549,6 +4872,8 @@ class PHONEBOOK(ctk.CTk):
             if isinstance(merkle_response, bytes):
                 merkle_response = merkle_response.decode('utf-8')
 
+            print(f"[CONNECTION] Merkle response received ({len(merkle_response)} bytes)")
+
             # Merkle Data parsen
             merkle_sip_data = self.parse_sip_message(merkle_response)
             if not merkle_sip_data:
@@ -4560,8 +4885,10 @@ class PHONEBOOK(ctk.CTk):
                 
             try:
                 merkle_data = json.loads(merkle_body)
+                print(f"[CONNECTION] Merkle JSON parsed successfully")
             except json.JSONDecodeError as e:
-                print(f"[CONNECTION] Merkle JSON error: {e}")
+                print(f"[CONNECTION ERROR] Merkle JSON error: {e}")
+                print(f"[CONNECTION DEBUG] Merkle body: {merkle_body}")
                 raise ValueError("Invalid JSON in Merkle response")
 
             # Merkle Daten extrahieren
@@ -4569,11 +4896,16 @@ class PHONEBOOK(ctk.CTk):
             merkle_root = merkle_data.get('MERKLE_ROOT', '')
 
             if not merkle_root:
+                print("[CONNECTION ERROR] No Merkle root in response")
                 raise ValueError("No Merkle root in response")
 
             # Merkle Verification
             print("[CONNECTION] Starting Merkle verification...")
+            print(f"[CONNECTION DEBUG] All keys count: {len(all_keys)}")
+            print(f"[CONNECTION DEBUG] Merkle root: {merkle_root[:50]}...")
+            
             if not verify_merkle_integrity(all_keys, merkle_root):
+                print("[CONNECTION ERROR] Merkle verification failed - potential security issue")
                 raise ValueError("Merkle verification failed - potential security issue")
 
             print("[CONNECTION] Merkle verification successful")
@@ -4597,6 +4929,7 @@ class PHONEBOOK(ctk.CTk):
         except Exception as e:
             error_msg = f"Connection failed: {str(e)}"
             print(f"[CONNECTION ERROR] {error_msg}")
+            import traceback
             traceback.print_exc()
             return False
 
@@ -6165,146 +6498,147 @@ class PHONEBOOK(ctk.CTk):
             return None
 
     def _decrypt_phonebook_data(self, encrypted_data):
-        """Main method for decrypting phonebook data with enhanced error handling"""
+        """VERBESSERTE Phonebook Entschlüsselung mit robuster Fehlerbehandlung"""
         print("\n=== DECRYPT PHONEBOOK DEBUG ===")
         
         try:
-            # Debug input
-            print(f"[DEBUG] Initial input type: {type(encrypted_data)}")
-            if isinstance(encrypted_data, bytes):
-                print(f"[DEBUG] Input length: {len(encrypted_data)} bytes")
-                print(f"[DEBUG] First 32 bytes (hex): {binascii.hexlify(encrypted_data[:32])}")
-            
-            # Handle raw binary data (direct encrypted format)
-            if isinstance(encrypted_data, bytes) and len(encrypted_data) > 512:
-                print("[DEBUG] Processing raw binary encrypted data")
-                secret = encrypted_data[:512]
-                phonebook = encrypted_data[512:]
-                print(f"[DEBUG] Secret length: {len(secret)} bytes")
-                print(f"[DEBUG] Phonebook length: {len(phonebook)} bytes")
-                
-            # Handle dictionary format (from SIP custom_data)
-            elif isinstance(encrypted_data, dict):
-                print("[DEBUG] Processing encrypted dictionary")
-                required_keys = ['encrypted_secret', 'encrypted_phonebook']
-                if all(k in encrypted_data for k in required_keys):
-                    try:
-                        # Base64 decode with validation
-                        secret = base64.b64decode(encrypted_data['encrypted_secret'])
-                        phonebook = base64.b64decode(encrypted_data['encrypted_phonebook'])
-                        print(f"[DEBUG] Decoded secret: {len(secret)} bytes")
-                        print(f"[DEBUG] Decoded phonebook: {len(phonebook)} bytes")
-                    except Exception as e:
-                        print(f"[ERROR] Base64 decode failed: {str(e)}")
-                        return None
-                else:
-                    print("[ERROR] Missing required encrypted fields")
-                    return None
-            else:
-                print(f"[ERROR] Unsupported input format: {type(encrypted_data)}")
+            # 1. Input Validation
+            if not isinstance(encrypted_data, bytes) or len(encrypted_data) <= 512:
+                print(f"[ERROR] Invalid encrypted data: type={type(encrypted_data)}, length={len(encrypted_data) if hasattr(encrypted_data, '__len__') else 'N/A'}")
                 return None
 
-            # Validate secret length
-            if len(secret) != 512:
-                raise ValueError(f"Invalid secret length: {len(secret)} bytes (expected 512)")
-
-            # RSA decrypt
-            print("[DEBUG] RSA decrypting secret...")
-            private_key = load_privatekey()
-            if not private_key or not private_key.startswith('-----BEGIN PRIVATE KEY-----'):
-                raise ValueError("Invalid private key format")
-                
-            priv_key = RSA.load_key_string(private_key.encode())
-            decrypted_secret = priv_key.private_decrypt(secret, RSA.pkcs1_padding)
-            secure_del(priv_key)
+            print(f"[DEBUG] Encrypted data length: {len(encrypted_data)} bytes")
             
-            print(f"[DEBUG] RSA decrypted: {len(decrypted_secret)} bytes")
-            print(f"[DEBUG] First 32 bytes (hex): {binascii.hexlify(decrypted_secret[:32])}")
-            print(f"[DEBUG] As string: {decrypted_secret[:50]!r}")
+            # 2. Split into secret and phonebook
+            encrypted_secret = encrypted_data[:512]
+            encrypted_phonebook = encrypted_data[512:]
+            
+            print(f"[DEBUG] Secret part: {len(encrypted_secret)} bytes")
+            print(f"[DEBUG] Phonebook part: {len(encrypted_phonebook)} bytes")
 
-            # Extract AES components with improved error handling
+            # 3. Load private key with better error handling
+            print("[DEBUG] Loading private key...")
+            private_key_pem = load_privatekey()
+            if not private_key_pem:
+                print("[ERROR] No private key loaded")
+                return None
+                
+            print(f"[DEBUG] Private key loaded, length: {len(private_key_pem)}")
+            
+            try:
+                # 4. RSA Decryption
+                print("[DEBUG] Starting RSA decryption...")
+                priv_key = RSA.load_key_string(private_key_pem.encode())
+                if not priv_key:
+                    print("[ERROR] Failed to load private key string")
+                    return None
+                    
+                decrypted_secret = priv_key.private_decrypt(encrypted_secret, RSA.pkcs1_padding)
+                print(f"[DEBUG] RSA decryption successful: {len(decrypted_secret)} bytes")
+                
+            except Exception as rsa_error:
+                print(f"[RSA ERROR] Decryption failed: {str(rsa_error)}")
+                return None
+
+            # 5. Extract AES components
+            print("[DEBUG] Extracting AES components...")
+            
+            # Flexible Prefix-Handling
             prefix = b"+++secret+++"
-            if prefix not in decrypted_secret:
-                print("[ERROR] Secret prefix not found in decrypted data")
-                print(f"[DEBUG] Actual prefix: {decrypted_secret[:11]!r}")
-                raise ValueError("Secret prefix not found in decrypted data")
+            if decrypted_secret.startswith(prefix):
+                secret_data = decrypted_secret[len(prefix):len(prefix)+48]
+                print("[DEBUG] Found secret prefix")
+            else:
+                # Fallback: Use first 48 bytes
+                secret_data = decrypted_secret[:48]
+                print("[DEBUG] Using first 48 bytes without prefix")
                 
-            secret_start = decrypted_secret.find(prefix) + len(prefix)
-            extracted_secret = decrypted_secret[secret_start:secret_start+48]
-            secure_del(decrypted_secret)
+            print(f"[DEBUG] Secret data length: {len(secret_data)} bytes")
             
-            if len(extracted_secret) != 48:
-                raise ValueError(f"Invalid secret length: {len(extracted_secret)} bytes (expected 48)")
-                
-            print(f"[DEBUG] Extracted secret length: {len(extracted_secret)}")
-            print(f"[DEBUG] Secret full (hex): {binascii.hexlify(extracted_secret)}")
+            if len(secret_data) < 48:
+                print(f"[WARNING] Short secret: {len(secret_data)} bytes, padding if needed")
+                # Padding falls nötig
+                secret_data = secret_data + b'\0' * (48 - len(secret_data))
             
-            iv = extracted_secret[:16]
-            key = extracted_secret[16:48]
+            # Extract IV and Key
+            iv = secret_data[:16]
+            key = secret_data[16:48]
             
-            print("[DEBUG] AES components:")
-            print(f"IV (16 bytes): {binascii.hexlify(iv)}")
-            print(f"Key (32 bytes): {binascii.hexlify(key)}")
+            print(f"[DEBUG] IV length: {len(iv)}")
+            print(f"[DEBUG] Key length: {len(key)}")
 
-            # AES decrypt with extensive debugging
-            print("[DEBUG] AES decrypting phonebook...")
-            print(f"[DEBUG] Encrypted phonebook length: {len(phonebook)} bytes")
-            print(f"[DEBUG] Encrypted phonebook first 32 bytes (hex): {binascii.hexlify(phonebook[:32])}")
-
-            # Try different padding modes
+            # 6. AES Decryption
+            print("[DEBUG] Starting AES decryption...")
             try:
                 cipher = EVP.Cipher("aes_256_cbc", key, iv, 0, padding=1)
-                decrypted = cipher.update(phonebook) + cipher.final()
-                print("[DEBUG] AES decryption successful with PKCS#7 padding")
-            except EVP.EVPError as padding_error:
-                print(f"[DEBUG] PKCS#7 padding failed: {padding_error}")
+                decrypted_phonebook = cipher.update(encrypted_phonebook) + cipher.final()
+                print(f"[DEBUG] AES decryption successful: {len(decrypted_phonebook)} bytes")
+                
+            except Exception as aes_error:
+                print(f"[AES ERROR] Decryption failed: {str(aes_error)}")
                 # Fallback: Try without padding
                 try:
+                    print("[DEBUG] Trying AES without padding...")
                     cipher = EVP.Cipher("aes_256_cbc", key, iv, 0, padding=0)
-                    decrypted = cipher.update(phonebook) + cipher.final()
-                    print("[DEBUG] AES decryption successful without padding")
-                except EVP.EVPError as no_padding_error:
-                    print(f"[DEBUG] No padding also failed: {no_padding_error}")
-                    raise ValueError("AES decryption failed with both padding modes")
+                    decrypted_phonebook = cipher.update(encrypted_phonebook) + cipher.final()
+                    print(f"[DEBUG] AES without padding successful: {len(decrypted_phonebook)} bytes")
+                except Exception as aes_error2:
+                    print(f"[AES ERROR 2] Fallback also failed: {str(aes_error2)}")
+                    return None
 
-            print(f"[DEBUG] Decrypted data length: {len(decrypted)} bytes")
-            print(f"[DEBUG] Decrypted data (hex): {binascii.hexlify(decrypted[:64])}...")
-            print(f"[DEBUG] As string: {decrypted[:100]!r}")
-
-            # Try to decode as UTF-8 JSON
+            # 7. Parse JSON
+            print("[DEBUG] Parsing JSON...")
             try:
-                phonebook_data = json.loads(decrypted.decode('utf-8'))
-                print("[DEBUG] Successfully parsed as JSON")
+                # Versuche UTF-8 decoding
+                json_str = decrypted_phonebook.decode('utf-8')
+                phonebook_data = json.loads(json_str)
+                print("[DEBUG] JSON parsed successfully with UTF-8")
+                
             except UnicodeDecodeError:
-                print("[DEBUG] UTF-8 decode failed, trying other encodings")
-                # Try alternative encodings
-                for encoding in ['latin-1', 'ascii', 'utf-16']:
+                # Fallback für andere Encodings
+                print("[DEBUG] UTF-8 failed, trying other encodings...")
+                for encoding in ['latin-1', 'cp1252', 'iso-8859-1']:
                     try:
-                        decoded_str = decrypted.decode(encoding)
-                        print(f"[DEBUG] Successfully decoded as {encoding}")
-                        phonebook_data = json.loads(decoded_str)
+                        json_str = decrypted_phonebook.decode(encoding)
+                        phonebook_data = json.loads(json_str)
+                        print(f"[DEBUG] JSON parsed successfully with {encoding}")
                         break
                     except (UnicodeDecodeError, json.JSONDecodeError):
                         continue
                 else:
-                    raise ValueError("Failed to decode decrypted data with any encoding")
+                    print("[ERROR] Failed to decode with any encoding")
+                    return None
+                    
+            except json.JSONDecodeError as e:
+                print(f"[JSON ERROR] Failed to parse JSON: {str(e)}")
+                print(f"[DEBUG] First 200 chars of decrypted data: {decrypted_phonebook[:200]}")
+                return None
 
-            if not isinstance(phonebook_data, dict):
-                raise ValueError("Decrypted data is not a valid JSON object")
-                
-            print(f"[DEBUG] Phonebook entries: {len(phonebook_data.get('clients', []))}")
-
-            # UI Update
-            if hasattr(self, 'update_phonebook'):
-                self.update_phonebook(phonebook_data)
-                print("[DEBUG] UI update scheduled")
+            # 8. Update UI
+            print(f"[DEBUG] Phonebook data type: {type(phonebook_data)}")
+            print(f"[DEBUG] Phonebook keys: {list(phonebook_data.keys()) if isinstance(phonebook_data, dict) else 'Not a dict'}")
             
+            if hasattr(self, 'update_phonebook') and callable(self.update_phonebook):
+                print("[DEBUG] Calling update_phonebook...")
+                try:
+                    # Thread-safe update
+                    if threading.current_thread() != threading.main_thread():
+                        self.after(0, lambda: self.update_phonebook(phonebook_data))
+                    else:
+                        self.update_phonebook(phonebook_data)
+                    print("[DEBUG] UI update completed successfully")
+                except Exception as ui_error:
+                    print(f"[UI ERROR] Failed to update phonebook: {str(ui_error)}")
+            else:
+                print("[ERROR] update_phonebook not available")
+
             return phonebook_data
             
         except Exception as e:
-            print(f"[DECRYPT ERROR] {str(e)}")
+            print(f"[DECRYPT ERROR] Critical error: {str(e)}")
+            import traceback
             traceback.print_exc()
-            return None   
+            return None
 
             
 

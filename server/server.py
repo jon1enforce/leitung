@@ -252,29 +252,28 @@ def extract_public_key(raw_data):
 
 
 def generate_keys():
-    """Generiert Server-Schlüsselpaar falls nicht vorhanden"""
+    """Generiert Server-Schlüsselpaar - KORRIGIERT FÜR EINHEITLICHES FORMAT"""
     if not os.path.exists("server_public_key.pem") or not os.path.exists("server_private_key.pem"):
         print("Generiere neue Server-Schlüssel...")
         
         try:
-            from M2Crypto import RSA, BIO, EVP
+            from M2Crypto import RSA, BIO
             
-            # Generiere RSA Key
-            key = RSA.gen_key(2048, 65537)
+            # Generiere RSA Key (4096 bits wie der Client)
+            key = RSA.gen_key(4096, 65537)
             
+            # ✅ KORREKTUR: Verwende direkte RSA-Methoden statt EVP.PKey
             # Speichere öffentlichen Schlüssel
             pub_bio = BIO.MemoryBuffer()
             key.save_pub_key_bio(pub_bio)
+            public_key_data = pub_bio.getvalue()
+            
             with open("server_public_key.pem", "wb") as f:
-                f.write(pub_bio.getvalue())
+                f.write(public_key_data)
             
-            # Speichere privaten Schlüssel OHNE Passphrase
-            # Verwende EVP.PKey um das Passphrase-Problem zu umgehen
-            pkey = EVP.PKey()
-            pkey.assign_rsa(key)
-            
+            # ✅ KORREKTUR: Speichere privaten Schlüssel direkt mit RSA (PKCS#1)
             priv_bio = BIO.MemoryBuffer()
-            pkey.save_key_bio(priv_bio, cipher=None)
+            key.save_key_bio(priv_bio, cipher=None)  # cipher=None für unverschlüsselt
             private_key_data = priv_bio.getvalue()
             
             with open("server_private_key.pem", "wb") as f:
@@ -290,35 +289,34 @@ def generate_keys():
                 pub_key = RSA.load_pub_key_bio(BIO.MemoryBuffer(pub_data))
                 print("✓ Public key ist valide")
                 
-                # Teste private key
+                # Teste private key - WICHTIG: Mit RSA.load_key_string testen
                 with open("server_private_key.pem", "rb") as f:
                     priv_data = f.read()
                 priv_key = RSA.load_key_string(priv_data)
                 print("✓ Private key ist valide")
                 
                 # Teste Verschlüsselung/Entschlüsselung
-                test_msg = b"Test Message"
+                test_msg = b"Test Message for Server Key Validation"
                 encrypted = pub_key.public_encrypt(test_msg, RSA.pkcs1_padding)
                 decrypted = priv_key.private_decrypt(encrypted, RSA.pkcs1_padding)
                 
                 if decrypted == test_msg:
-                    print("✓ Verschlüsselung/Entschlüsselung erfolgreich")
+                    print("✓ Server Key Pair: Verschlüsselung/Entschlüsselung erfolgreich")
                 else:
-                    print("✗ Verschlüsselung/Entschlüsselung fehlgeschlagen")
+                    print("✗ Server Key Pair: Verschlüsselung/Entschlüsselung fehlgeschlagen")
                     
             except Exception as e:
-                print(f"Key-Validierungsfehler: {e}")
+                print(f"Server Key-Validierungsfehler: {e}")
                 return False
                 
             return True
             
         except Exception as e:
-            print(f"Fehler bei der Schlüsselgenerierung: {e}")
-            print("Bitte openssl manuell installieren und ausführen:")
-            print("sudo apt-get install openssl")
-            print("openssl genrsa -out server_private_key.pem 2048")
-            print("openssl rsa -in server_private_key.pem -pubout -out server_public_key.pem")
+            print(f"Fehler bei der Server-Schlüsselgenerierung: {e}")
             return False
+    else:
+        print("Server-Schlüssel existieren bereits")
+        return True
 
 def load_server_publickey():
     """Lädt den öffentlichen Server-Schlüssel"""
