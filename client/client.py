@@ -1951,8 +1951,6 @@ class ClientRelayManager:
 
 class CALL:
     def __init__(self, client_instance):
-
-
         self.client = client_instance
         self.active_call = False
         self.pending_call = None
@@ -1972,8 +1970,31 @@ class CALL:
         self.relay_server_ip = None
         self.relay_server_port = 51822
         
-        # ✅ KORREKTUR: Audio Device Management - Synchron mit PHONEBOOK
-        self.audio = pyaudio.PyAudio()
+        # ✅ KORREKTUR: Audio Device Management mit Fallback
+        try:
+            import pyaudio
+            self.audio = pyaudio.PyAudio()
+            self.audio_available = True
+            print("[AUDIO] PyAudio erfolgreich initialisiert")
+        except Exception as e:
+            print(f"[AUDIO] PyAudio nicht verfügbar: {e}")
+            self.audio = None
+            self.audio_available = False
+            
+            # Fallback: Prüfe PySndfile (korrekter Import)
+            try:
+                import sndfile  # Korrekter Import für PySndfile
+                self.audio_available = True
+                print("[AUDIO] PySndfile als Fallback verfügbar")
+            except ImportError:
+                try:
+                    # Alternative Import-Versuche
+                    import pylibsndfile as sndfile
+                    self.audio_available = True
+                    print("[AUDIO] pylibsndfile als Fallback verfügbar")
+                except ImportError:
+                    print("[AUDIO] Kein Audio-Backend verfügbar")
+        
         self.selected_input_device = getattr(client_instance, 'selected_input_device', None)
         self.selected_output_device = getattr(client_instance, 'selected_output_device', None)
         self.call_start_time = None
@@ -1984,57 +2005,268 @@ class CALL:
         self.connection_lock = threading.Lock()
         self.connection_state = "disconnected"
 
-    def _get_device_index(self, device_string):
-        """Extrahiert Device-Index aus dem Auswahl-String"""
-        try:
-            if device_string and ":" in device_string:
-                return int(device_string.split(":")[0])
-        except:
-            pass
-        return None
     def _get_input_devices(self):
-        """Gibt Liste aller Eingabegeräte (Mikrofone) zurück"""
+        """Gibt Liste aller Eingabegeräte (Mikrofone) zurück - MIT FALLBACK"""
         devices = []
         try:
-            for i in range(self.audio.get_device_count()):
-                device_info = self.audio.get_device_info_by_index(i)
-                if device_info.get('maxInputChannels', 0) > 0:
-                    device_name = device_info.get('name', f'Device {i}')
-                    devices.append(f"{i}: {device_name} (Input)")
+            if self.audio_available and self.audio:
+                for i in range(self.audio.get_device_count()):
+                    device_info = self.audio.get_device_info_by_index(i)
+                    if device_info.get('maxInputChannels', 0) > 0:
+                        device_name = device_info.get('name', f'Device {i}')
+                        devices.append(f"{i}: {device_name} (Input)")
+            else:
+                devices = ["0: Standard-Mikrofon (Input)"]
         except Exception as e:
             print(f"[INPUT DEVICES ERROR] {str(e)}")
+            devices = ["0: Standard-Mikrofon (Input)"]
         return devices
 
     def _get_output_devices(self):
-        """Gibt Liste aller Ausgabegeräte mit 24-bit Info zurück"""
+        """Gibt Liste aller Ausgabegeräte zurück - MIT FALLBACK"""
         devices = []
         try:
-            audio = pyaudio.PyAudio()
-            for i in range(audio.get_device_count()):
-                device_info = audio.get_device_info_by_index(i)
-                if device_info.get('maxOutputChannels', 0) > 0:
-                    device_name = device_info.get('name', f'Device {i}')
-                    
-                    # Prüfe 24-bit Support
-                    supports_24bit = False
-                    try:
-                        supports_24bit = audio.is_format_supported(
-                            48000,
-                            output_device=i,
-                            output_channels=1, 
-                            output_format=pyaudio.paInt24
-                        )
-                    except:
-                        pass
-                    
-                    bit_info = " [24-bit]" if supports_24bit else " [16-bit]"
-                    devices.append(f"{i}: {device_name}{bit_info}")
-            
-            audio.terminate()
+            if self.audio_available and self.audio:
+                for i in range(self.audio.get_device_count()):
+                    device_info = self.audio.get_device_info_by_index(i)
+                    if device_info.get('maxOutputChannels', 0) > 0:
+                        device_name = device_info.get('name', f'Device {i}')
+                        devices.append(f"{i}: {device_name} (Output)")
+            else:
+                devices = ["0: Standard-Lautsprecher (Output)"]
         except Exception as e:
             print(f"[OUTPUT DEVICES ERROR] {str(e)}")
             devices = ["0: Standard-Lautsprecher (Output)"]
-        return devices     
+        return devices
+
+    def audio_stream_out(self, target_ip, target_port, iv, key):
+        """Sendet Audio - MIT FALLBACK"""
+        if not self.audio_available:
+            print("❌ [AUDIO OUT] Kein Audio-Backend verfügbar")
+            return False
+            
+        audio_socket = None
+        
+        if not self.active_call:
+            print("❌ [AUDIO OUT] No active call")
+            return False
+        
+        try:
+            print(f"[AUDIO OUT] Starting: {self.audio_config.sample_format_name}")
+            
+            # ✅ STREAM NUR ÖFFNEN WENN CALL AKTIV UND AUDIO VERFÜGBAR
+            if self.active_call and self.audio_available and self.audio:
+                self.input_stream = self.audio_config.audio.open(
+                    format=self.audio_config.FORMAT,
+                    channels=self.audio_config.CHANNELS,
+                    rate=self.audio_config.RATE,
+                    input=True,
+                    frames_per_buffer=self.audio_config.CHUNK,
+                    input_device_index=self.audio_config.input_device_index
+                )
+                print("✅ [AUDIO OUT] Input stream opened")
+            else:
+                print("❌ [AUDIO OUT] Call ended oder Audio nicht verfügbar")
+                return False
+            
+            audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            audio_socket.settimeout(0.1)
+            
+            print(f"🎤 [AUDIO OUT] Transmission active: {self.audio_config.sample_format_name}")
+            
+            while self.active_call and self.audio_available:
+                try:
+                    raw_data = self.input_stream.read(
+                        self.audio_config.CHUNK, 
+                        exception_on_overflow=False
+                    )
+                    
+                    # Rauschfilterung anwenden (falls aktiv)
+                    if (self.audio_config.noise_profile['enabled'] and 
+                        self.audio_config.noise_profile['profile_captured']):
+                        filtered_data = self.audio_config.apply_noise_filter(raw_data)
+                    else:
+                        filtered_data = raw_data
+                    
+                    # Verschlüsseln und senden
+                    cipher = EVP.Cipher("aes_256_cbc", key, iv, 1)
+                    encrypted_data = cipher.update(filtered_data) + cipher.final()
+                    
+                    audio_socket.sendto(encrypted_data, (target_ip, target_port))
+                    
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    if self.active_call:
+                        print(f"[AUDIO OUT ERROR] {str(e)}")
+                    break
+                    
+        except Exception as e:
+            print(f"[AUDIO OUT SETUP ERROR] {str(e)}")
+            return False
+        finally:
+            # ✅ STREAMS SICHER SCHLIESSEN
+            if hasattr(self, 'input_stream') and self.input_stream:
+                try:
+                    self.input_stream.stop_stream()
+                    self.input_stream.close()
+                    self.input_stream = None
+                except:
+                    pass
+            if audio_socket:
+                audio_socket.close()
+        
+        return True
+
+    def audio_stream_in(self, iv, key):
+        """Empfängt Audio - MIT FALLBACK"""
+        audio_socket = None
+        
+        if not self.audio_available:
+            print("❌ [AUDIO IN] Kein Audio-Backend verfügbar")
+            return False
+            
+        if not self.active_call:
+            print("❌ [AUDIO IN] No active call")
+            return False
+        
+        try:
+            print(f"[AUDIO IN] Output: 16-bit Mono @ {self.audio_config.RATE}Hz")
+            
+            # ✅ STREAM NUR ÖFFNEN WENN CALL AKTIV UND AUDIO VERFÜGBAR
+            if self.active_call and self.audio_available and self.audio:
+                self.output_stream = self.audio_config.audio.open(
+                    format=pyaudio.paInt16,
+                    channels=1,
+                    rate=self.audio_config.RATE,
+                    output=True,
+                    frames_per_buffer=self.audio_config.CHUNK,
+                    output_device_index=self.audio_config.output_device_index
+                )
+                print("✅ [AUDIO IN] Output stream opened")
+            else:
+                print("❌ [AUDIO IN] Call ended oder Audio nicht verfügbar")
+                return False
+            
+            audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            audio_socket.bind(('0.0.0.0', self.PORT))
+            audio_socket.settimeout(0.1)
+            
+            while self.active_call and self.audio_available:
+                try:
+                    encrypted_data, addr = audio_socket.recvfrom(4096)
+                    
+                    # Entschlüsseln
+                    cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
+                    received_data = cipher.update(encrypted_data) + cipher.final()
+                    
+                    self.output_stream.write(received_data)
+                    
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    if self.active_call:
+                        print(f"[AUDIO IN ERROR] {str(e)}")
+                    break
+                    
+        except Exception as e:
+            print(f"[AUDIO IN SETUP ERROR] {str(e)}")
+            return False
+        finally:
+            # ✅ STREAMS SICHER SCHLIESSEN
+            if hasattr(self, 'output_stream') and self.output_stream:
+                try:
+                    self.output_stream.stop_stream()
+                    self.output_stream.close()
+                    self.output_stream = None
+                except:
+                    pass
+            if audio_socket:
+                audio_socket.close()
+        
+        return True
+
+    def _start_audio_streams(self):
+        """Startet bidirektionale Audio-Streams mit Timer - MIT FALLBACK"""
+        if not self.current_secret:
+            print("[AUDIO] No session key available")
+            return
+            
+        # ✅ PRÜFE OB AUDIO VERFÜGBAR IST
+        if not self.audio_available:
+            print("[AUDIO] Kein Audio-Backend verfügbar - Call ohne Audio")
+            # Starte Timer trotzdem für UI
+            self._start_call_timer()
+            self.active_call = True
+            self.call_start_time = time.time()
+            
+            # UI aktualisieren
+            if hasattr(self.client, 'update_call_ui'):
+                caller_name = "Unbekannt"
+                if self.pending_call and 'recipient' in self.pending_call:
+                    caller_name = self.pending_call['recipient'].get('name', 'Unbekannt')
+                elif self.incoming_call:
+                    caller_name = self.incoming_call.get('caller_name', 'Unbekannt')
+                
+                self.client.update_call_ui(True, "no_audio", caller_name)
+            return
+            
+        try:
+            # Extrahiere AES-Parameter
+            iv = self.current_secret[:16]
+            key = self.current_secret[16:48]
+            
+            # Ziel-IP basierend auf Relay oder direkt
+            if self.use_udp_relay and self.relay_server_ip:
+                target_ip = self.relay_server_ip
+                target_port = self.relay_server_port
+                print(f"[AUDIO] Using UDP Relay: {target_ip}:{target_port}")
+            else:
+                if self.pending_call and 'recipient' in self.pending_call:
+                    target_ip = "10.8.0.2"
+                else:
+                    target_ip = "10.8.0.1"
+                target_port = self.PORT
+                print(f"[AUDIO] Using direct connection: {target_ip}:{target_port}")
+            
+            # Beende bestehende Audio-Threads
+            self._stop_audio_streams()
+            
+            # Starte Timer-Anzeige
+            self._start_call_timer()
+            
+            # Starte Sende-Thread
+            send_thread = threading.Thread(
+                target=self.audio_stream_out, 
+                args=(target_ip, target_port, iv, key),
+                daemon=True
+            )
+            
+            # Starte Empfangs-Thread  
+            recv_thread = threading.Thread(
+                target=self.audio_stream_in,
+                args=(iv, key),
+                daemon=True
+            )
+            
+            send_thread.start()
+            recv_thread.start()
+            
+            self.audio_threads = [send_thread, recv_thread]
+            self.active_call = True
+            self.call_start_time = time.time()
+            print(f"[AUDIO] Bidirectional audio streams started")
+            
+        except Exception as e:
+            print(f"[AUDIO ERROR] Failed to start streams: {e}")
+
+    def __del__(self):
+        """Destruktor für Ressourcen-Cleanup"""
+        try:
+            if hasattr(self, 'audio') and self.audio:
+                self.audio.terminate()
+        except:
+            pass
     def show_audio_devices_popup(self):
         """Audio-Geräte, Qualitätsauswahl und Rauschfilterung - MIT DPI-SKALIERUNG NUR FÜR SCHRIFT"""
         try:
@@ -3633,202 +3865,7 @@ class CALL:
         except Exception as e:
             print(f"[CALL ERROR] Session key handling failed: {str(e)}")
 
-    def _start_audio_streams(self):
-        """Startet bidirektionale Audio-Streams mit Timer"""
-        if not self.current_secret:
-            print("[AUDIO] No session key available")
-            return
-            
-        try:
-            # Extrahiere AES-Parameter
-            iv = self.current_secret[:16]
-            key = self.current_secret[16:48]
-            
-            # Ziel-IP basierend auf Relay oder direkt
-            if self.use_udp_relay and self.relay_server_ip:
-                target_ip = self.relay_server_ip
-                target_port = self.relay_server_port
-                print(f"[AUDIO] Using UDP Relay: {target_ip}:{target_port}")
-            else:
-                if self.pending_call and 'recipient' in self.pending_call:
-                    target_ip = "10.8.0.2"
-                else:
-                    target_ip = "10.8.0.1"
-                target_port = self.PORT
-                print(f"[AUDIO] Using direct connection: {target_ip}:{target_port}")
-            
-            # Beende bestehende Audio-Threads
-            self._stop_audio_streams()
-            
-            # Starte Timer-Anzeige
-            self._start_call_timer()
-            
-            # Starte Sende-Thread
-            send_thread = threading.Thread(
-                target=self.audio_stream_out, 
-                args=(target_ip, target_port, iv, key),
-                daemon=True
-            )
-            
-            # Starte Empfangs-Thread  
-            recv_thread = threading.Thread(
-                target=self.audio_stream_in,
-                args=(iv, key),
-                daemon=True
-            )
-            
-            send_thread.start()
-            recv_thread.start()
-            
-            self.audio_threads = [send_thread, recv_thread]
-            self.active_call = True
-            self.call_start_time = time.time()
-            print(f"[AUDIO] Bidirectional audio streams started")
-            
-        except Exception as e:
-            print(f"[AUDIO ERROR] Failed to start streams: {e}")
 
-    def audio_stream_out(self, target_ip, target_port, iv, key):
-        """Sendet Audio - öffnet Streams NUR wenn Call aktiv ist"""
-        audio_socket = None
-        
-        # ✅ PRÜFE OB CALL AKTIV IST
-        if not self.active_call:
-            print("❌ [AUDIO OUT] No active call - cannot open audio stream")
-            return False
-        
-        try:
-            print(f"[AUDIO OUT] Starting: {self.audio_config.sample_format_name}")
-            print(f"[AUDIO OUT] Channels: {self.audio_config.CHANNELS}, Rate: {self.audio_config.RATE}")
-            
-            # ✅ STREAM NUR ÖFFNEN WENN CALL AKTIV
-            if self.active_call:
-                self.input_stream = self.audio_config.audio.open(
-                    format=self.audio_config.FORMAT,
-                    channels=self.audio_config.CHANNELS,
-                    rate=self.audio_config.RATE,
-                    input=True,
-                    frames_per_buffer=self.audio_config.CHUNK,
-                    input_device_index=self.audio_config.input_device_index
-                )
-                print("✅ [AUDIO OUT] Input stream opened")
-            else:
-                print("❌ [AUDIO OUT] Call ended - skipping stream opening")
-                return False
-            
-            audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            audio_socket.settimeout(0.1)
-            
-            print(f"🎤 [AUDIO OUT] Transmission active: {self.audio_config.sample_format_name}")
-            
-            while self.active_call:  # ✅ NUR SOLANGE CALL AKTIV
-                try:
-                    raw_data = self.input_stream.read(
-                        self.audio_config.CHUNK, 
-                        exception_on_overflow=False
-                    )
-                    
-                    # Rauschfilterung anwenden (falls aktiv)
-                    if (self.audio_config.noise_profile['enabled'] and 
-                        self.audio_config.noise_profile['profile_captured']):
-                        filtered_data = self.audio_config.apply_noise_filter(raw_data)
-                    else:
-                        filtered_data = raw_data
-                    
-                    # Verschlüsseln und senden
-                    cipher = EVP.Cipher("aes_256_cbc", key, iv, 1)
-                    encrypted_data = cipher.update(filtered_data) + cipher.final()
-                    
-                    audio_socket.sendto(encrypted_data, (target_ip, target_port))
-                    
-                except socket.timeout:
-                    continue
-                except Exception as e:
-                    if self.active_call:  # ✅ NUR LOGGEN WENN CALL NOCH AKTIV
-                        print(f"[AUDIO OUT ERROR] {str(e)}")
-                    break
-                    
-        except Exception as e:
-            print(f"[AUDIO OUT SETUP ERROR] {str(e)}")
-            return False
-        finally:
-            # ✅ STREAMS SICHER SCHLIESSEN
-            if hasattr(self, 'input_stream') and self.input_stream:
-                try:
-                    self.input_stream.stop_stream()
-                    self.input_stream.close()
-                    self.input_stream = None
-                except:
-                    pass
-            if audio_socket:
-                audio_socket.close()
-        
-        return True
-
-    def audio_stream_in(self, iv, key):
-        """Empfängt Audio - öffnet Streams NUR wenn Call aktiv ist"""
-        audio_socket = None
-        
-        # ✅ PRÜFE OB CALL AKTIV IST
-        if not self.active_call:
-            print("❌ [AUDIO IN] No active call - cannot open audio stream")
-            return False
-        
-        try:
-            print(f"[AUDIO IN] Output: 16-bit Mono @ {self.audio_config.RATE}Hz")
-            
-            # ✅ STREAM NUR ÖFFNEN WENN CALL AKTIV
-            if self.active_call:
-                self.output_stream = self.audio_config.audio.open(
-                    format=pyaudio.paInt16,  # Output immer 16-bit
-                    channels=1,              # Output immer Mono
-                    rate=self.audio_config.RATE,
-                    output=True,
-                    frames_per_buffer=self.audio_config.CHUNK,
-                    output_device_index=self.audio_config.output_device_index
-                )
-                print("✅ [AUDIO IN] Output stream opened")
-            else:
-                print("❌ [AUDIO IN] Call ended - skipping stream opening")
-                return False
-            
-            audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            audio_socket.bind(('0.0.0.0', self.PORT))
-            audio_socket.settimeout(0.1)
-            
-            while self.active_call:  # ✅ NUR SOLANGE CALL AKTIV
-                try:
-                    encrypted_data, addr = audio_socket.recvfrom(4096)
-                    
-                    # Entschlüsseln
-                    cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
-                    received_data = cipher.update(encrypted_data) + cipher.final()
-                    
-                    self.output_stream.write(received_data)
-                    
-                except socket.timeout:
-                    continue
-                except Exception as e:
-                    if self.active_call:  # ✅ NUR LOGGEN WENN CALL NOCH AKTIV
-                        print(f"[AUDIO IN ERROR] {str(e)}")
-                    break
-                    
-        except Exception as e:
-            print(f"[AUDIO IN SETUP ERROR] {str(e)}")
-            return False
-        finally:
-            # ✅ STREAMS SICHER SCHLIESSEN
-            if hasattr(self, 'output_stream') and self.output_stream:
-                try:
-                    self.output_stream.stop_stream()
-                    self.output_stream.close()
-                    self.output_stream = None
-                except:
-                    pass
-            if audio_socket:
-                audio_socket.close()
-        
-        return True
 
     def _convert_24bit_to_16bit(self, audio_24bit):
         """Konvertiert 24-bit Audio zu 16-bit"""
