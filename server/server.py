@@ -882,105 +882,179 @@ class CONVEY:
             print(f"[UDP RELAY ERROR] Failed to start: {e}")
 
     def _handle_udp_relay(self):
-        """ULTRA-LEICHT: UDP Relay mit quasi 0% CPU/RAM Last"""
+        """VERBESSERTER UDP Relay mit besserem Logging und Fehlerbehandlung"""
         import select
         
-        print("[UDP RELAY] Starting ultra-light relay handler")
+        print("[UDP RELAY] ✅ Starting improved relay handler")
+        packet_count = 0
+        error_count = 0
+        last_log_time = time.time()
         
         while True:
             try:
-                # ✅ NON-BLOCKING CHECK mit select() - fast 0 CPU
-                ready, _, _ = select.select([self.udp_socket], [], [], 0.001)  # 1ms timeout
+                # ✅ NON-BLOCKING CHECK
+                ready, _, _ = select.select([self.udp_socket], [], [], 0.001)
                 
                 if not ready:
-                    time.sleep(0.001)  # Kurze Pause um CPU zu schonen
+                    time.sleep(0.001)
                     continue
                 
-                # ✅ PAKET EMPFANGEN (non-blocking)
+                # ✅ PAKET EMPFANGEN
                 try:
-                    data, addr = self.udp_socket.recvfrom(1400)  # MTU size
+                    data, addr = self.udp_socket.recvfrom(1400)
+                    packet_count += 1
                 except BlockingIOError:
                     continue
                 except OSError as e:
                     if e.errno == 9:  # Bad file descriptor (socket closed)
+                        print("[UDP RELAY] Socket closed, stopping relay")
                         break
                     continue
                 
-                # ✅ SOFORT WEITERLEITEN OHNE VERARBEITUNG
-                relay_success = False
+                # ✅ PERIODISCHES LOGGING (alle 5 Sekunden)
+                current_time = time.time()
+                if current_time - last_log_time >= 5.0:
+                    print(f"[UDP RELAY] Active: {packet_count} packets, {len(self.audio_relays)} calls")
+                    last_log_time = current_time
                 
-                # 🔄 SCHNELLE ZIELSUCHE ohne Lock wenn möglich
-                for call_id, clients in list(self.audio_relays.items()):  # Thread-safe copy
+                # ✅ PAKET WEITERLEITEN
+                relay_success = False
+                target_addr = None
+                call_id_found = None
+                
+                # 🔄 SCHNELLE ZIELSUCHE
+                for call_id, clients in list(self.audio_relays.items()):
                     if addr == clients.get('caller_addr'):
                         target_addr = clients.get('callee_addr')
-                        if target_addr:
-                            try:
-                                self.udp_socket.sendto(data, target_addr)
-                                relay_success = True
-                            except:
-                                pass
+                        call_id_found = call_id
                         break
                     elif addr == clients.get('callee_addr'):
                         target_addr = clients.get('caller_addr')
-                        if target_addr:
-                            try:
-                                self.udp_socket.sendto(data, target_addr)
-                                relay_success = True
-                            except:
-                                pass
+                        call_id_found = call_id
                         break
                 
-                # ✅ KEINE LOGGING im normalen Betrieb (spart CPU)
-                if not relay_success:
-                    # Nur gelegentlich loggen um CPU zu sparen
-                    if random.randint(0, 1000) == 1:  # Nur 0.1% der Fehler loggen
-                        print(f"[RELAY] No target for packet from {addr}")
+                if target_addr:
+                    try:
+                        self.udp_socket.sendto(data, target_addr)
+                        relay_success = True
                         
+                        # ✅ DETAILIERTES DEBUG LOGGING (nur alle 500 Pakete)
+                        if packet_count % 500 == 0:
+                            print(f"[UDP RELAY] Packet #{packet_count}: {addr} -> {target_addr}")
+                            print(f"  Call: {call_id_found}, Size: {len(data)} bytes")
+                            
+                    except Exception as e:
+                        error_count += 1
+                        if error_count % 10 == 0:  # Nur jeden 10. Fehler loggen
+                            print(f"[UDP RELAY SEND ERROR] {e}")
+                            print(f"  From: {addr}, To: {target_addr}, Call: {call_id_found}")
+                else:
+                    error_count += 1
+                    if error_count % 50 == 0:  # Nur jeden 50. Fehler loggen
+                        print(f"[UDP RELAY] ❌ No target for packet from {addr}")
+                        print(f"[UDP RELAY DEBUG] Active relays: {len(self.audio_relays)}")
+                        for cid, clients in self.audio_relays.items():
+                            print(f"  Call {cid}:")
+                            print(f"    Caller: {clients['caller_addr']} ({clients['caller_name']})")
+                            print(f"    Callee: {clients['callee_addr']} ({clients['callee_name']})")
+                            
             except Exception as e:
-                # Sehr seltenes Error-Logging
-                if random.randint(0, 10000) == 1:  # Nur 0.01% der Errors loggen
-                    print(f"[RELAY ERROR] {e}")
+                error_count += 1
+                if error_count % 100 == 0:
+                    print(f"[UDP RELAY CRITICAL ERROR] {e}")
+                    import traceback
+                    traceback.print_exc()
+        
+        print(f"[UDP RELAY] 🛑 Relay handler stopped. Total packets: {packet_count}")
 
     def _register_audio_relay(self, call_id, caller_name, callee_name):
-        """Registriert Audio-Relay - OPTIMIERT für minimale Last"""
+        """Registriert Audio-Relay MIT VERBESSERTER CLIENT-SUCHE"""
         try:
-            # ✅ SCHNELLE CLIENT-SUCHE ohne unnötige Locks
+            print(f"[RELAY] Registering audio relay: {caller_name} <-> {callee_name}")
+            
             caller_ip = None
             callee_ip = None
+            caller_port = 51821  # Fester Audio-Port (muss mit Client übereinstimmen)
+            callee_port = 51821
             
-            # Kurzer Lock nur für die Suche
+            # ✅ VERBESSERTE CLIENT-SUCHE MIT DETAILIERTEM DEBUGGING
             with self.server.clients_lock:
+                print(f"[RELAY DEBUG] Searching through {len(self.server.clients)} clients:")
+                
                 for client_id, client_data in self.server.clients.items():
-                    if client_data.get('name') == caller_name:
-                        caller_ip = client_data.get('ip')
-                        if callee_ip:  # Beide gefunden → abbrechen
-                            break
-                    elif client_data.get('name') == callee_name:
-                        callee_ip = client_data.get('ip') 
-                        if caller_ip:  # Beide gefunden → abbrechen
-                            break
+                    client_name = client_data.get('name', 'unknown')
+                    client_ip = client_data.get('ip', 'unknown')
+                    has_socket = client_data.get('socket') is not None
+                    
+                    print(f"[RELAY DEBUG] Client: {client_name} -> IP: {client_ip}, Socket: {has_socket}")
+                    
+                    if client_name == caller_name:
+                        caller_ip = client_ip
+                        print(f"[RELAY] Found caller: {caller_name} -> {caller_ip}")
+                        
+                    elif client_name == callee_name:
+                        callee_ip = client_ip
+                        print(f"[RELAY] Found callee: {callee_name} -> {callee_ip}")
+                
+                # ✅ FALLBACK: Wenn IPs nicht gefunden wurden, versuche aus Socket zu extrahieren
+                if not caller_ip:
+                    print(f"[RELAY WARNING] Caller IP not found for {caller_name}, trying socket...")
+                    for client_id, client_data in self.server.clients.items():
+                        if client_data.get('name') == caller_name and client_data.get('socket'):
+                            try:
+                                caller_ip = client_data['socket'].getpeername()[0]
+                                print(f"[RELAY] Extracted caller IP from socket: {caller_ip}")
+                                break
+                            except Exception as e:
+                                print(f"[RELAY SOCKET ERROR] Could not get caller IP: {e}")
+                                continue
+                
+                if not callee_ip:
+                    print(f"[RELAY WARNING] Callee IP not found for {callee_name}, trying socket...")
+                    for client_id, client_data in self.server.clients.items():
+                        if client_data.get('name') == callee_name and client_data.get('socket'):
+                            try:
+                                callee_ip = client_data['socket'].getpeername()[0]
+                                print(f"[RELAY] Extracted callee IP from socket: {callee_ip}")
+                                break
+                            except Exception as e:
+                                print(f"[RELAY SOCKET ERROR] Could not get callee IP: {e}")
+                                continue
             
-            if not caller_ip or not callee_ip:
-                print(f"[RELAY] Client IPs not found: {caller_name} or {callee_name}")
+            # ✅ VALIDIERUNG - BEIDE IPs MÜSSEN GEFUNDEN WERDEN
+            if not caller_ip:
+                print(f"[RELAY ERROR] ❌ Could not find caller IP for {caller_name}")
+                return False
+                
+            if not callee_ip:
+                print(f"[RELAY ERROR] ❌ Could not find callee IP for {callee_name}")
                 return False
             
-            # ✅ FESTE PORTS wie in client.py definiert
-            caller_addr = (caller_ip, 51821)  # Audio port from client.py
-            callee_addr = (callee_ip, 51821)
+            # ✅ ADRESSEN SETZEN
+            caller_addr = (caller_ip, caller_port)
+            callee_addr = (callee_ip, callee_port)
             
-            # ✅ SCHNELLE REGISTRIERUNG mit kurzem Lock
+            print(f"[RELAY] Final addresses:")
+            print(f"  Caller: {caller_addr}")
+            print(f"  Callee: {callee_addr}")
+            
+            # ✅ REGISTRIERUNG
             with self.relay_lock:
                 self.audio_relays[call_id] = {
                     'caller_addr': caller_addr,
                     'callee_addr': callee_addr,
-                    'timestamp': time.time()  # Für spätere Cleanup-Logik
+                    'timestamp': time.time(),
+                    'caller_name': caller_name,
+                    'callee_name': callee_name
                 }
             
-            print(f"[UDP RELAY] Registered: {caller_name}@{caller_addr} ↔ {callee_name}@{callee_addr}")
+            print(f"[RELAY] ✅ Successfully registered audio relay for call {call_id}")
             return True
             
         except Exception as e:
-            print(f"[RELAY REG ERROR] {e}")
+            print(f"[RELAY ERROR] Registration failed: {e}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def _unregister_audio_relay(self, call_id):
