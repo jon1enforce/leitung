@@ -771,46 +771,76 @@ class AudioConfig:
             self.configure_openbsd_audio()
 
     def detect_openbsd_audio_devices(self):
-        """OpenBSD-spezifische Audio-Device-Erkennung"""
+        """OpenBSD-spezifische Audio-Device-Erkennung KORRIGIERT"""
         try:
-            # Versuche sndio Devices zu finden
             import subprocess
-            
-            # Prüfe auf sndio Devices
-            result = subprocess.run(['sndioctl', '-l'], capture_output=True, text=True)
-            if result.returncode == 0:
-                print("[AUDIO] sndio Devices gefunden")
-                return True
-                
-            # Prüfe auf /dev/audio* Devices
             import glob
-            audio_devices = glob.glob('/dev/audio*')
-            if audio_devices:
-                print(f"[AUDIO] Gefundene Audio-Devices: {audio_devices}")
-                return True
+            
+            devices_found = []
+            
+            # 1. Prüfe ob sndiod läuft
+            result = subprocess.run(['pgrep', 'sndiod'], capture_output=True, text=True)
+            sndiod_running = (result.returncode == 0)
+            
+            if sndiod_running:
+                print("[AUDIO] sndiod läuft")
+                try:
+                    # Versuche sndioctl abzufragen
+                    result = subprocess.run(['sndioctl', '-d'], capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0:
+                        devices_found.append("sndio Default (über sndiod)")
+                        print("[AUDIO] sndioctl funktioniert")
+                except Exception as e:
+                    print(f"[AUDIO] sndioctl failed: {e}")
+            
+            # 2. Raw Devices identifizieren
+            raw_devices = glob.glob('/dev/audio*')
+            print(f"[AUDIO] Gefundene Raw Devices: {raw_devices}")
+            
+            # 3. Device-Mapping aus dmesg extrahieren
+            try:
+                result = subprocess.run(['dmesg'], capture_output=True, text=True)
+                audio_lines = [line for line in result.stdout.split('\n') if 'audio' in line.lower()]
+                for line in audio_lines:
+                    print(f"[AUDIO DMESG] {line}")
+            except:
+                pass
+                
+            return len(raw_devices) > 0 or sndiod_running
                 
         except Exception as e:
             print(f"[AUDIO] OpenBSD Device Detection fehlgeschlagen: {e}")
-        
-        return False
+            return False
 
     def get_openbsd_device_info(self):
-        """Gibt OpenBSD-spezifische Device-Informationen zurück"""
+        """Gibt OpenBSD Device-Informationen zurück KORRIGIERT"""
         devices = []
         
         try:
-            # Standard sndio Device
-            devices.append("0: sndio Default Device (OpenBSD)")
-            
-            # Zusätzliche /dev/audio Devices
+            import subprocess
             import glob
-            audio_devices = glob.glob('/dev/audio*')
-            for i, device in enumerate(audio_devices, 1):
-                devices.append(f"{i}: {device} (OpenBSD Raw Device)")
+            
+            # Kernel Audio Info
+            try:
+                result = subprocess.run(['sysctl', 'hw.snd'], capture_output=True, text=True)
+                if 'default_unit' in result.stdout:
+                    default_unit = result.stdout.split('default_unit=')[1].split()[0]
+                    devices.append(f"0: Default Audio Unit {default_unit} (sysctl)")
+            except:
+                pass
+            
+            # Raw Devices auflisten
+            raw_devices = glob.glob('/dev/audio*')
+            for i, device in enumerate(raw_devices, 1):
+                devices.append(f"{i}: {device} (Raw Device)")
                 
+            # Falls keine Devices gefunden
+            if not devices:
+                devices.append("0: sndio Default (automatisch)")
+                    
         except Exception as e:
             print(f"[AUDIO] OpenBSD Device Info Error: {e}")
-            devices = ["0: sndio Default Device (OpenBSD)"]
+            devices = ["0: Audio Default (OpenBSD)"]
         
         return devices
 
@@ -906,6 +936,7 @@ class AudioConfig:
             print(f"[OUTPUT DEVICES ERROR] {str(e)}")
             devices = ["0: Standard-Lautsprecher (Output)"]
         return devices
+
     def verify_audio_configuration(self):
         """Überprüft Audio-Konfiguration OHNE Qualitätseinstellungen zu überschreiben"""
         print("\n=== AUDIO CONFIGURATION VERIFICATION ===")
@@ -958,8 +989,8 @@ class AudioConfig:
                     input_supported = self.audio.is_format_supported(
                         current_rate,
                         input_device=self.input_device_index,
-                        input_channels=current_channels,  # ✅ Verwende aktuelle Channels
-                        input_format=current_format       # ✅ Verwende aktuelles Format
+                        input_channels=current_channels,
+                        input_format=current_format
                     )
                     print(f"[AUDIO] Input format supported: {input_supported}")
                 
@@ -968,8 +999,8 @@ class AudioConfig:
                     output_supported = self.audio.is_format_supported(
                         current_rate,
                         output_device=self.output_device_index,
-                        output_channels=1,  # Output immer Mono für Kompatibilität
-                        output_format=pyaudio.paInt16  # Output immer 16-bit
+                        output_channels=1,
+                        output_format=pyaudio.paInt16
                     )
                     print(f"[AUDIO] Output format supported: {output_supported}")
                         
@@ -1001,6 +1032,7 @@ class AudioConfig:
             print(f"[AUDIO CONFIG ERROR] {e}")
             # Kein Fallback - behalte die gewählte Qualität
             return True
+
     def _apply_quality_profile(self):
         """Wendet die Qualitätsstufe an MIT Fallback bei Fehlern"""
         profile = self.QUALITY_PROFILES[self.quality_profile]
@@ -1060,50 +1092,7 @@ class AudioConfig:
                 profile = self.QUALITY_PROFILES[fallback]
         
         return False
-    def detect_openbsd_audio_devices(self):
-        """OpenBSD-spezifische Audio-Device-Erkennung"""
-        try:
-            # Versuche sndio Devices zu finden
-            import subprocess
-            
-            # Prüfe auf sndio Devices
-            result = subprocess.run(['sndioctl', '-l'], capture_output=True, text=True)
-            if result.returncode == 0:
-                print("[AUDIO] sndio Devices gefunden")
-                # sndio ist verfügbar, verwende default Device
-                return True
-                
-            # Prüfe auf /dev/audio* Devices
-            import glob
-            audio_devices = glob.glob('/dev/audio*')
-            if audio_devices:
-                print(f"[AUDIO] Gefundene Audio-Devices: {audio_devices}")
-                return True
-                
-        except Exception as e:
-            print(f"[AUDIO] OpenBSD Device Detection fehlgeschlagen: {e}")
-        
-        return False
 
-    def get_openbsd_device_info(self):
-        """Gibt OpenBSD-spezifische Device-Informationen zurück"""
-        devices = []
-        
-        try:
-            # Standard sndio Device
-            devices.append("0: sndio Default Device (OpenBSD)")
-            
-            # Zusätzliche /dev/audio Devices
-            import glob
-            audio_devices = glob.glob('/dev/audio*')
-            for i, device in enumerate(audio_devices, 1):
-                devices.append(f"{i}: {device} (OpenBSD Raw Device)")
-                
-        except Exception as e:
-            print(f"[AUDIO] OpenBSD Device Info Error: {e}")
-            devices = ["0: sndio Default Device (OpenBSD)"]
-        
-        return devices
     def _test_audio_configuration(self):
         """Testet ob die aktuelle Audio-Konfiguration funktioniert"""
         try:
@@ -1124,7 +1113,7 @@ class AudioConfig:
             if self.output_device_index is not None:
                 test_stream = self.audio.open(
                     format=pyaudio.paInt16,
-                    channels=1,  # Output immer Mono
+                    channels=1,
                     rate=self.RATE,
                     output=True,
                     frames_per_buffer=self.CHUNK,
@@ -1138,11 +1127,12 @@ class AudioConfig:
         except Exception as e:
             print(f"[AUDIO TEST] Configuration failed: {e}")
             return False
+
     def set_quality(self, quality_level):
         """Setzt die Audio-Qualitätsstufe MIT DEBUG"""
         print(f"[DEBUG] set_quality called: {self.quality_profile} -> {quality_level}")
         import traceback
-        traceback.print_stack()  # Zeigt wo der Aufruf herkommt
+        traceback.print_stack()
         
         if quality_level in self.QUALITY_PROFILES:
             self.quality_profile = quality_level
@@ -1347,7 +1337,7 @@ class AudioConfig:
             rms = np.sqrt(np.mean(audio_data ** 2))
             
             # Setze Rauschschwelle basierend auf RMS mit Sicherheitsmargin
-            self.noise_profile['noise_threshold'] = float(rms * 2.0)  # 100% Sicherheitsmargin für 180s
+            self.noise_profile['noise_threshold'] = float(rms * 2.0)
             self.audio_stats['noise_floor'] = float(rms)
             self.audio_stats['rms_level'] = float(rms)
             
@@ -1370,7 +1360,7 @@ class AudioConfig:
             from scipy import fftpack
             
             # Verwende nur einen Teil der Daten für FFT (Performance)
-            sample_size = min(len(audio_data), 44100 * 10)  # 10 Sekunden für FFT
+            sample_size = min(len(audio_data), 44100 * 10)
             analysis_data = audio_data[:sample_size]
             
             # FFT für Frequenzanalyse
@@ -1395,7 +1385,7 @@ class AudioConfig:
             self.noise_profile['frequency_profile'] = {
                 'frequencies': positive_freq,
                 'power': positive_power,
-                'peaks': sorted(noise_peaks, key=lambda x: x[1], reverse=True)[:10]  # Top 10 Peaks
+                'peaks': sorted(noise_peaks, key=lambda x: x[1], reverse=True)[:10]
             }
             
             print(f"[NOISE PROFILE] Gefundene Rausch-Peaks: {len(noise_peaks)}")
@@ -1505,7 +1495,7 @@ class AudioConfig:
             
         except Exception as e:
             print(f"[NOISE FILTER ERROR] {str(e)}")
-            return audio_data  # Fallback: ungefilterte Daten
+            return audio_data
 
     def _apply_spectral_noise_reduction(self, data):
         """Wendet spektrale Rauschunterdrückung an"""
@@ -1546,16 +1536,16 @@ class AudioConfig:
         # Adaptive Schwelle basierend auf Signalstärke
         base_threshold = self.noise_profile['noise_threshold']
         if self.noise_profile['aggressive_mode']:
-            base_threshold *= 0.7  # Niedrigere Schwelle im aggressiven Modus
+            base_threshold *= 0.7
         
         adaptive_threshold = base_threshold
         
         # Dynamische Anpassung basierend auf Signalstärke
-        if rms > self.audio_stats['noise_floor'] * 20:  # Sehr starke Signale
+        if rms > self.audio_stats['noise_floor'] * 20:
             adaptive_threshold *= 0.3
-        elif rms > self.audio_stats['noise_floor'] * 10:  # Starke Signale
+        elif rms > self.audio_stats['noise_floor'] * 10:
             adaptive_threshold *= 0.5
-        elif rms < self.audio_stats['noise_floor'] * 3:  # Sehr schwache Signale
+        elif rms < self.audio_stats['noise_floor'] * 3:
             adaptive_threshold *= 3.0
         
         # Noise Gate anwenden
@@ -1574,8 +1564,7 @@ class AudioConfig:
             notch_freq = self.filter_coefficients['hum_filter_freq'] / nyquist
             
             if notch_freq < 1.0:
-                # Design Notch Filter
-                quality = 30  # Qualitätsfaktor
+                quality = 30
                 b, a = signal.iirnotch(notch_freq, quality)
                 data = signal.filtfilt(b, a, data)
             
@@ -1595,16 +1584,13 @@ class AudioConfig:
         """Konvertiert 24-bit zu 32-bit Float"""
         import numpy as np
         
-        # 24-bit zu 32-bit Integer
         audio_32int = np.frombuffer(data_24bit, dtype=np.int32)
-        # Skaliere zu Float (-1.0 bis +1.0)
         return audio_32int.astype(np.float32) / 8388607.0
 
     def _convert_32float_to_24bit(self, data_32float):
         """Konvertiert 32-bit Float zu 24-bit"""
         import numpy as np
         
-        # Begrenze und skaliere zu 24-bit Integer
         audio_clipped = np.clip(data_32float, -1.0, 1.0)
         audio_24bit = (audio_clipped * 8388607.0).astype(np.int32)
         return audio_24bit.tobytes()
@@ -1625,6 +1611,109 @@ Rauschprofil Informationen (180s Clear Room):
 - Frequenz-Peaks: {len(self.noise_profile.get('frequency_profile', {}).get('peaks', []))}
 """
         return info
+    def test_audio_output(self, duration=10):
+        """Testet Audio-Ausgabe mit 10 Sekunden synthetischem Signal"""
+        try:
+            print(f"[AUDIO TEST] Starting {duration} second audio output test...")
+            
+            # Extrahiere Device-Index aus der Auswahl
+            output_selection = getattr(self.client, 'selected_output_device', None)
+            if output_selection and ':' in output_selection:
+                try:
+                    device_index = int(output_selection.split(':')[0])
+                    print(f"[AUDIO TEST] Using device index: {device_index}")
+                except:
+                    device_index = 0
+                    print("[AUDIO TEST] Using default device index: 0")
+            else:
+                device_index = 0
+                print("[AUDIO TEST] Using default device index: 0")
+            
+            # Output Stream öffnen
+            stream = self.audio.open(
+                format=pyaudio.paInt16,  # Immer 16-bit für Kompatibilität
+                channels=1,
+                rate=44100,  # Standard Sample Rate
+                output=True,
+                frames_per_buffer=1024,
+                output_device_index=device_index
+            )
+            
+            print(f"[AUDIO TEST] Output stream opened, generating test signal...")
+            
+            # Synthetisches Test-Signal erzeugen (440Hz Sinus + 880Hz Oberwelle)
+            def generate_test_signal(duration_seconds, sample_rate=44100):
+                import numpy as np
+                
+                t = np.linspace(0, duration_seconds, int(sample_rate * duration_seconds))
+                
+                # Hauptfrequenz 440Hz (A4) + Oberwelle 880Hz
+                frequency1 = 440.0  # A4
+                frequency2 = 880.0  # A5
+                
+                # Erzeuge Sinus-Wellen mit abnehmender Lautstärke
+                signal1 = 0.7 * np.sin(2 * np.pi * frequency1 * t)
+                signal2 = 0.3 * np.sin(2 * np.pi * frequency2 * t)
+                
+                # Kombiniere Signale
+                combined_signal = signal1 + signal2
+                
+                # Fade-In und Fade-Out um Knackgeräusche zu vermeiden
+                fade_samples = int(0.1 * sample_rate)  # 100ms Fade
+                fade_in = np.linspace(0, 1, fade_samples)
+                fade_out = np.linspace(1, 0, fade_samples)
+                
+                combined_signal[:fade_samples] *= fade_in
+                combined_signal[-fade_samples:] *= fade_out
+                
+                # Konvertiere zu 16-bit Integer
+                signal_16bit = (combined_signal * 32767).astype(np.int16)
+                
+                return signal_16bit.tobytes()
+            
+            # Signal generieren
+            test_signal = generate_test_signal(duration)
+            
+            print(f"[AUDIO TEST] Test signal generated ({len(test_signal)} bytes)")
+            
+            # Signal in Chunks abspielen
+            chunk_size = 1024
+            total_chunks = len(test_signal) // chunk_size
+            
+            for i in range(total_chunks):
+                start_idx = i * chunk_size
+                end_idx = start_idx + chunk_size
+                
+                if end_idx <= len(test_signal):
+                    chunk = test_signal[start_idx:end_idx]
+                    stream.write(chunk)
+                
+                # Fortschritt anzeigen
+                progress = (i + 1) / total_chunks * 100
+                if i % 50 == 0:  # Alle 50 Chunks loggen
+                    print(f"[AUDIO TEST] Progress: {progress:.1f}%")
+            
+            # Stream schließen
+            stream.stop_stream()
+            stream.close()
+            
+            print(f"[AUDIO TEST] ✅ Audio output test completed successfully!")
+            return True
+            
+        except Exception as e:
+            print(f"[AUDIO TEST ERROR] ❌ Test failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            
+            # Versuche Stream zu schließen falls geöffnet
+            try:
+                if 'stream' in locals():
+                    stream.stop_stream()
+                    stream.close()
+            except:
+                pass
+                
+            return False        
 class ClientRelayManager:
     def __init__(self, client_instance):
         self.client = client_instance
@@ -2418,7 +2507,7 @@ class CALL:
         except:
             pass
     def show_audio_devices_popup(self):
-        """Audio-Geräte, Qualitätsauswahl und Rauschfilterung - VOLLSTÄNDIGE VERSION"""
+        """Audio-Geräte, Qualitätsauswahl und Rauschfilterung - KORRIGIERTE DPI-VERSION"""
         try:
             # Warte bis das Hauptfenster sichtbar ist
             if hasattr(self.client, 'winfo_viewable') and not self.client.winfo_viewable():
@@ -2431,25 +2520,18 @@ class CALL:
                 print("[AUDIO POPUP] Main window destroyed, aborting...")
                 return
 
-            # ✅ KORREKTE DPI-ERKENNUNG UND SKALIERUNG
-            screen_dpi = self.client.winfo_fpixels('1i')  # DPI des Bildschirms
-            
-            # Standard-DPI ist 96, berechne Skalierungsfaktor
+            # ✅ KORREKTE DPI-ERKENNUNG - VOR Fenstererstellung
+            screen_dpi = self.client.winfo_fpixels('1i')
             base_dpi = 96
             scaling_factor = screen_dpi / base_dpi if screen_dpi > 0 else 1.0
-            
-            # Begrenze den Skalierungsfaktor für vernünftige Werte
-            scaling_factor = min(scaling_factor, 2.0)  # Max 2.0x Skalierung
-            scaling_factor = max(scaling_factor, 0.8)  # Min 0.8x Skalierung
+            scaling_factor = min(max(scaling_factor, 0.8), 2.0)
             
             print(f"[DPI] Screen DPI: {screen_dpi:.1f}, Scaling Factor: {scaling_factor:.2f}")
             
             # ✅ DYNAMISCHE GRÖSSEN BASIEREND AUF DPI
             def scaled_size(size):
-                """Skaliert Größen basierend auf DPI"""
                 return int(size * scaling_factor)
             
-            # Font-Größen mit Skalierung
             font_sizes = {
                 'title': scaled_size(14),
                 'heading': scaled_size(12),
@@ -2458,7 +2540,6 @@ class CALL:
                 'tiny': scaled_size(8)
             }
             
-            # Widget-Größen mit Skalierung
             widget_sizes = {
                 'button_width': scaled_size(15),
                 'small_button_width': scaled_size(12),
@@ -2466,36 +2547,41 @@ class CALL:
                 'progress_length': scaled_size(300),
                 'wraplength': scaled_size(550)
             }
-            
-            # ✅ KONSTANTE FENSTERGRÖSSE (600x960 Pixel) - wird nicht skaliert
-            window_width = 600
-            window_height = 960
-            
-            # Erstelle neues Fenster mit konstanter Größe
+
+            # ✅ FENSTERGRÖSSE dynamisch basierend auf DPI
+            window_width = scaled_size(600)
+            window_height = scaled_size(960)
+
+            # Erstelle neues Fenster MIT SOFORTIGEM DPI-SETTING
             popup = tk.Toplevel(self.client)
             popup.title("Audio-Einstellungen")
             popup.geometry(f"{window_width}x{window_height}")
             popup.resizable(False, False)
             
-            # Setze DPI-awareness für korrekte Schrift-Skalierung
+            # ✅ SETZE DPI SOFORT nach Fenstererstellung
             try:
                 popup.tk.call('tk', 'scaling', scaling_factor)
             except:
                 print("[DPI] tk scaling not supported, using manual scaling")
-            
-            # Warte bis Popup sichtbar ist
+
+            # ✅ FORCIERE SOFORTIGE AKTUALISIERUNG
             popup.update_idletasks()
+            popup.update()
             
             if popup.winfo_viewable():
                 popup.transient(self.client)
                 popup.grab_set()
-            
+
             # Zentriere das Fenster
             popup.update_idletasks()
             x = (popup.winfo_screenwidth() // 2) - (window_width // 2)
             y = (popup.winfo_screenheight() // 2) - (window_height // 2)
             popup.geometry(f"+{x}+{y}")
-            
+
+            # ✅ NOCHMAL AKTUALISIEREN für korrekte Darstellung
+            popup.update_idletasks()
+            popup.update()
+
             # Separate Variablen für jede Combobox
             input_var = tk.StringVar(popup)
             output_var = tk.StringVar(popup)
@@ -3029,20 +3115,38 @@ class CALL:
                     print(f"[AUDIO POPUP CLOSE ERROR] {str(e)}")
             
             def test_audio():
-                """Testet die Audio-Einstellungen"""
-                quality_text = quality_var.get()
-                quality_name = self.audio_config.QUALITY_PROFILES[quality_text]['name']
-                noise_status = "Aktiv" if noise_var.get() else "Inaktiv"
-                profile_status = "Vorhanden" if self.audio_config.noise_profile['profile_captured'] else "Fehlt"
-                
-                messagebox.showinfo("Audio-Test", 
-                                  "Audio-Test-Funktion wird in zukünftigen Versionen verfügbar sein.\n\n"
-                                  f"Aktuelle Einstellungen:\n"
-                                  f"• Qualität: {quality_name}\n"
-                                  f"• Eingabe: {input_var.get() or 'Standard'}\n"
-                                  f"• Ausgabe: {output_var.get() or 'Standard'}\n"
-                                  f"• Rauschfilter: {noise_status} ({profile_status})\n"
-                                  f"• Aggressiv: {'Ja' if aggressive_var.get() else 'Nein'}")
+                """Testet die Audio-Ausgabe mit 10 Sekunden synthetischem Signal"""
+                try:
+                    # Zeige Info-Dialog
+                    messagebox.showinfo("Audio-Test", 
+                                      "Audio-Test wird gestartet:\n\n"
+                                      "• 10 Sekunden Test-Signal (440Hz + 880Hz)\n"
+                                      "• Nur Lautsprecher-Ausgabe wird getestet\n"
+                                      "• Stellen Sie Lautstärke auf angenehme Höhe\n\n"
+                                      "OK klicken um Test zu starten...")
+                    
+                    # Starte Test in separatem Thread
+                    def test_thread():
+                        success = self.audio_config.test_audio_output(duration=10)
+                        
+                        # Ergebnis im Hauptthread anzeigen
+                        def show_result():
+                            if success:
+                                messagebox.showinfo("Audio-Test", "✅ Audio-Test erfolgreich!\n\n"
+                                                                "Das Test-Signal wurde korrekt abgespielt.")
+                            else:
+                                messagebox.showerror("Audio-Test", "❌ Audio-Test fehlgeschlagen!\n\n"
+                                                                  "Bitte überprüfen Sie:\n"
+                                                                  "• Ausgabegerät-Auswahl\n"
+                                                                  "• Lautsprecher-Verbindung\n"
+                                                                  "• System-Lautstärke")
+                        
+                        popup.after(0, show_result)
+                    
+                    threading.Thread(target=test_thread, daemon=True).start()
+                    
+                except Exception as e:
+                    messagebox.showerror("Audio-Test", f"❌ Test konnte nicht gestartet werden:\n{str(e)}")
             
             # ✅ KORREKT SKALIERTE BUTTONS
             # Erster Button-Reihe: Hauptaktionen
