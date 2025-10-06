@@ -4278,104 +4278,154 @@ class CALL:
             print(f"[CALL CRITICAL ERROR] Failed to send framed SIP response: {str(e)}")
             return False
 
-    def handle_call_response(self, msg):
-        """Verarbeitet Antwort auf eigenen Anruf - MIT RELAY KONFIGURATION"""
+    def handle_call_response(self, msg, client_socket, client_name):
+        """Verarbeitet Call-Antworten - VOLLSTÄNDIG KORRIGIERT"""
         try:
-            if not self.pending_call:
-                print("[CALL WARNING] No pending call for response")
-                return
-                
-            print(f"[CALL] Processing framed SIP call response")
-            
-            # ✅ KRITISCH: SIP-Nachricht korrekt parsen
-            sip_data = None
-            
-            if isinstance(msg, str) and 'SIP/2.0' in msg:
-                # Framed SIP Nachricht parsen
-                sip_data = self.client.parse_sip_message(msg)
-                if not sip_data:
-                    print("[CALL ERROR] Failed to parse SIP message in response")
-                    return
-            elif isinstance(msg, dict):
-                # Bereits geparste SIP-Daten
-                sip_data = msg
-            else:
-                print(f"[CALL ERROR] Unsupported message format: {type(msg)}")
-                return
-            
-            # ✅ KORREKT: Aus custom_data extrahieren
-            custom_data = sip_data.get('custom_data', {})
+            custom_data = msg.get('custom_data', {})
             response = custom_data.get('RESPONSE')
+            caller_id = custom_data.get('CALLER_CLIENT_ID')  # ✅ Client-ID vom Anrufer
+            responding_client_name = client_name  # ✅ Der Client der antwortet
             
-            print(f"[CALL] Framed SIP response type: {response}")
-            print(f"[CALL] Custom data keys: {list(custom_data.keys())}")
+            print(f"[CONVEY] Framed SIP call response from {responding_client_name}: {response}")
+            print(f"[CONVEY DEBUG] Caller ID from request: {caller_id}")
+            print(f"[CONVEY DEBUG] Responding client: {responding_client_name}")
+            print(f"[CONVEY DEBUG] Custom data keys: {list(custom_data.keys())}")
+
+            if not response or not caller_id:
+                print("[CONVEY ERROR] Missing response or caller_id in framed SIP")
+                return False
+                
+            # ✅ KORREKTE CALL-SUCHE: Finde Call wo callee_name == responding_client_name UND caller_id == caller_id
+            call_id = None
+            call_data = None
             
-            if not response:
-                print("[CALL ERROR] No RESPONSE in framed SIP message")
-                return
+            print(f"[CONVEY DEBUG] Searching through {len(self.active_calls)} active calls")
+            for cid, data in self.active_calls.items():
+                print(f"[CONVEY DEBUG] Call {cid}:")
+                print(f"  caller_id: {data.get('caller_id')}, caller_name: {data.get('caller_name')}")
+                print(f"  callee_id: {data.get('callee_id')}, callee_name: {data.get('callee_name')}")
+                
+                # ✅ KORREKTUR: Vergleiche Namen statt IDs!
+                if (data.get('callee_name') == responding_client_name and 
+                    data.get('caller_id') == caller_id):
+                    call_id = cid
+                    call_data = data
+                    print(f"[CONVEY DEBUG] ✓ Found matching call: {cid}")
+                    break
             
-            # ✅ RELAY KONFIGURATION EXTRAHIEREN
-            use_relay = custom_data.get('USE_AUDIO_RELAY', False)
-            relay_ip = custom_data.get('AUDIO_RELAY_IP')
-            relay_port = custom_data.get('AUDIO_RELAY_PORT', 51822)
+            if not call_data:
+                print(f"[CONVEY ERROR] No active call found for {responding_client_name} -> caller {caller_id}")
+                print(f"[CONVEY DEBUG] Available calls: {list(self.active_calls.keys())}")
+                for cid, data in self.active_calls.items():
+                    print(f"  Call {cid}: {data.get('caller_name')}({data.get('caller_id')}) -> {data.get('callee_name')}({data.get('callee_id')})")
+                return False
             
-            print(f"[CALL] Response: {response}, Relay: {use_relay}, IP: {relay_ip}, Port: {relay_port}")
+            print(f"[CONVEY] Processing call response for call {call_id}")
             
+            # ✅ FRAME-SIP BEARBEITUNG
             if response == "accepted":
-                print("[CALL] ✓ Call accepted by recipient via framed SIP")
+                print(f"[CONVEY] Call {call_id} accepted by {responding_client_name}")
                 
-                # ✅ RELAY KONFIGURATION SETZEN
-                if use_relay and relay_ip:
-                    self.use_udp_relay = True
-                    self.relay_server_ip = relay_ip
-                    self.relay_server_port = relay_port
-                    print(f"[CALL] ✅ UDP Relay configured: {relay_ip}:{relay_port}")
-                else:
-                    print("[CALL] ❌ ERROR: No relay configuration in acceptance response!")
-                    if hasattr(self.client, 'after'):
-                        self.client.after(0, lambda: messagebox.showerror(
-                            "Call Error", 
-                            "Server konnte keine Audio-Relay-Verbindung bereitstellen."
-                        ))
-                    self.cleanup_call_resources()
-                    return
+                # UDP Relay registrieren
+                relay_success = self._register_audio_relay(call_id, call_data['caller_name'], responding_client_name)
                 
-                # Audio streams starten
-                if 'session_secret' in self.pending_call:
-                    self.current_secret = self.pending_call['session_secret']
-                    self._start_audio_streams()  # ✅ WICHTIG: Jetzt mit Relay-Konfiguration
-                    self.pending_call['status'] = 'connected'
-                    self._update_ui_wrapper(active=True, status="connected", 
-                                          caller_name=self.pending_call['recipient'].get('name', 'Unknown'))
-                    print("[CALL] ✅ Audio streams started successfully with relay")
+                # ✅ FRAME-SIP ACCEPTED NACHRICHT MIT RELAY INFORMATIONEN
+                response_data = {
+                    "MESSAGE_TYPE": "CALL_RESPONSE",
+                    "RESPONSE": "accepted",
+                    "CALLER_CLIENT_ID": caller_id,
+                    "TIMESTAMP": int(time.time())
+                }
+                
+                # Füge Relay-Informationen hinzu falls verfügbar
+                if relay_success:
+                    response_data.update({
+                        "USE_AUDIO_RELAY": True,
+                        "AUDIO_RELAY_IP": self.server.host,  # Server IP für Relay
+                        "AUDIO_RELAY_PORT": self.udp_relay_port
+                    })
+                    print(f"[CONVEY] ✅ UDP Relay registered: {self.server.host}:{self.udp_relay_port}")
                 else:
-                    print("[CALL ERROR] No session secret for audio")
+                    print("[CONVEY WARNING] UDP Relay registration failed")
+                
+                response_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], response_data)
+                send_success = send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
+                
+                if send_success:
+                    call_data['status'] = 'accepted'
+                    print(f"[CONVEY] ✅ Call accepted response sent to {call_data['caller_name']}")
+                    
+                    # ✅ FRAME-SIP CALLEE BESTÄTIGUNG
+                    callee_msg_data = {
+                        "MESSAGE_TYPE": "CALL_CONFIRMED",
+                        "TIMESTAMP": int(time.time())
+                    }
+                    
+                    # Füge Relay-Informationen hinzu falls verfügbar
+                    if relay_success:
+                        callee_msg_data.update({
+                            "USE_AUDIO_RELAY": True,
+                            "AUDIO_RELAY_IP": self.server.host,
+                            "AUDIO_RELAY_PORT": self.udp_relay_port
+                        })
+                    
+                    callee_msg = self.server.build_sip_message("MESSAGE", responding_client_name, callee_msg_data)
+                    send_frame(client_socket, callee_msg.encode('utf-8'))
+                    
+                    print(f"[CONVEY] ✅ Framed SIP call {call_id} accepted with UDP Relay: {relay_success}")
+                else:
+                    print(f"[CONVEY ERROR] Failed to send accepted response to caller")
                     
             elif response == "rejected":
-                print("[CALL] ✗ Call rejected via framed SIP")
-                if hasattr(self.client, 'after'):
-                    self.client.after(0, lambda: messagebox.showinfo("Call Rejected", "Der Empfänger hat den Anruf abgelehnt"))
-                self.cleanup_call_resources()
+                print(f"[CONVEY] Call {call_id} rejected by {responding_client_name}")
                 
-            elif response == "timeout":
-                print("[CALL] ✗ Call timeout via framed SIP")
-                if hasattr(self.client, 'after'):
-                    self.client.after(0, lambda: messagebox.showinfo("Call Failed", "Der Empfänger hat nicht geantwortet"))
-                self.cleanup_call_resources()
+                # ✅ FRAME-SIP REJECTED NACHRICHT
+                response_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], {
+                    "MESSAGE_TYPE": "CALL_RESPONSE",
+                    "RESPONSE": "rejected",
+                    "CALLER_CLIENT_ID": caller_id,
+                    "TIMESTAMP": int(time.time())
+                })
+                send_success = send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
                 
+                if send_success:
+                    call_data['status'] = 'rejected'
+                    print(f"[CONVEY] ✅ Call rejected response sent to {call_data['caller_name']}")
+                else:
+                    print(f"[CONVEY ERROR] Failed to send rejected response to caller")
+                    
             elif response == "error":
-                print("[CALL] ✗ Call error via framed SIP")
-                if hasattr(self.client, 'after'):
-                    self.client.after(0, lambda: messagebox.showinfo("Call Failed", "Fehler beim Empfänger"))
-                self.cleanup_call_resources()
+                print(f"[CONVEY] Call {call_id} error from {responding_client_name}")
                 
-            else:
-                print(f"[CALL WARNING] Unknown framed SIP response: {response}")
-                self.cleanup_call_resources()
+                # ✅ FRAME-SIP ERROR NACHRICHT
+                response_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], {
+                    "MESSAGE_TYPE": "CALL_RESPONSE", 
+                    "RESPONSE": "error",
+                    "ERROR": "CALLEE_ERROR",
+                    "CALLER_CLIENT_ID": caller_id,
+                    "TIMESTAMP": int(time.time())
+                })
+                send_success = send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
                 
+                if send_success:
+                    call_data['status'] = 'error'
+                    print(f"[CONVEY] ✅ Call error response sent to {call_data['caller_name']}")
+            
+            # ✅ SAUBERES CLEANUP
+            if response in ['accepted', 'rejected', 'error']:
+                if call_id in self.active_calls:
+                    if response in ['rejected', 'error']:
+                        self._unregister_audio_relay(call_id)
+                    del self.active_calls[call_id]
+                    print(f"[CONVEY] ✅ Call {call_id} cleaned up")
+            
+            return True
+            
         except Exception as e:
-            print(f"[CALL ERROR] Framed SIP response handling failed: {str(e)}")
-            self.cleanup_call_resources()
+            print(f"[CONVEY ERROR] Framed SIP call response failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
 
     def handle_call_confirmed(self, msg):
         """Verarbeitet Call-Bestätigung für Angerufene - JETZT MIT UDP RELAY"""

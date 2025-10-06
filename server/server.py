@@ -12,7 +12,7 @@ import struct
 import base64
 import ctypes
 import platform
-from typing import Optional
+from typing import Optional, Dict, List
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from threading import Lock
@@ -22,7 +22,10 @@ BUFFER_SIZE = 4096
 import os
 import hmac
 import hashlib
-
+from collections import defaultdict
+from datetime import datetime, timedelta
+import requests
+import ipaddress
 def secure_random(size):
     """
     Einfache Version die NUR die Zufallsdaten zurückgibt
@@ -87,11 +90,20 @@ def send_frame(sock, data):
         return False
 
 def recv_frame(sock, timeout=30):
-    """EINHEITLICHER Frame-Empfänger für ALLE Nachrichten - KOMPATIBEL FÜR CLIENT UND SERVER"""
+    """NICHT-AGGRESSIVER Frame-Empfänger - PRÜFT NUR SIP FRAME KONFORMITÄT"""
     original_timeout = sock.gettimeout()
     sock.settimeout(timeout)
     
     try:
+        # Client IP für besseres Logging
+        try:
+            client_ip, client_port = sock.getpeername()
+            client_info = f"{client_ip}:{client_port}"
+        except:
+            client_info = "unknown client"
+        
+        print(f"📡 [FRAME] Waiting for frame from {client_info}")
+        
         # 1. Header lesen (4 Bytes Network Byte Order)
         header = b''
         start_time = time.time()
@@ -99,81 +111,137 @@ def recv_frame(sock, timeout=30):
         while len(header) < 4:
             remaining_time = timeout - (time.time() - start_time)
             if remaining_time <= 0:
+                print(f"⏰ [FRAME] Header timeout from {client_info}")
                 raise TimeoutError("Header receive timeout")
                 
-            sock.settimeout(remaining_time)
+            sock.settimeout(min(5, remaining_time))  # Max 5s pro Chunk
             chunk = sock.recv(4 - len(header))
             if not chunk:
-                print("[FRAME] Connection closed during header reception")
+                print(f"🔌 [FRAME] Connection closed by {client_info} during header")
                 return None
             header += chunk
         
         # 2. Länge decodieren
-        length = struct.unpack('!I', header)[0]
-        
-        # 3. SICHERHEITSCHECKS (identisch auf beiden Seiten)
-        if length == 0:
-            print("[FRAME] Empty frame received")
-            return b''  # Leerer Frame ist erlaubt
-            
-        if length > 10 * 1024 * 1024:  # 10MB Maximum (konservativ)
-            print(f"[FRAME SECURITY] Frame size suspicious: {length} bytes")
-            # Versuche Daten zu lesen und zu verwerfen um Verbindung zu resetten
+        try:
+            length = struct.unpack('!I', header)[0]
+            print(f"📏 [FRAME] {client_info} announced {length} bytes")
+        except struct.error as e:
+            print(f"❌ [FRAME] INVALID HEADER from {client_info}: {header.hex()} - {e}")
+            # Sende klare Fehlermeldung zurück
             try:
-                discard_timeout = min(5.0, timeout)  # Max 5 Sekunden zum Verwerfen
-                sock.settimeout(discard_timeout)
-                bytes_discarded = 0
-                while bytes_discarded < length:
-                    chunk_size = min(4096, length - bytes_discarded)
-                    chunk = sock.recv(chunk_size)
-                    if not chunk:
-                        break
-                    bytes_discarded += len(chunk)
-                print(f"[FRAME SECURITY] Discarded {bytes_discarded} bytes")
+                error_msg = b"INVALID_FRAME_HEADER"
+                sock.send(struct.pack('!I', len(error_msg)) + error_msg)
             except:
                 pass
-            raise ValueError(f"Frame too large: {length} bytes (max: 10MB)")
+            return None
+        
+        # 3. ✅ NUR KONFORMITÄTS-CHECKS (keine Sicherheitschecks)
+        
+        # A) Maximalgröße prüfen (sehr großzügig)
+        if length > 50 * 1024 * 1024:  # 50MB Maximum
+            print(f"📏 [FRAME] OVERSIZE from {client_info}: {length} bytes > 50MB")
+            try:
+                error_msg = b"FRAME_TOO_LARGE"
+                sock.send(struct.pack('!I', len(error_msg)) + error_msg)
+            except:
+                pass
+            return None
+        
+        # B) Negative Länge prüfen (wichtig für Konformität)
+        if length < 0:
+            print(f"❌ [FRAME] NEGATIVE LENGTH from {client_info}: {length}")
+            try:
+                error_msg = b"INVALID_FRAME_LENGTH"
+                sock.send(struct.pack('!I', len(error_msg)) + error_msg)
+            except:
+                pass
+            return None
+        
+        # ✅ Leere Frames sind erlaubt (für Keep-Alive, etc.)
+        if length == 0:
+            print(f"📭 [FRAME] Empty frame from {client_info}")
+            return b''
         
         # 4. Body lesen
         received = b''
+        bytes_received = 0
+        
         while len(received) < length:
             remaining_time = timeout - (time.time() - start_time)
             if remaining_time <= 0:
+                print(f"⏰ [FRAME] Body timeout from {client_info}, received {len(received)}/{length} bytes")
                 raise TimeoutError(f"Body receive timeout after {timeout}s")
                 
-            sock.settimeout(remaining_time)
-            chunk_size = min(4096, length - len(received))
+            sock.settimeout(min(10, remaining_time))  # Langes Timeout für Body
+            chunk_size = min(8192, length - len(received))  # Größere Chunks für Performance
             chunk = sock.recv(chunk_size)
+            
             if not chunk:
+                print(f"🔌 [FRAME] Connection closed by {client_info} during body")
                 raise ConnectionError(f"Incomplete frame: received {len(received)} of {length} bytes")
+            
             received += chunk
+            bytes_received += len(chunk)
+            
+            # Fortschritt für große Frames
+            if length > 100000 and len(received) % 50000 == 0:
+                progress = (len(received) / length) * 100
+                print(f"📥 [FRAME] {client_info} progress: {progress:.1f}%")
         
-        # 5. Erfolgslogging (konsistent)
+        # 5. Erfolgslogging
         if len(received) == length:
-            print(f"[FRAME] Successfully received {length} bytes")
+            print(f"✅ [FRAME] Successfully received {length} bytes from {client_info}")
+            
+            # ✅ OPTIONAL: SIP-Protokoll-Konformität prüfen (nur wenn SIP-Inhalt erwartet)
+            if length > 0:
+                try:
+                    # Versuche als Text zu decodieren um SIP-Header zu prüfen
+                    message_str = received.decode('utf-8', errors='ignore')
+                    
+                    # Einfache SIP-Methoden-Erkennung für Konformität
+                    sip_methods = ['REGISTER', 'INVITE', 'ACK', 'BYE', 'CANCEL', 'OPTIONS', 'MESSAGE']
+                    has_sip_method = any(method in message_str for method in sip_methods)
+                    
+                    if has_sip_method:
+                        # Prüfe auf grundlegende SIP-Header
+                        sip_headers = ['Via:', 'From:', 'To:', 'Call-ID:', 'CSeq:']
+                        missing_headers = []
+                        for header in sip_headers:
+                            if header not in message_str:
+                                missing_headers.append(header)
+                        
+                        if missing_headers:
+                            print(f"⚠️ [FRAME] {client_info} missing SIP headers: {missing_headers}")
+                        else:
+                            print(f"📞 [FRAME] {client_info} valid SIP message with {len(message_str)} chars")
+                    
+                except Exception as e:
+                    # Kein UTF-8 Text - könnte binär/verschlüsselt sein
+                    print(f"🔒 [FRAME] {client_info} binary/encrypted data: {len(received)} bytes")
+                    
         else:
-            print(f"[FRAME WARNING] Length mismatch: expected {length}, got {len(received)}")
+            print(f"⚠️ [FRAME] Length mismatch from {client_info}: expected {length}, got {len(received)}")
         
         return received
         
     except socket.timeout:
-        print(f"[FRAME TIMEOUT] Timeout after {timeout} seconds")
+        print(f"⏰ [FRAME] Overall timeout after {timeout}s from {client_info}")
         raise TimeoutError(f"Frame receive timeout after {timeout}s")
     except ConnectionError as e:
-        print(f"[FRAME CONNECTION] Connection error: {e}")
+        print(f"🔌 [FRAME] Connection error from {client_info}: {e}")
         raise
     except ValueError as e:
-        print(f"[FRAME VALIDATION] Validation error: {e}")
+        print(f"❌ [FRAME] Validation error from {client_info}: {e}")
         raise
     except Exception as e:
-        print(f"[FRAME ERROR] Unexpected error: {e}")
+        print(f"❌ [FRAME] Unexpected error from {client_info}: {e}")
         return None
     finally:
-        # 6. Original Timeout immer zurücksetzen
+        # Timeout immer zurücksetzen
         try:
             sock.settimeout(original_timeout)
         except:
-            pass  # Socket könnte bereits geschlossen sein
+            pass  # Socket könnte geschlossen sein
 def debug_print_key(key_type, key_data):
     """Print detailed key information"""
     print(f"\n=== {key_type.upper()} KEY DEBUG ===")
@@ -419,12 +487,8 @@ def load_client_name():
     else:
         messagebox.showerror("Fehler", "Kein Name eingegeben. Abbruch.")
         return None
-import socket
-import json
-import time
-import threading
-import random
-from typing import Dict, List
+
+
 
 class AccurateRelayManager:
     def __init__(self, server_instance):
@@ -1316,10 +1380,10 @@ class CONVEY:
             # ✅ KONSISTENTE CALL-VERWALTUNG
             call_id = f"{caller_client_id}_{target_id}_{int(time.time())}"
             self.active_calls[call_id] = {
-                'caller_id': caller_client_id,
-                'callee_id': target_id,
-                'caller_name': caller_name,
-                'callee_name': target_client_name,
+                'caller_id': caller_client_id,      # ✅ WICHTIG: Client-ID des Anrufers
+                'callee_id': target_id,             # ✅ WICHTIG: Client-ID des Empfängers  
+                'caller_name': caller_name,         # ✅ WICHTIG: Name des Anrufers
+                'callee_name': target_client_name,  # ✅ WICHTIG: Name des Empfängers
                 'caller_socket': client_socket,
                 'callee_socket': target_socket,
                 'start_time': time.time(),
@@ -1373,7 +1437,7 @@ class CONVEY:
             return False
 
     def handle_call_response(self, msg, client_socket, client_name):
-        """Leitet Call-Antworten weiter - VOLLSTÄNDIG FRAME-SIP KOMPATIBEL"""
+        """Leitet Call-Antworten weiter - KORRIGIERTE FRAME-SIP KOMPATIBEL"""
         try:
             custom_data = msg.get('custom_data', {})
             response = custom_data.get('RESPONSE')
@@ -1387,15 +1451,24 @@ class CONVEY:
                 print("[CONVEY ERROR] Missing response or caller_id in framed SIP")
                 return False
                 
-            # ✅ KONSISTENTE CALL-SUCHE NUR MIT CLIENT-IDs
+            # ✅ KORREKTUR: CALL-SUCHE MIT BOTH ID UND NAME
             call_id = None
             call_data = None
             
             print(f"[CONVEY DEBUG] Searching through {len(self.active_calls)} active calls")
             for cid, data in self.active_calls.items():
-                print(f"[CONVEY DEBUG] Call {cid}: caller={data.get('caller_id')}, callee={data.get('callee_id')}")
-                # ✅ NUR CLIENT-IDs VERGLEICHEN!
-                if data['callee_id'] == client_name and data['caller_id'] == caller_id:
+                print(f"[CONVEY DEBUG] Call {cid}: caller_id={data.get('caller_id')}, callee_id={data.get('callee_id')}, callee_name={data.get('callee_name')}")
+                
+                # ✅ KORREKTUR: Suche nach callee_name ODER callee_id
+                callee_matches = (
+                    data['callee_name'] == client_name or  # Nach Name (was der Client sendet)
+                    data['callee_id'] == client_name       # Fallback: Nach ID
+                )
+                
+                # ✅ CALLER muss immer mit caller_id übereinstimmen
+                caller_matches = data['caller_id'] == caller_id
+                
+                if callee_matches and caller_matches:
                     call_id = cid
                     call_data = data
                     print(f"[CONVEY DEBUG] ✓ Found matching call: {cid}")
@@ -1404,11 +1477,13 @@ class CONVEY:
             if not call_data:
                 print(f"[CONVEY ERROR] No active call found for {client_name} -> {caller_id}")
                 print(f"[CONVEY DEBUG] Available calls: {list(self.active_calls.keys())}")
+                for cid, data in self.active_calls.items():
+                    print(f"  Call {cid}: caller_id={data.get('caller_id')}, callee_id={data.get('callee_id')}, callee_name={data.get('callee_name')}")
                 return False
             
             print(f"[CONVEY] Processing call response for call {call_id}")
             
-            # ✅ FRAME-SIP BEARBEITUNG
+            # ✅ FRAME-SIP BEARBEITUNG (Rest bleibt gleich)
             if response == "accepted":
                 print(f"[CONVEY] Call {call_id} accepted by {client_name}")
                 
