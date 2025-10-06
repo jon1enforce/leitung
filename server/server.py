@@ -2633,14 +2633,6 @@ class Server:
         client_id = None
         client_name = None
 
-        # Thread-lokale Queue für diesen Client
-        if not hasattr(self, '_message_queue'):
-            self._message_queue = []
-        
-        # ✅ INIT: Stelle sicher dass Processing-Flag existiert  
-        if not hasattr(self, '_processing_client_queue'):
-            self._processing_client_queue = False
-
         try:
             # 1. Registration empfangen (mit Timeout)
             client_socket.settimeout(30.0)
@@ -2653,7 +2645,7 @@ class Server:
 
             print(f"[SERVER] Empfangene Daten: {len(register_data)} bytes")
             
-            # 2. Prüfe ob es eine Relay-Manager Anfrage ist (andere Server)
+            # 2. Prüfe ob es eine Relay-Manager Anfrage ist
             if self._handle_relay_manager_request(register_data, client_socket, client_address):
                 print("[RELAY] Relay-Manager Anfrage verarbeitet - Verbindung geschlossen")
                 return
@@ -2683,20 +2675,49 @@ class Server:
             client_name = client_name_match.group(1)
             print(f"[SERVER] Client-Name: {client_name}")
 
-            # 6. Public Key extrahieren
+            # 6. VERBESSERTE Public Key Extraktion
             client_pubkey = None
             
-            if 'content' in sip_msg and sip_msg['content']:
-                client_pubkey = sip_msg['content'].strip()
+            # Methode 1: Aus custom_data (JSON Body)
+            custom_data = sip_msg.get('custom_data', {})
+            if 'PUBLIC_KEY' in custom_data:
+                client_pubkey = custom_data['PUBLIC_KEY']
+                print("[SERVER] Public Key aus custom_data extrahiert")
             
-            if not client_pubkey:
-                key_match = re.search(r'-----BEGIN PUBLIC KEY-----.*?-----END PUBLIC KEY-----', 
-                                     register_data, re.DOTALL)
+            # Methode 2: Aus Body (falls direkt im Body)
+            elif sip_msg.get('body') and '-----BEGIN PUBLIC KEY-----' in sip_msg['body']:
+                client_pubkey = sip_msg['body'].strip()
+                print("[SERVER] Public Key aus Body extrahiert")
+            
+            # Methode 3: Durchsuche gesamte Nachricht
+            elif '-----BEGIN PUBLIC KEY-----' in register_data:
+                key_match = re.search(
+                    r'-----BEGIN PUBLIC KEY-----.*?-----END PUBLIC KEY-----', 
+                    register_data, 
+                    re.DOTALL
+                )
                 if key_match:
                     client_pubkey = key_match.group(0).strip()
+                    print("[SERVER] Public Key mit Regex aus gesamter Nachricht extrahiert")
+            
+            # Methode 4: Prüfe spezielle Header
+            else:
+                for header_name, header_value in sip_msg['headers'].items():
+                    if 'PUBLIC_KEY' in header_name and '-----BEGIN PUBLIC KEY-----' in header_value:
+                        client_pubkey = header_value.strip()
+                        print(f"[SERVER] Public Key aus Header {header_name} extrahiert")
+                        break
 
-            if not client_pubkey or '-----BEGIN PUBLIC KEY-----' not in client_pubkey:
-                print("[SERVER] Kein gültiger Public Key gefunden")
+            # Debug-Ausgabe des gefundenen Keys
+            if client_pubkey:
+                print(f"[SERVER] Public Key gefunden: {len(client_pubkey)} Zeichen")
+                print(f"[SERVER] Key beginnt mit: {client_pubkey[:50]}...")
+                print(f"[SERVER] Key endet mit: ...{client_pubkey[-50:]}")
+            else:
+                print("[SERVER] KEIN Public Key gefunden in:")
+                print(f"[SERVER] Headers: {list(sip_msg['headers'].keys())}")
+                print(f"[SERVER] Custom data keys: {list(custom_data.keys())}")
+                print(f"[SERVER] Body length: {len(sip_msg.get('body', ''))}")
                 return
 
             # 7. ✅ Client ATOMIC registrieren (THREAD-SAFE)
@@ -2709,6 +2730,7 @@ class Server:
                 'login_time': time.time(),
                 'last_update': time.time()
             }
+            
             
             # ✅ ATOMIC Registration unter clients_lock
             with self.clients_lock:
