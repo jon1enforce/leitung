@@ -25,7 +25,6 @@ import platform
 import glob
 import mmap
 import numpy as np
-from scipy import fftpack, signal
 import traceback
 from typing import Optional, NoReturn, Tuple
 # Seccomp nur unter Linux importieren
@@ -1579,15 +1578,15 @@ class AudioConfig:
             self.audio_stats['noise_floor'] = 0.002
 
     def _calculate_detailed_frequency_profile(self, audio_data):
-        """Detaillierte Frequenzanalyse für 180s Profil"""
-        try:            
+        """Detaillierte Frequenzanalyse für 180s Profil ohne scipy"""
+        try:
             # Verwende nur einen Teil der Daten für FFT (Performance)
             sample_size = min(len(audio_data), 44100 * 10)
             analysis_data = audio_data[:sample_size]
             
-            # FFT für Frequenzanalyse
-            fft_data = fftpack.fft(analysis_data)
-            frequencies = fftpack.fftfreq(len(analysis_data), 1.0 / self.RATE)
+            # FFT für Frequenzanalyse mit numpy
+            fft_data = np.fft.fft(analysis_data)
+            frequencies = np.fft.fftfreq(len(analysis_data), 1.0 / self.RATE)
             
             # Power Spectrum
             power_spectrum = np.abs(fft_data) ** 2
@@ -1612,8 +1611,6 @@ class AudioConfig:
             
             print(f"[NOISE PROFILE] Gefundene Rausch-Peaks: {len(noise_peaks)}")
             
-        except ImportError:
-            print("[NOISE FILTER] scipy nicht verfügbar - Detaillierte Frequenzanalyse deaktiviert")
         except Exception as e:
             print(f"[FREQUENCY PROFILE ERROR] {str(e)}")
 
@@ -1713,11 +1710,10 @@ class AudioConfig:
             return audio_data
 
     def _apply_spectral_noise_reduction(self, data):
-        """Wendet spektrale Rauschunterdrückung an"""
+        """Wendet spektrale Rauschunterdrückung an ohne scipy"""
         try:
-            
-            # Einfache spektrale Subtraktion
-            fft_data = fftpack.fft(data)
+            # Einfache spektrale Subtraktion mit numpy
+            fft_data = np.fft.fft(data)
             magnitude = np.abs(fft_data)
             phase = np.angle(fft_data)
             
@@ -1730,12 +1726,13 @@ class AudioConfig:
             
             # Rücktransformation
             clean_fft = magnitude_clean * np.exp(1j * phase)
-            clean_data = np.real(fftpack.ifft(clean_fft))
+            clean_data = np.real(np.fft.ifft(clean_fft))
             
             return clean_data
             
-        except ImportError:
+        except Exception as e:
             # Fallback: einfache Amplituden-Begrenzung
+            print(f"[SPECTRAL REDUCTION FALLBACK] {e}")
             threshold = self.noise_profile['noise_threshold']
             return np.where(np.abs(data) < threshold, 0, data)
 
@@ -1765,26 +1762,34 @@ class AudioConfig:
         return gated_data
 
     def _apply_frequency_filters(self, data):
-        """Wendet frequenzspezifische Filter an (aggressiver Modus)"""
+        """Wendet frequenzspezifische Filter an (aggressiver Modus) ohne scipy"""
         try:
-            # Notch Filter für Netzbrummen (50Hz)
-            nyquist = self.RATE / 2
-            notch_freq = self.filter_coefficients['hum_filter_freq'] / nyquist
+            # Einfacher FIR Filter-Ansatz ohne scipy.signal
+            # Hochpass-Filter für Tieffrequenz-Rauschen (einfache Implementierung)
+            if self.filter_coefficients['low_freq_cutoff'] > 0:
+                # Einfacher Differenzfilter als Hochpass-Approximation
+                filtered_data = np.zeros_like(data)
+                for i in range(1, len(data)):
+                    filtered_data[i] = data[i] - 0.95 * data[i-1]
+                data = filtered_data
             
-            if notch_freq < 1.0:
-                quality = 30
-                b, a = signal.iirnotch(notch_freq, quality)
-                data = signal.filtfilt(b, a, data)
-            
-            # Hochpass-Filter für Tieffrequenz-Rauschen
-            low_cutoff = self.filter_coefficients['low_freq_cutoff'] / nyquist
-            if low_cutoff < 1.0:
-                b, a = signal.butter(4, low_cutoff, btype='high')
-                data = signal.filtfilt(b, a, data)
+            # Einfacher Notch Filter für 50Hz Brummen
+            if self.filter_coefficients['hum_filter_freq'] > 0:
+                # Grundfrequenz der Netzspannung (50Hz)
+                hum_freq = self.filter_coefficients['hum_filter_freq']
+                samples_per_hum_period = int(self.RATE / hum_freq)
+                
+                if samples_per_hum_period > 0:
+                    # Einfache Moving Average Subtraktion
+                    window_size = samples_per_hum_period
+                    if window_size < len(data):
+                        hum_reference = np.convolve(data, np.ones(window_size)/window_size, mode='same')
+                        data = data - 0.7 * hum_reference
             
             return data
             
-        except ImportError:
+        except Exception as e:
+            print(f"[FREQUENCY FILTER FALLBACK] {e}")
             return data
 
     # ✅ KONVERTIERUNGS-METHODEN
