@@ -1611,23 +1611,18 @@ Rauschprofil Informationen (180s Clear Room):
 - Frequenz-Peaks: {len(self.noise_profile.get('frequency_profile', {}).get('peaks', []))}
 """
         return info
-    def test_audio_output(self, duration=10):
+    def test_audio_output(self, output_device_index=None, duration=10):
         """Testet Audio-Ausgabe mit 10 Sekunden synthetischem Signal"""
         try:
             print(f"[AUDIO TEST] Starting {duration} second audio output test...")
             
-            # Extrahiere Device-Index aus der Auswahl
-            output_selection = getattr(self.client, 'selected_output_device', None)
-            if output_selection and ':' in output_selection:
-                try:
-                    device_index = int(output_selection.split(':')[0])
-                    print(f"[AUDIO TEST] Using device index: {device_index}")
-                except:
-                    device_index = 0
-                    print("[AUDIO TEST] Using default device index: 0")
+            # Device-Index bestimmen
+            if output_device_index is None:
+                # Fallback: Verwende das aktuell konfigurierte Output-Device
+                output_device_index = self.output_device_index or 0
+                print(f"[AUDIO TEST] Using configured device index: {output_device_index}")
             else:
-                device_index = 0
-                print("[AUDIO TEST] Using default device index: 0")
+                print(f"[AUDIO TEST] Using provided device index: {output_device_index}")
             
             # Output Stream öffnen
             stream = self.audio.open(
@@ -1636,7 +1631,7 @@ Rauschprofil Informationen (180s Clear Room):
                 rate=44100,  # Standard Sample Rate
                 output=True,
                 frames_per_buffer=1024,
-                output_device_index=device_index
+                output_device_index=output_device_index
             )
             
             print(f"[AUDIO TEST] Output stream opened, generating test signal...")
@@ -1713,7 +1708,7 @@ Rauschprofil Informationen (180s Clear Room):
             except:
                 pass
                 
-            return False        
+            return False
 class ClientRelayManager:
     def __init__(self, client_instance):
         self.client = client_instance
@@ -3113,7 +3108,7 @@ class CALL:
                                       "Rauschfilter: Deaktiviert")
                 except Exception as e:
                     print(f"[AUDIO POPUP CLOSE ERROR] {str(e)}")
-            
+            #test
             def test_audio():
                 """Testet die Audio-Ausgabe mit 10 Sekunden synthetischem Signal"""
                 try:
@@ -3125,9 +3120,23 @@ class CALL:
                                       "• Stellen Sie Lautstärke auf angenehme Höhe\n\n"
                                       "OK klicken um Test zu starten...")
                     
+                    # Extrahiere Device-Index aus der Auswahl
+                    output_selection = output_var.get()
+                    device_index = 0  # Default
+                    
+                    if output_selection and ':' in output_selection:
+                        try:
+                            device_index = int(output_selection.split(':')[0])
+                            print(f"[AUDIO TEST] Using selected device index: {device_index}")
+                        except:
+                            print("[AUDIO TEST] Using default device index: 0")
+                    
                     # Starte Test in separatem Thread
                     def test_thread():
-                        success = self.audio_config.test_audio_output(duration=10)
+                        success = self.audio_config.test_audio_output(
+                            output_device_index=device_index, 
+                            duration=10
+                        )
                         
                         # Ergebnis im Hauptthread anzeigen
                         def show_result():
@@ -3147,7 +3156,6 @@ class CALL:
                     
                 except Exception as e:
                     messagebox.showerror("Audio-Test", f"❌ Test konnte nicht gestartet werden:\n{str(e)}")
-            
             # ✅ KORREKT SKALIERTE BUTTONS
             # Erster Button-Reihe: Hauptaktionen
             action_frame = tk.Frame(button_frame)
