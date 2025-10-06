@@ -22,7 +22,10 @@ import stun
 import struct
 import ctypes
 import platform
+import glob
 import mmap
+import numpy as np
+from scipy import fftpack, signal
 import traceback
 from typing import Optional, NoReturn, Tuple
 # Seccomp nur unter Linux importieren
@@ -691,11 +694,18 @@ def secure_del(var):
     elif hasattr(var, '__dict__'):
         var.__dict__.clear()  # Falls es ein Objekt ist
         del var
+import pyaudio
+import sys
+import time
+import subprocess
+import glob
+
 class AudioConfig:
     def __init__(self):
-        self.audio = pyaudio.PyAudio()
+        self.audio = None
         self.input_device_index = None
         self.output_device_index = None
+        self.using_pyaudio_fallback = False
         
         # ✅ QUALITÄTSSTUFEN
         self.QUALITY_PROFILES = {
@@ -726,12 +736,18 @@ class AudioConfig:
                 "channels": 1,
                 "name": "16-bit @ 48kHz Mono (Low Quality)",
                 "actual_format": "16-bit"
+            },
+            "openbsd_fallback": {
+                "format": pyaudio.paInt16, 
+                "rate": 44100, 
+                "channels": 1,
+                "name": "16-bit @ 44.1kHz Mono (OpenBSD Fallback)",
+                "actual_format": "16-bit"
             }
         }
         
         # Standard-Qualität
         self.quality_profile = "middle"
-        self._apply_quality_profile()
         
         self.CHUNK = 128
         self.PORT = 51821
@@ -766,26 +782,257 @@ class AudioConfig:
             'capture_progress': 0.0
         }
         
-        # OpenBSD-spezifische Initialisierung
-        if sys.platform.startswith("openbsd"):
-            self.configure_openbsd_audio()
+        # Initialisiere Audio-System mit robustem Fallback
+        self._initialize_audio_system()
+
+    def _initialize_audio_system(self):
+        """Robuste Audio-System-Initialisierung mit Fallback-Mechanismus"""
+        max_retries = 3
+        
+        for attempt in range(max_retries):
+            try:
+                print(f"[AUDIO] Initialization attempt {attempt + 1}/{max_retries}")
+                
+                # Versuche PyAudio zu initialisieren
+                self.audio = pyaudio.PyAudio()
+                
+                # OpenBSD-spezifische Konfiguration
+                if sys.platform.startswith("openbsd"):
+                    success = self._configure_openbsd_with_fallback()
+                else:
+                    success = self._configure_standard_platform()
+                
+                if success:
+                    print("[AUDIO] ✅ Audio system initialized successfully")
+                    self._apply_quality_profile()
+                    return True
+                else:
+                    raise Exception("Platform-specific configuration failed")
+                    
+            except Exception as e:
+                print(f"[AUDIO] ❌ Initialization attempt {attempt + 1} failed: {e}")
+                
+                # Bereinige fehlgeschlagene Instanz
+                if self.audio:
+                    try:
+                        self.audio.terminate()
+                        self.audio = None
+                    except:
+                        pass
+                
+                # Warte vor erneutem Versuch
+                if attempt < max_retries - 1:
+                    wait_time = 2 ** attempt  # Exponential backoff
+                    print(f"[AUDIO] Waiting {wait_time}s before retry...")
+                    time.sleep(wait_time)
+        
+        # Alle Versuche fehlgeschlagen - kritischer Fallback
+        print("[AUDIO] 💥 All initialization attempts failed, using emergency fallback")
+        return self._emergency_fallback()
+
+    def _configure_openbsd_with_fallback(self):
+        """OpenBSD-Konfiguration mit robustem Fallback-System"""
+        print("[AUDIO] Configuring for OpenBSD with fallback support...")
+        
+        # Test 1: Versuche sndio-basierte Konfiguration
+        if self._try_sndio_configuration():
+            print("[AUDIO] ✅ sndio configuration successful")
+            return True
+        
+        # Test 2: Versuche PyAudio mit OpenBSD-Devices
+        if self._try_pyaudio_openbsd_devices():
+            print("[AUDIO] ✅ PyAudio with OpenBSD devices successful") 
+            return True
+        
+        # Test 3: Versuche grundlegende PyAudio-Konfiguration
+        if self._try_basic_pyaudio_config():
+            print("[AUDIO] ✅ Basic PyAudio configuration successful")
+            return True
+        
+        print("[AUDIO] ❌ All OpenBSD configuration methods failed")
+        return False
+
+    def _try_sndio_configuration(self):
+        """Versuche sndio-basierte Konfiguration"""
+        try:
+            # Prüfe ob sndio verfügbar ist
+            result = subprocess.run(['which', 'sndioctl'], capture_output=True, timeout=5)
+            if result.returncode != 0:
+                print("[AUDIO] sndioctl not found, skipping sndio configuration")
+                return False
+            
+            # Prüfe ob sndiod läuft
+            result = subprocess.run(['pgrep', 'sndiod'], capture_output=True, timeout=5)
+            sndiod_running = (result.returncode == 0)
+            
+            if not sndiod_running:
+                print("[AUDIO] sndiod not running, attempting to start...")
+                try:
+                    # Versuche sndiod im Hintergrund zu starten
+                    subprocess.Popen(['sndiod'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+                    time.sleep(2)  # Warte auf Initialisierung
+                except Exception as e:
+                    print(f"[AUDIO] Failed to start sndiod: {e}")
+                    return False
+            
+            # Teste sndioctl
+            try:
+                result = subprocess.run(['sndioctl', '-d'], capture_output=True, text=True, timeout=5)
+                if result.returncode == 0:
+                    print("[AUDIO] sndioctl working, using sndio-compatible settings")
+                    
+                    # sndio-kompatible Einstellungen
+                    self.FORMAT = pyaudio.paInt16
+                    self.RATE = 44100
+                    self.CHANNELS = 1
+                    self.CHUNK = 1024
+                    self.sample_width = 2
+                    self.actual_format = "16-bit"
+                    self.sample_format_name = "16-bit @ 44.1kHz (OpenBSD sndio)"
+                    
+                    self.input_device_index = 0
+                    self.output_device_index = 0
+                    
+                    return True
+            except Exception as e:
+                print(f"[AUDIO] sndioctl test failed: {e}")
+                
+        except Exception as e:
+            print(f"[AUDIO] sndio configuration failed: {e}")
+            
+        return False
+
+    def _try_pyaudio_openbsd_devices(self):
+        """Versuche PyAudio mit OpenBSD-specific Device-Erkennung"""
+        try:
+            print("[AUDIO] Attempting PyAudio device detection on OpenBSD...")
+            
+            # Prüfe verfügbare Geräte
+            device_count = self.audio.get_device_count()
+            print(f"[AUDIO] Found {device_count} PyAudio devices")
+            
+            if device_count == 0:
+                print("[AUDIO] No PyAudio devices found")
+                return False
+            
+            # Durchsuche nach kompatiblen Geräten
+            input_found = False
+            output_found = False
+            
+            for i in range(device_count):
+                try:
+                    device_info = self.audio.get_device_info_by_index(i)
+                    device_name = device_info.get('name', 'Unknown')
+                    print(f"[AUDIO] Device {i}: {device_name}")
+                    
+                    # Prüfe Input
+                    if device_info.get('maxInputChannels', 0) > 0 and not input_found:
+                        self.input_device_index = i
+                        input_found = True
+                        print(f"[AUDIO] Using input device {i}: {device_name}")
+                    
+                    # Prüfe Output
+                    if device_info.get('maxOutputChannels', 0) > 0 and not output_found:
+                        self.output_device_index = i
+                        output_found = True
+                        print(f"[AUDIO] Using output device {i}: {device_name}")
+                        
+                except Exception as e:
+                    print(f"[AUDIO] Error checking device {i}: {e}")
+                    continue
+            
+            if not input_found and not output_found:
+                print("[AUDIO] No usable input/output devices found")
+                return False
+            
+            # Verwende OpenBSD-kompatible Einstellungen
+            self.FORMAT = pyaudio.paInt16
+            self.RATE = 44100
+            self.CHANNELS = 1
+            self.CHUNK = 512
+            self.sample_width = 2
+            self.actual_format = "16-bit"
+            self.sample_format_name = "16-bit @ 44.1kHz (OpenBSD PyAudio)"
+            
+            return True
+            
+        except Exception as e:
+            print(f"[AUDIO] PyAudio device detection failed: {e}")
+            return False
+
+    def _try_basic_pyaudio_config(self):
+        """Versuche grundlegende PyAudio-Konfiguration"""
+        try:
+            print("[AUDIO] Attempting basic PyAudio configuration...")
+            
+            # Setze Default Devices
+            self.input_device_index = 0
+            self.output_device_index = 0
+            
+            # Sehr konservative Einstellungen für maximale Kompatibilität
+            self.FORMAT = pyaudio.paInt16
+            self.RATE = 44100
+            self.CHANNELS = 1
+            self.CHUNK = 512
+            self.sample_width = 2
+            self.actual_format = "16-bit"
+            self.sample_format_name = "16-bit @ 44.1kHz (Basic Fallback)"
+            
+            # Teste die Konfiguration
+            return self._test_audio_configuration()
+            
+        except Exception as e:
+            print(f"[AUDIO] Basic PyAudio configuration failed: {e}")
+            return False
+
+    def _emergency_fallback(self):
+        """Notfall-Fallback für komplett fehlgeschlagene Initialisierung"""
+        print("[AUDIO] 🚨 USING EMERGENCY FALLBACK CONFIGURATION")
+        
+        try:
+            # Erstelle eine minimale PyAudio-Instanz
+            self.audio = pyaudio.PyAudio()
+            self.using_pyaudio_fallback = True
+        except:
+            print("[AUDIO] 💥 CRITICAL: Cannot create PyAudio instance")
+            return False
+        
+        # Absolute Minimum-Konfiguration
+        self.input_device_index = 0
+        self.output_device_index = 0
+        self.FORMAT = pyaudio.paInt16
+        self.RATE = 22050  # Noch niedrigere Rate für Stabilität
+        self.CHANNELS = 1
+        self.CHUNK = 256
+        self.sample_width = 2
+        self.actual_format = "16-bit"
+        self.sample_format_name = "16-bit @ 22.05kHz (EMERGENCY FALLBACK)"
+        self.quality_profile = "openbsd_fallback"
+        
+        print("[AUDIO] ✅ Emergency fallback configuration applied")
+        return True
+
+    def _configure_standard_platform(self):
+        """Konfiguration für nicht-OpenBSD Plattformen"""
+        try:
+            self._apply_quality_profile()
+            return self.verify_audio_configuration()
+        except Exception as e:
+            print(f"[AUDIO] Standard platform configuration failed: {e}")
+            return False
 
     def detect_openbsd_audio_devices(self):
-        """OpenBSD-spezifische Audio-Device-Erkennung KORRIGIERT"""
+        """OpenBSD-spezifische Audio-Device-Erkennung mit Fallback"""
         try:
-            import subprocess
-            import glob
-            
             devices_found = []
             
             # 1. Prüfe ob sndiod läuft
-            result = subprocess.run(['pgrep', 'sndiod'], capture_output=True, text=True)
+            result = subprocess.run(['pgrep', 'sndiod'], capture_output=True, text=True, timeout=5)
             sndiod_running = (result.returncode == 0)
             
             if sndiod_running:
                 print("[AUDIO] sndiod läuft")
                 try:
-                    # Versuche sndioctl abzufragen
                     result = subprocess.run(['sndioctl', '-d'], capture_output=True, text=True, timeout=5)
                     if result.returncode == 0:
                         devices_found.append("sndio Default (über sndiod)")
@@ -797,32 +1044,29 @@ class AudioConfig:
             raw_devices = glob.glob('/dev/audio*')
             print(f"[AUDIO] Gefundene Raw Devices: {raw_devices}")
             
-            # 3. Device-Mapping aus dmesg extrahieren
+            # 3. PyAudio Devices prüfen (Fallback)
             try:
-                result = subprocess.run(['dmesg'], capture_output=True, text=True)
-                audio_lines = [line for line in result.stdout.split('\n') if 'audio' in line.lower()]
-                for line in audio_lines:
-                    print(f"[AUDIO DMESG] {line}")
+                if self.audio:
+                    device_count = self.audio.get_device_count()
+                    print(f"[AUDIO] PyAudio devices: {device_count}")
+                    devices_found.append(f"PyAudio Devices: {device_count}")
             except:
                 pass
                 
-            return len(raw_devices) > 0 or sndiod_running
+            return len(devices_found) > 0
                 
         except Exception as e:
             print(f"[AUDIO] OpenBSD Device Detection fehlgeschlagen: {e}")
             return False
 
     def get_openbsd_device_info(self):
-        """Gibt OpenBSD Device-Informationen zurück KORRIGIERT"""
+        """Gibt OpenBSD Device-Informationen zurück mit Fallback"""
         devices = []
         
         try:
-            import subprocess
-            import glob
-            
             # Kernel Audio Info
             try:
-                result = subprocess.run(['sysctl', 'hw.snd'], capture_output=True, text=True)
+                result = subprocess.run(['sysctl', 'hw.snd'], capture_output=True, text=True, timeout=5)
                 if 'default_unit' in result.stdout:
                     default_unit = result.stdout.split('default_unit=')[1].split()[0]
                     devices.append(f"0: Default Audio Unit {default_unit} (sysctl)")
@@ -833,6 +1077,16 @@ class AudioConfig:
             raw_devices = glob.glob('/dev/audio*')
             for i, device in enumerate(raw_devices, 1):
                 devices.append(f"{i}: {device} (Raw Device)")
+            
+            # PyAudio Devices als Fallback
+            if self.audio:
+                for i in range(self.audio.get_device_count()):
+                    try:
+                        device_info = self.audio.get_device_info_by_index(i)
+                        device_name = device_info.get('name', f'Device {i}')
+                        devices.append(f"pyaudio{i}: {device_name} (PyAudio)")
+                    except:
+                        continue
                 
             # Falls keine Devices gefunden
             if not devices:
@@ -844,48 +1098,43 @@ class AudioConfig:
         
         return devices
 
-    def configure_openbsd_audio(self):
-        """OpenBSD-spezifische Audio-Konfiguration"""
-        print("[AUDIO] Configuring for OpenBSD...")
-        
-        # Teste ob sndio verfügbar ist
+    def _test_audio_configuration(self):
+        """Testet ob die aktuelle Audio-Konfiguration funktioniert"""
         try:
-            import subprocess
-            result = subprocess.run(['which', 'sndioctl'], capture_output=True)
-            if result.returncode == 0:
-                print("[AUDIO] sndio detected - using compatible settings")
+            # Teste Input Stream
+            if self.input_device_index is not None:
+                test_stream = self.audio.open(
+                    format=self.FORMAT,
+                    channels=self.CHANNELS,
+                    rate=self.RATE,
+                    input=True,
+                    frames_per_buffer=self.CHUNK,
+                    input_device_index=self.input_device_index
+                )
+                test_stream.stop_stream()
+                test_stream.close()
+            
+            # Teste Output Stream (immer 16-bit Mono für Kompatibilität)
+            if self.output_device_index is not None:
+                test_stream = self.audio.open(
+                    format=pyaudio.paInt16,
+                    channels=1,
+                    rate=self.RATE,
+                    output=True,
+                    frames_per_buffer=self.CHUNK,
+                    output_device_index=self.output_device_index
+                )
+                test_stream.stop_stream()
+                test_stream.close()
                 
-                # sndio-kompatible Einstellungen
-                self.FORMAT = pyaudio.paInt16
-                self.RATE = 44100
-                self.CHANNELS = 1
-                self.CHUNK = 1024
-                self.sample_width = 2
-                self.actual_format = "16-bit"
-                self.sample_format_name = "16-bit @ 44.1kHz (OpenBSD sndio)"
-                
-                # Device-Indices setzen
-                self.input_device_index = 0
-                self.output_device_index = 0
-                
-                return True
+            return True
+            
         except Exception as e:
-            print(f"[AUDIO] sndio check failed: {e}")
-        
-        # Fallback auf grundlegende Einstellungen
-        print("[AUDIO] Using fallback settings for OpenBSD")
-        self.FORMAT = pyaudio.paInt16
-        self.RATE = 44100
-        self.CHANNELS = 1
-        self.CHUNK = 512
-        self.sample_width = 2
-        self.actual_format = "16-bit"
-        self.sample_format_name = "16-bit @ 44.1kHz (OpenBSD Fallback)"
-        
-        return True
+            print(f"[AUDIO TEST] Configuration failed: {e}")
+            return False
 
     def get_input_devices(self):
-        """ZENTRALE Methode für Eingabegeräte - MIT OPENBSD SUPPORT"""
+        """ZENTRALE Methode für Eingabegeräte - MIT ROBUSTEM OPENBSD SUPPORT"""
         # OpenBSD-spezifische Erkennung zuerst
         if sys.platform.startswith("openbsd"):
             return self.get_openbsd_device_info()
@@ -893,18 +1142,23 @@ class AudioConfig:
         # Normale PyAudio-Erkennung für andere Plattformen
         devices = []
         try:
-            for i in range(self.audio.get_device_count()):
-                device_info = self.audio.get_device_info_by_index(i)
-                if device_info.get('maxInputChannels', 0) > 0:
-                    device_name = device_info.get('name', f'Device {i}')
-                    devices.append(f"{i}: {device_name} (Input)")
+            if self.audio:
+                for i in range(self.audio.get_device_count()):
+                    device_info = self.audio.get_device_info_by_index(i)
+                    if device_info.get('maxInputChannels', 0) > 0:
+                        device_name = device_info.get('name', f'Device {i}')
+                        devices.append(f"{i}: {device_name} (Input)")
         except Exception as e:
             print(f"[INPUT DEVICES ERROR] {str(e)}")
             devices = ["0: Standard-Mikrofon (Input)"]
+        
+        if not devices:
+            devices = ["0: Default Input Device"]
+            
         return devices
 
     def get_output_devices(self):
-        """ZENTRALE Methode für Ausgabegeräte - MIT OPENBSD SUPPORT"""
+        """ZENTRALE Methode für Ausgabegeräte - MIT ROBUSTEM OPENBSD SUPPORT"""
         # OpenBSD-spezifische Erkennung zuerst
         if sys.platform.startswith("openbsd"):
             return self.get_openbsd_device_info()
@@ -912,29 +1166,33 @@ class AudioConfig:
         # Normale PyAudio-Erkennung für andere Plattformen
         devices = []
         try:
-            for i in range(self.audio.get_device_count()):
-                device_info = self.audio.get_device_info_by_index(i)
-                if device_info.get('maxOutputChannels', 0) > 0:
-                    device_name = device_info.get('name', f'Device {i}')
-                    
-                    # Prüfe 24-bit Support
-                    supports_24bit = False
-                    try:
-                        supports_24bit = self.audio.is_format_supported(
-                            48000,
-                            output_device=i,
-                            output_channels=1, 
-                            output_format=pyaudio.paInt24
-                        )
-                    except:
-                        pass
-                    
-                    bit_info = " [24-bit]" if supports_24bit else " [16-bit]"
-                    devices.append(f"{i}: {device_name}{bit_info}")
-            
+            if self.audio:
+                for i in range(self.audio.get_device_count()):
+                    device_info = self.audio.get_device_info_by_index(i)
+                    if device_info.get('maxOutputChannels', 0) > 0:
+                        device_name = device_info.get('name', f'Device {i}')
+                        
+                        # Prüfe 24-bit Support
+                        supports_24bit = False
+                        try:
+                            supports_24bit = self.audio.is_format_supported(
+                                48000,
+                                output_device=i,
+                                output_channels=1, 
+                                output_format=pyaudio.paInt24
+                            )
+                        except:
+                            pass
+                        
+                        bit_info = " [24-bit]" if supports_24bit else " [16-bit]"
+                        devices.append(f"{i}: {device_name}{bit_info}")
         except Exception as e:
             print(f"[OUTPUT DEVICES ERROR] {str(e)}")
             devices = ["0: Standard-Lautsprecher (Output)"]
+        
+        if not devices:
+            devices = ["0: Default Output Device"]
+            
         return devices
 
     def verify_audio_configuration(self):
@@ -1079,10 +1337,11 @@ class AudioConfig:
                     "highest": "high",
                     "high": "middle", 
                     "middle": "low",
-                    "low": "low"  # Letzter Fallback
+                    "low": "openbsd_fallback",
+                    "openbsd_fallback": "openbsd_fallback"  # Letzter Fallback
                 }
                 
-                fallback = fallback_chain.get(self.quality_profile, "low")
+                fallback = fallback_chain.get(self.quality_profile, "openbsd_fallback")
                 if fallback == self.quality_profile:  # Kein weiterer Fallback möglich
                     print("💥 [AUDIO] No working audio configuration found!")
                     return False
@@ -1092,41 +1351,6 @@ class AudioConfig:
                 profile = self.QUALITY_PROFILES[fallback]
         
         return False
-
-    def _test_audio_configuration(self):
-        """Testet ob die aktuelle Audio-Konfiguration funktioniert"""
-        try:
-            # Teste Input Stream
-            if self.input_device_index is not None:
-                test_stream = self.audio.open(
-                    format=self.FORMAT,
-                    channels=self.CHANNELS,
-                    rate=self.RATE,
-                    input=True,
-                    frames_per_buffer=self.CHUNK,
-                    input_device_index=self.input_device_index
-                )
-                test_stream.stop_stream()
-                test_stream.close()
-            
-            # Teste Output Stream (immer 16-bit Mono für Kompatibilität)
-            if self.output_device_index is not None:
-                test_stream = self.audio.open(
-                    format=pyaudio.paInt16,
-                    channels=1,
-                    rate=self.RATE,
-                    output=True,
-                    frames_per_buffer=self.CHUNK,
-                    output_device_index=self.output_device_index
-                )
-                test_stream.stop_stream()
-                test_stream.close()
-                
-            return True
-            
-        except Exception as e:
-            print(f"[AUDIO TEST] Configuration failed: {e}")
-            return False
 
     def set_quality(self, quality_level):
         """Setzt die Audio-Qualitätsstufe MIT DEBUG"""
@@ -1230,23 +1454,25 @@ class AudioConfig:
         print(f"   Data Rate: {(self.RATE * self.sample_width * self.CHANNELS) / 1000:.1f} kB/s")
     
     def cleanup(self):
-        """Ressourcen freigeben"""
+        """Ressourcen freigeben mit Fehlerbehandlung"""
         try:
-            self.audio.terminate()
-        except:
-            pass
+            if self.audio:
+                self.audio.terminate()
+                self.audio = None
+        except Exception as e:
+            print(f"[AUDIO CLEANUP WARNING] {e}")
 
     # ✅ NOISE PROFILING METHODEN
     def enable_noise_filter(self, enabled=True):
         """Aktiviert/Deaktiviert die Rauschfilterung"""
         self.noise_profile['enabled'] = enabled
         print(f"[NOISE FILTER] {'Aktiviert' if enabled else 'Deaktiviert'}")
-    
+
     def set_aggressive_noise_reduction(self, aggressive=True):
         """Setzt aggressiven Rauschfilter-Modus"""
         self.noise_profile['aggressive_mode'] = aggressive
         print(f"[NOISE FILTER] Aggressive Mode: {aggressive}")
-    
+
     def capture_noise_profile(self, duration=180, progress_callback=None):
         """
         Erstellt ein Rauschprofil mit 180 Sekunden Clear Room Aufnahme
@@ -1320,7 +1546,6 @@ class AudioConfig:
     def _analyze_noise_profile(self, noise_samples):
         """Analysiert die gesammelten Rauschdaten und erstellt Profil"""
         try:
-            import numpy as np
             
             # Kombiniere alle Samples
             all_data = b''.join(noise_samples)
@@ -1355,10 +1580,7 @@ class AudioConfig:
 
     def _calculate_detailed_frequency_profile(self, audio_data):
         """Detaillierte Frequenzanalyse für 180s Profil"""
-        try:
-            import numpy as np
-            from scipy import fftpack
-            
+        try:            
             # Verwende nur einen Teil der Daten für FFT (Performance)
             sample_size = min(len(audio_data), 44100 * 10)
             analysis_data = audio_data[:sample_size]
@@ -1398,8 +1620,6 @@ class AudioConfig:
     def _save_noise_profile(self):
         """Speichert das Rauschprofil in einer kompakten Datei"""
         try:
-            import pickle
-            import numpy as np
             
             profile_data = {
                 'noise_threshold': self.noise_profile['noise_threshold'],
@@ -1414,8 +1634,7 @@ class AudioConfig:
             }
             
             with open('noise_profile_180s.pkl', 'wb') as f:
-                pickle.dump(profile_data, f)
-            
+                json.dump(profile_data, f)
             print(f"[NOISE PROFILE] 180s Profil gespeichert: noise_profile_180s.pkl")
             
         except Exception as e:
@@ -1423,11 +1642,9 @@ class AudioConfig:
 
     def load_noise_profile(self, filename='noise_profile_180s.pkl'):
         """Lädt ein gespeichertes Rauschprofil"""
-        try:
-            import pickle
-            
+        try:            
             with open(filename, 'rb') as f:
-                profile_data = pickle.load(f)
+                profile_data = json.load(f)
             
             # Profil-Daten anwenden
             self.noise_profile['noise_threshold'] = profile_data['noise_threshold']
@@ -1465,8 +1682,6 @@ class AudioConfig:
             return audio_data
         
         try:
-            import numpy as np
-            
             # Konvertiere zu numpy array basierend auf Format
             if self.FORMAT == pyaudio.paFloat32:
                 data_array = np.frombuffer(audio_data, dtype=np.float32)
@@ -1500,8 +1715,6 @@ class AudioConfig:
     def _apply_spectral_noise_reduction(self, data):
         """Wendet spektrale Rauschunterdrückung an"""
         try:
-            import numpy as np
-            from scipy import fftpack
             
             # Einfache spektrale Subtraktion
             fft_data = fftpack.fft(data)
@@ -1528,8 +1741,6 @@ class AudioConfig:
 
     def _apply_adaptive_gate(self, data):
         """Wendet adaptives Noise Gate an"""
-        import numpy as np
-        
         rms = np.sqrt(np.mean(data ** 2))
         self.audio_stats['rms_level'] = float(rms)
         
@@ -1556,9 +1767,6 @@ class AudioConfig:
     def _apply_frequency_filters(self, data):
         """Wendet frequenzspezifische Filter an (aggressiver Modus)"""
         try:
-            from scipy import signal
-            import numpy as np
-            
             # Notch Filter für Netzbrummen (50Hz)
             nyquist = self.RATE / 2
             notch_freq = self.filter_coefficients['hum_filter_freq'] / nyquist
@@ -1582,14 +1790,11 @@ class AudioConfig:
     # ✅ KONVERTIERUNGS-METHODEN
     def _convert_24bit_to_32float(self, data_24bit):
         """Konvertiert 24-bit zu 32-bit Float"""
-        import numpy as np
-        
         audio_32int = np.frombuffer(data_24bit, dtype=np.int32)
         return audio_32int.astype(np.float32) / 8388607.0
 
     def _convert_32float_to_24bit(self, data_32float):
         """Konvertiert 32-bit Float zu 24-bit"""
-        import numpy as np
         
         audio_clipped = np.clip(data_32float, -1.0, 1.0)
         audio_24bit = (audio_clipped * 8388607.0).astype(np.int32)
@@ -1611,6 +1816,7 @@ Rauschprofil Informationen (180s Clear Room):
 - Frequenz-Peaks: {len(self.noise_profile.get('frequency_profile', {}).get('peaks', []))}
 """
         return info
+
     def test_audio_output(self, output_device_index=None, duration=10):
         """Testet Audio-Ausgabe mit 10 Sekunden synthetischem Signal"""
         try:
@@ -1638,7 +1844,6 @@ Rauschprofil Informationen (180s Clear Room):
             
             # Synthetisches Test-Signal erzeugen (440Hz Sinus + 880Hz Oberwelle)
             def generate_test_signal(duration_seconds, sample_rate=44100):
-                import numpy as np
                 
                 t = np.linspace(0, duration_seconds, int(sample_rate * duration_seconds))
                 
@@ -1709,6 +1914,21 @@ Rauschprofil Informationen (180s Clear Room):
                 pass
                 
             return False
+
+    def get_audio_status(self):
+        """Gibt den aktuellen Audio-Status zurück"""
+        status = {
+            "platform": sys.platform,
+            "initialized": self.audio is not None,
+            "using_fallback": self.using_pyaudio_fallback,
+            "quality_profile": self.quality_profile,
+            "sample_rate": self.RATE,
+            "channels": self.CHANNELS,
+            "format": self.actual_format,
+            "input_device": self.input_device_index,
+            "output_device": self.output_device_index
+        }
+        return status
 class ClientRelayManager:
     def __init__(self, client_instance):
         self.client = client_instance
