@@ -698,34 +698,32 @@ class AudioConfig:
         self.output_device_index = None
         
         # ✅ QUALITÄTSSTUFEN
-        # ✅ QUALITÄTSSTUFEN - KORRIGIERT FÜR SA9227 S32_LE
-        # ✅ QUALITÄTSSTUFEN - MIT EXPLIZITEN CHANNELS
         self.QUALITY_PROFILES = {
             "highest": {
                 "format": pyaudio.paInt32,
                 "rate": 192000, 
-                "channels": 2,  # ✅ EXPLIZIT Stereo
+                "channels": 2,
                 "name": "S32_LE @ 192kHz Stereo (Highest Quality - SA9227 Native)",
                 "actual_format": "S32_LE"
             },
             "high": {
                 "format": pyaudio.paInt24, 
                 "rate": 192000, 
-                "channels": 2,  # ✅ EXPLIZIT Stereo
+                "channels": 2,
                 "name": "24-bit @ 192kHz Stereo (High Quality)",
                 "actual_format": "24-bit"
             },
             "middle": {
                 "format": pyaudio.paInt24, 
                 "rate": 48000, 
-                "channels": 2,  # ✅ EXPLIZIT Stereo
+                "channels": 2,
                 "name": "24-bit @ 48kHz Stereo (Middle Quality)",
                 "actual_format": "24-bit"
             }, 
             "low": {
                 "format": pyaudio.paInt16, 
                 "rate": 48000, 
-                "channels": 1,  # ✅ Mono für Kompatibilität
+                "channels": 1,
                 "name": "16-bit @ 48kHz Mono (Low Quality)",
                 "actual_format": "16-bit"
             }
@@ -749,7 +747,7 @@ class AudioConfig:
             'noise_profile': None,
             'adaptive_filter': True,
             'aggressive_mode': False,
-            'capture_duration': 180  # 180 Sekunden für "Clear Room"
+            'capture_duration': 180
         }
         
         # Filter-Koeffizienten
@@ -767,6 +765,147 @@ class AudioConfig:
             'signal_to_noise': 0.0,
             'capture_progress': 0.0
         }
+        
+        # OpenBSD-spezifische Initialisierung
+        if sys.platform.startswith("openbsd"):
+            self.configure_openbsd_audio()
+
+    def detect_openbsd_audio_devices(self):
+        """OpenBSD-spezifische Audio-Device-Erkennung"""
+        try:
+            # Versuche sndio Devices zu finden
+            import subprocess
+            
+            # Prüfe auf sndio Devices
+            result = subprocess.run(['sndioctl', '-l'], capture_output=True, text=True)
+            if result.returncode == 0:
+                print("[AUDIO] sndio Devices gefunden")
+                return True
+                
+            # Prüfe auf /dev/audio* Devices
+            import glob
+            audio_devices = glob.glob('/dev/audio*')
+            if audio_devices:
+                print(f"[AUDIO] Gefundene Audio-Devices: {audio_devices}")
+                return True
+                
+        except Exception as e:
+            print(f"[AUDIO] OpenBSD Device Detection fehlgeschlagen: {e}")
+        
+        return False
+
+    def get_openbsd_device_info(self):
+        """Gibt OpenBSD-spezifische Device-Informationen zurück"""
+        devices = []
+        
+        try:
+            # Standard sndio Device
+            devices.append("0: sndio Default Device (OpenBSD)")
+            
+            # Zusätzliche /dev/audio Devices
+            import glob
+            audio_devices = glob.glob('/dev/audio*')
+            for i, device in enumerate(audio_devices, 1):
+                devices.append(f"{i}: {device} (OpenBSD Raw Device)")
+                
+        except Exception as e:
+            print(f"[AUDIO] OpenBSD Device Info Error: {e}")
+            devices = ["0: sndio Default Device (OpenBSD)"]
+        
+        return devices
+
+    def configure_openbsd_audio(self):
+        """OpenBSD-spezifische Audio-Konfiguration"""
+        print("[AUDIO] Configuring for OpenBSD...")
+        
+        # Teste ob sndio verfügbar ist
+        try:
+            import subprocess
+            result = subprocess.run(['which', 'sndioctl'], capture_output=True)
+            if result.returncode == 0:
+                print("[AUDIO] sndio detected - using compatible settings")
+                
+                # sndio-kompatible Einstellungen
+                self.FORMAT = pyaudio.paInt16
+                self.RATE = 44100
+                self.CHANNELS = 1
+                self.CHUNK = 1024
+                self.sample_width = 2
+                self.actual_format = "16-bit"
+                self.sample_format_name = "16-bit @ 44.1kHz (OpenBSD sndio)"
+                
+                # Device-Indices setzen
+                self.input_device_index = 0
+                self.output_device_index = 0
+                
+                return True
+        except Exception as e:
+            print(f"[AUDIO] sndio check failed: {e}")
+        
+        # Fallback auf grundlegende Einstellungen
+        print("[AUDIO] Using fallback settings for OpenBSD")
+        self.FORMAT = pyaudio.paInt16
+        self.RATE = 44100
+        self.CHANNELS = 1
+        self.CHUNK = 512
+        self.sample_width = 2
+        self.actual_format = "16-bit"
+        self.sample_format_name = "16-bit @ 44.1kHz (OpenBSD Fallback)"
+        
+        return True
+
+    def get_input_devices(self):
+        """ZENTRALE Methode für Eingabegeräte - MIT OPENBSD SUPPORT"""
+        # OpenBSD-spezifische Erkennung zuerst
+        if sys.platform.startswith("openbsd"):
+            return self.get_openbsd_device_info()
+        
+        # Normale PyAudio-Erkennung für andere Plattformen
+        devices = []
+        try:
+            for i in range(self.audio.get_device_count()):
+                device_info = self.audio.get_device_info_by_index(i)
+                if device_info.get('maxInputChannels', 0) > 0:
+                    device_name = device_info.get('name', f'Device {i}')
+                    devices.append(f"{i}: {device_name} (Input)")
+        except Exception as e:
+            print(f"[INPUT DEVICES ERROR] {str(e)}")
+            devices = ["0: Standard-Mikrofon (Input)"]
+        return devices
+
+    def get_output_devices(self):
+        """ZENTRALE Methode für Ausgabegeräte - MIT OPENBSD SUPPORT"""
+        # OpenBSD-spezifische Erkennung zuerst
+        if sys.platform.startswith("openbsd"):
+            return self.get_openbsd_device_info()
+        
+        # Normale PyAudio-Erkennung für andere Plattformen
+        devices = []
+        try:
+            for i in range(self.audio.get_device_count()):
+                device_info = self.audio.get_device_info_by_index(i)
+                if device_info.get('maxOutputChannels', 0) > 0:
+                    device_name = device_info.get('name', f'Device {i}')
+                    
+                    # Prüfe 24-bit Support
+                    supports_24bit = False
+                    try:
+                        supports_24bit = self.audio.is_format_supported(
+                            48000,
+                            output_device=i,
+                            output_channels=1, 
+                            output_format=pyaudio.paInt24
+                        )
+                    except:
+                        pass
+                    
+                    bit_info = " [24-bit]" if supports_24bit else " [16-bit]"
+                    devices.append(f"{i}: {device_name}{bit_info}")
+            
+        except Exception as e:
+            print(f"[OUTPUT DEVICES ERROR] {str(e)}")
+            devices = ["0: Standard-Lautsprecher (Output)"]
+        return devices
     def verify_audio_configuration(self):
         """Überprüft Audio-Konfiguration OHNE Qualitätseinstellungen zu überschreiben"""
         print("\n=== AUDIO CONFIGURATION VERIFICATION ===")
@@ -921,7 +1060,50 @@ class AudioConfig:
                 profile = self.QUALITY_PROFILES[fallback]
         
         return False
+    def detect_openbsd_audio_devices(self):
+        """OpenBSD-spezifische Audio-Device-Erkennung"""
+        try:
+            # Versuche sndio Devices zu finden
+            import subprocess
+            
+            # Prüfe auf sndio Devices
+            result = subprocess.run(['sndioctl', '-l'], capture_output=True, text=True)
+            if result.returncode == 0:
+                print("[AUDIO] sndio Devices gefunden")
+                # sndio ist verfügbar, verwende default Device
+                return True
+                
+            # Prüfe auf /dev/audio* Devices
+            import glob
+            audio_devices = glob.glob('/dev/audio*')
+            if audio_devices:
+                print(f"[AUDIO] Gefundene Audio-Devices: {audio_devices}")
+                return True
+                
+        except Exception as e:
+            print(f"[AUDIO] OpenBSD Device Detection fehlgeschlagen: {e}")
+        
+        return False
 
+    def get_openbsd_device_info(self):
+        """Gibt OpenBSD-spezifische Device-Informationen zurück"""
+        devices = []
+        
+        try:
+            # Standard sndio Device
+            devices.append("0: sndio Default Device (OpenBSD)")
+            
+            # Zusätzliche /dev/audio Devices
+            import glob
+            audio_devices = glob.glob('/dev/audio*')
+            for i, device in enumerate(audio_devices, 1):
+                devices.append(f"{i}: {device} (OpenBSD Raw Device)")
+                
+        except Exception as e:
+            print(f"[AUDIO] OpenBSD Device Info Error: {e}")
+            devices = ["0: sndio Default Device (OpenBSD)"]
+        
+        return devices
     def _test_audio_configuration(self):
         """Testet ob die aktuelle Audio-Konfiguration funktioniert"""
         try:
@@ -2005,39 +2187,7 @@ class CALL:
         self.connection_lock = threading.Lock()
         self.connection_state = "disconnected"
 
-    def _get_input_devices(self):
-        """Gibt Liste aller Eingabegeräte (Mikrofone) zurück - MIT FALLBACK"""
-        devices = []
-        try:
-            if self.audio_available and self.audio:
-                for i in range(self.audio.get_device_count()):
-                    device_info = self.audio.get_device_info_by_index(i)
-                    if device_info.get('maxInputChannels', 0) > 0:
-                        device_name = device_info.get('name', f'Device {i}')
-                        devices.append(f"{i}: {device_name} (Input)")
-            else:
-                devices = ["0: Standard-Mikrofon (Input)"]
-        except Exception as e:
-            print(f"[INPUT DEVICES ERROR] {str(e)}")
-            devices = ["0: Standard-Mikrofon (Input)"]
-        return devices
 
-    def _get_output_devices(self):
-        """Gibt Liste aller Ausgabegeräte zurück - MIT FALLBACK"""
-        devices = []
-        try:
-            if self.audio_available and self.audio:
-                for i in range(self.audio.get_device_count()):
-                    device_info = self.audio.get_device_info_by_index(i)
-                    if device_info.get('maxOutputChannels', 0) > 0:
-                        device_name = device_info.get('name', f'Device {i}')
-                        devices.append(f"{i}: {device_name} (Output)")
-            else:
-                devices = ["0: Standard-Lautsprecher (Output)"]
-        except Exception as e:
-            print(f"[OUTPUT DEVICES ERROR] {str(e)}")
-            devices = ["0: Standard-Lautsprecher (Output)"]
-        return devices
 
     def audio_stream_out(self, target_ip, target_port, iv, key):
         """Sendet Audio - MIT FALLBACK"""
@@ -2268,7 +2418,7 @@ class CALL:
         except:
             pass
     def show_audio_devices_popup(self):
-        """Audio-Geräte, Qualitätsauswahl und Rauschfilterung - MIT KORREKTER DPI-SKALIERUNG"""
+        """Audio-Geräte, Qualitätsauswahl und Rauschfilterung - VOLLSTÄNDIGE VERSION"""
         try:
             # Warte bis das Hauptfenster sichtbar ist
             if hasattr(self.client, 'winfo_viewable') and not self.client.winfo_viewable():
@@ -2440,7 +2590,7 @@ class CALL:
                 font=("Arial", font_sizes['normal'], "bold")
             ).pack(anchor="w", pady=(scaled_size(5), scaled_size(2)))
             
-            input_devices = self._get_input_devices()
+            input_devices = self.audio_config.get_input_devices()
             
             input_combo = ttk.Combobox(
                 devices_frame, 
@@ -2468,7 +2618,7 @@ class CALL:
                 font=("Arial", font_sizes['normal'], "bold")
             ).pack(anchor="w", pady=(scaled_size(5), scaled_size(2)))
             
-            output_devices = self._get_output_devices()
+            output_devices = self.audio_config.get_output_devices()
             
             output_combo = ttk.Combobox(
                 devices_frame, 
@@ -4295,7 +4445,7 @@ class PHONEBOOK(ctk.CTk):
             
             # Eingabegeräte (Mikrofone)
             tk.Label(dialog, text="Eingabegerät (Mikrofon):", font=("Arial", 10, "bold")).pack(pady=(20, 5))
-            input_devices = self._get_input_devices()
+            input_devices = audio_config._get_input_devices()
             input_var = tk.StringVar(dialog)
             
             input_combo = ttk.Combobox(dialog, textvariable=input_var, values=input_devices, width=60)
@@ -4308,7 +4458,7 @@ class PHONEBOOK(ctk.CTk):
             
             # Ausgabegeräte (Lautsprecher/Kopfhörer)
             tk.Label(dialog, text="Ausgabegerät (Lautsprecher):", font=("Arial", 10, "bold")).pack(pady=(20, 5))
-            output_devices = self._get_output_devices()
+            output_devices = audio_config._get_output_devices()
             output_var = tk.StringVar(dialog)
             
             output_combo = ttk.Combobox(dialog, textvariable=output_var, values=output_devices, width=60)
@@ -4436,52 +4586,6 @@ class PHONEBOOK(ctk.CTk):
             print(f"[AUDIO DIALOG ERROR] {str(e)}")
             messagebox.showerror("Fehler", f"Audio-Dialog konnte nicht geöffnet werden: {str(e)}")
 
-    def _get_input_devices(self):
-        """Gibt Liste aller Eingabegeräte (Mikrofone) zurück"""
-        devices = []
-        try:
-            audio = pyaudio.PyAudio()
-            for i in range(audio.get_device_count()):
-                device_info = audio.get_device_info_by_index(i)
-                if device_info.get('maxInputChannels', 0) > 0:
-                    device_name = device_info.get('name', f'Device {i}')
-                    devices.append(f"{i}: {device_name} (Input)")
-            audio.terminate()
-        except Exception as e:
-            print(f"[INPUT DEVICES ERROR] {str(e)}")
-            devices = ["0: Standard-Mikrofon (Input)"]
-        return devices
-
-    def _get_output_devices(self):
-        """Gibt Liste aller Ausgabegeräte mit 24-bit Info zurück"""
-        devices = []
-        try:
-            audio = pyaudio.PyAudio()
-            for i in range(audio.get_device_count()):
-                device_info = audio.get_device_info_by_index(i)
-                if device_info.get('maxOutputChannels', 0) > 0:
-                    device_name = device_info.get('name', f'Device {i}')
-                    
-                    # Prüfe 24-bit Support
-                    supports_24bit = False
-                    try:
-                        supports_24bit = audio.is_format_supported(
-                            48000,
-                            output_device=i,
-                            output_channels=1, 
-                            output_format=pyaudio.paInt24
-                        )
-                    except:
-                        pass
-                    
-                    bit_info = " [24-bit]" if supports_24bit else " [16-bit]"
-                    devices.append(f"{i}: {device_name}{bit_info}")
-            
-            audio.terminate()
-        except Exception as e:
-            print(f"[OUTPUT DEVICES ERROR] {str(e)}")
-            devices = ["0: Standard-Lautsprecher (Output)"]
-        return devices
 
     def open_language_settings(self):
         """Spracheinstellungen (kann später erweitert werden)"""
