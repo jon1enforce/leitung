@@ -3004,15 +3004,19 @@ class CALL:
         return True
     def _start_audio_streams(self):
         """Startet bidirektionale Audio-Streams MIT KORREKTEM RELAY"""
+        # ✅ ACTIVE_CALL ZUERST SETZEN - VOR ALLEM ANDEREN!
+        self.active_call = True
+        print(f"[AUDIO] Active call set to: {self.active_call}")
+        
         if not self.current_secret:
             print("[AUDIO] No session key available")
+            self.active_call = False
             return
             
         # ✅ PRÜFE OB AUDIO VERFÜGBAR IST
         if not self.audio_available:
             print("[AUDIO] Kein Audio-Backend verfügbar - Call ohne Audio")
             self._start_call_timer()
-            self.active_call = True
             self.call_start_time = time.time()
             
             # UI aktualisieren
@@ -3044,6 +3048,7 @@ class CALL:
                         "Audio Error", 
                         "Keine Relay-Verbindung verfügbar. Audio-Übertragung nicht möglich."
                     ))
+                self.active_call = False
                 return
             
             print(f"[AUDIO] Starting streams - Relay: {target_ip}:{target_port}")
@@ -3055,24 +3060,25 @@ class CALL:
             # Starte Timer-Anzeige
             self._start_call_timer()
             
-            # ✅ KORREKTE PARAMETER FÜR AUDIO STREAMS
+            # ✅ KORREKTE PARAMETER FÜR AUDIO STREAMS MIT AKTUELLER INSTANZ
             send_thread = threading.Thread(
                 target=self.audio_stream_out, 
                 args=(target_ip, target_port, iv, key),
-                daemon=True
+                daemon=True,
+                name="AudioOut"
             )
             
             recv_thread = threading.Thread(
                 target=self.audio_stream_in,
                 args=(iv, key),
-                daemon=True
+                daemon=True,
+                name="AudioIn"
             )
             
             send_thread.start()
             recv_thread.start()
             
             self.audio_threads = [send_thread, recv_thread]
-            self.active_call = True
             self.call_start_time = time.time()
             
             # UI aktualisieren
@@ -3089,6 +3095,7 @@ class CALL:
             
         except Exception as e:
             print(f"[AUDIO ERROR] Failed to start streams: {e}")
+            self.active_call = False
             if hasattr(self.client, 'after'):
                 self.client.after(0, lambda: messagebox.showerror(
                     "Audio Error", 
@@ -3892,7 +3899,23 @@ class CALL:
             elif message_type == 'SESSION_KEY':
                 self._handle_session_key(custom_data)
             elif message_type == 'CALL_RESPONSE':
-                self.handle_call_response(custom_data)
+                # ✅ KORREKTUR: RICHTIGE METHODE FÜR CLIENT
+                # Client benötigt handle_call_response NUR mit custom_data
+                if hasattr(self, 'handle_call_response'):
+                    # Prüfe die Signatur der Methode
+                    import inspect
+                    sig = inspect.signature(self.handle_call_response)
+                    params = list(sig.parameters.keys())
+                    
+                    if len(params) == 1:  # Nur custom_data
+                        self.handle_call_response(custom_data)
+                    elif len(params) == 3:  # custom_data, client_socket, client_name
+                        # Verwende Standardwerte für fehlende Parameter
+                        self.handle_call_response(custom_data, None, "unknown")
+                    else:
+                        print(f"[CALL ERROR] Unsupported handle_call_response signature: {params}")
+                else:
+                    print("[CALL ERROR] No handle_call_response method available")
             elif message_type == 'PUBLIC_KEY_RESPONSE':
                 print("[CALL] Received PUBLIC_KEY_RESPONSE, processing...")
                 # ✅ KORREKT: custom_data übergeben, nicht msg!
@@ -4754,12 +4777,25 @@ class CALL:
     def handle_call_confirmed(self, msg):
         """Verarbeitet Call-Bestätigung für Angerufene - JETZT MIT UDP RELAY"""
         try:
-            custom_data = msg.get('custom_data', {})
+            print(f"[CALL] CALL_CONFIRMED received, type: {type(msg)}")
+            print(f"[CALL] CALL_CONFIRMED keys: {list(msg.keys())}")
+            
+            # ✅ FLEXIBLE DATENEXTRAKTION: custom_data ODER direkt aus msg
+            if isinstance(msg, dict) and 'custom_data' in msg:
+                # Nachricht hat custom_data Struktur
+                data = msg.get('custom_data', {})
+                print(f"[CALL] Using custom_data, keys: {list(data.keys())}")
+            else:
+                # Nachricht ist bereits custom_data oder Haupt-Body
+                data = msg
+                print(f"[CALL] Using direct data, keys: {list(data.keys())}")
             
             # ✅ UDP Relay Konfiguration
-            use_relay = custom_data.get('USE_AUDIO_RELAY', False)
-            relay_ip = custom_data.get('AUDIO_RELAY_IP')
-            relay_port = custom_data.get('AUDIO_RELAY_PORT', 51822)
+            use_relay = data.get('USE_AUDIO_RELAY', False)
+            relay_ip = data.get('AUDIO_RELAY_IP')
+            relay_port = data.get('AUDIO_RELAY_PORT', 51822)
+            
+            print(f"[CALL] Relay config - use_relay: {use_relay}, ip: {relay_ip}, port: {relay_port}")
             
             if use_relay and relay_ip:
                 print(f"[CALL] Call confirmed with UDP Relay: {relay_ip}:{relay_port}")
@@ -4767,18 +4803,29 @@ class CALL:
                 self.relay_server_ip = relay_ip
                 self.relay_server_port = relay_port
                 
-                # Audio streams starten
-                if 'session_secret' in self.pending_call:
-                    self.current_secret = self.pending_call['session_secret']
+                # ✅ KRITISCH: active_call ZUERST setzen!
+                self.active_call = True
+                print(f"[CALL] Active call set to: {self.active_call}")
+                
+                # ✅ KORREKTUR: Audio streams MIT current_secret starten
+                if hasattr(self, 'current_secret') and self.current_secret:
+                    print(f"[CALL] Starting audio streams with session secret ({len(self.current_secret)} bytes)")
                     self._start_audio_streams()
+                    if hasattr(self, 'pending_call'):
+                        self.pending_call['status'] = 'connected'
+                    print("[CALL] UDP Relay call established successfully")
+                else:
+                    print("[CALL ERROR] No session secret available for audio streams")
+                    print(f"[CALL DEBUG] current_secret available: {hasattr(self, 'current_secret')}")
                     
-                self.pending_call['status'] = 'connected'
-                print("[CALL] UDP Relay call established successfully")
             else:
                 print("[CALL ERROR] No relay configuration in confirmation")
+                print(f"[CALL DEBUG] use_relay: {use_relay}, relay_ip: {relay_ip}")
                 
         except Exception as e:
             print(f"[CALL ERROR] Call confirmation handling failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
 
     def _handle_session_key(self, msg):
         """Verarbeitet Session Key vom Server"""
@@ -7020,7 +7067,8 @@ class PHONEBOOK(ctk.CTk):
             
             # 4. NACHRICHTEN-ROUTING
             if message_type in ['INCOMING_CALL', 'SESSION_KEY', 'CALL_RESPONSE', 
-                              'CALL_TIMEOUT', 'PUBLIC_KEY_RESPONSE', 'CALL_END']:
+                              'CALL_TIMEOUT', 'PUBLIC_KEY_RESPONSE', 'CALL_END',
+                              'CALL_CONFIRMED']:  # ✅ HIER FEHLTE CALL_CONFIRMED!
                 if hasattr(self, 'call_manager'):
                     print(f"[CALL] Delegiere {message_type} an Call Manager")
                     self.call_manager.handle_message(msg)
