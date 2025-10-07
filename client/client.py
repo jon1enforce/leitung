@@ -228,19 +228,6 @@ def init_verify_generator(seed, client_id=None):
         
         return _verify_generators[client_id]
 
-def generate_verify_code(client_id=None):
-    """
-    Generiert einen Verify-Code (Kompatibilitätsfunktion)
-    
-    Args:
-        client_id: Client-ID
-        
-    Returns:
-        str: Verify-Code
-    """
-    generator = init_verify_generator(None, client_id)
-    return generator.generate_verify_code()
-
 def verify_code(received_code, client_id=None, sync_tolerance=5):
     """
     Verifiziert einen Code (Kompatibilitätsfunktion)
@@ -253,7 +240,10 @@ def verify_code(received_code, client_id=None, sync_tolerance=5):
     Returns:
         bool: True wenn gültig
     """
-    generator = init_verify_generator(None, client_id)
+    # ✅ KORREKTUR: CLIENT-ID ALS SEED VERWENDEN
+    if client_id is None:
+        client_id = "default"
+    generator = init_verify_generator(client_id, client_id)  # ✅ SEED = CLIENT-ID
     return generator.verify_code(received_code, sync_tolerance)
 
 def get_message_count(client_id=None):
@@ -266,7 +256,10 @@ def get_message_count(client_id=None):
     Returns:
         int: Nachrichtenanzahl
     """
-    generator = init_verify_generator(None, client_id)
+    # ✅ KORREKTUR: CLIENT-ID ALS SEED VERWENDEN
+    if client_id is None:
+        client_id = "default"
+    generator = init_verify_generator(client_id, client_id)  # ✅ SEED = CLIENT-ID
     return generator.get_message_count()
 
 def reset_client_counter(client_id=None):
@@ -276,7 +269,10 @@ def reset_client_counter(client_id=None):
     Args:
         client_id: Client-ID
     """
-    generator = init_verify_generator(None, client_id)
+    # ✅ KORREKTUR: CLIENT-ID ALS SEED VERWENDEN
+    if client_id is None:
+        client_id = "default"
+    generator = init_verify_generator(client_id, client_id)  # ✅ SEED = CLIENT-ID
     generator.reset_counter()
 
 def get_client_status(client_id=None):
@@ -289,7 +285,10 @@ def get_client_status(client_id=None):
     Returns:
         dict: Statusinformationen
     """
-    generator = init_verify_generator(None, client_id)
+    # ✅ KORREKTUR: CLIENT-ID ALS SEED VERWENDEN
+    if client_id is None:
+        client_id = "default"
+    generator = init_verify_generator(client_id, client_id)  # ✅ SEED = CLIENT-ID
     return generator.get_status()
 
 def list_all_generators():
@@ -2192,6 +2191,12 @@ class ClientRelayManager:
         try:
             print("\n=== MANUAL SERVER DISCOVERY DEBUG ===")
             
+            # ✅ ROBUSTER FALLBACK FÜR CLIENT-NAME
+            client_name = getattr(self, '_client_name', None)
+            if client_name is None:
+                client_name = f"debug_client_{int(time.time())}"
+                print(f"⚠️ [DEBUG] Client name not available, using fallback: {client_name}")
+            
             for seed_host, seed_port in self.relay_manager.SEED_SERVERS:
                 print(f"\nTrying {seed_host}:{seed_port}")
                 
@@ -2200,16 +2205,27 @@ class ClientRelayManager:
                     sock.settimeout(10)
                     sock.connect((seed_host, seed_port))
                     
-                    # Einfache Test-Nachricht
+                    # ✅ DIREKTE GENERATOR VERWENDUNG MIT FALLBACK
+                    generator = init_verify_generator(client_name, client_name)  # ✅ DIREKT
+                    verify_code = generator.generate_verify_code()
+                    print(f"[DEBUG] Generated verify-code: {verify_code}")
+                    
+                    # Einfache Test-Nachricht MIT VERIFY-CODE IM BODY
                     test_data = {
                         "MESSAGE_TYPE": "GET_SERVERS",
-                        "CLIENT_NAME": self._client_name,
-                        "TIMESTAMP": int(time.time())
+                        "CLIENT_NAME": client_name,
+                        "TIMESTAMP": int(time.time()),
+                        "verify_code": verify_code  # ✅ VERIFY-CODE IM BODY HINZUFÜGEN
                     }
                     
-                    test_msg = self.build_sip_message("MESSAGE", seed_host, test_data)
+                    # OHNE additional_headers Parameter
+                    test_msg = self.build_sip_message(
+                        "MESSAGE", 
+                        seed_host, 
+                        test_data
+                    )
                     
-                    print(f"Sending test message to {seed_host}:{seed_port}")
+                    print(f"Sending test message to {seed_host}:{seed_port} with verify-code: {verify_code}")
                     if send_frame(sock, test_msg.encode()):
                         response = recv_frame(sock)
                         if response:
@@ -2251,6 +2267,12 @@ class ClientRelayManager:
         
         discovered_servers = {}
         
+        # ✅ ROBUSTER FALLBACK FÜR CLIENT-NAME
+        client_name = getattr(self.client, '_client_name', None)
+        if client_name is None:
+            client_name = f"discovery_client_{int(time.time())}"
+            print(f"⚠️ [CLIENT RELAY] Client name not initialized, using fallback: {client_name}")
+        
         for seed_host, seed_port in self.SEED_SERVERS:
             try:
                 print(f"[CLIENT RELAY] Trying {seed_host}:{seed_port}")
@@ -2260,24 +2282,54 @@ class ClientRelayManager:
                 sock.settimeout(10)
                 sock.connect((seed_host, seed_port))
                 
-                # Baue SIP-Nachricht für Server-Liste Anfrage
+                # ✅ DIREKTE GENERATOR VERWENDUNG MIT FALLBACK
+                generator = init_verify_generator(client_name, client_name)  # ✅ DIREKT
+                verify_code = generator.generate_verify_code()
+                print(f"[CLIENT RELAY] Generated verify-code for discovery: {verify_code}")
+                
+                # Baue SIP-Nachricht für Server-Liste Anfrage MIT VERIFY-CODE
                 request_data = {
                     'type': 'get_servers',
                     'requester_type': 'client',
-                    'client_name': getattr(self.client, '_client_name', 'Unknown'),
+                    'client_name': client_name,
                     'timestamp': time.time()
+                    # ✅ VERIFY-CODE WIRD IM HEADER GESENDET, NICHT IM BODY
                 }
                 
-                # Sende als framed SIP
+                # Baue SIP-Nachricht OHNE additional_headers
                 sip_message = self.client.build_sip_message(
                     "MESSAGE",
                     seed_host, 
                     request_data
                 )
                 
-                print(f"[CLIENT RELAY] Sending discovery request to {seed_host}:{seed_port}")
+                # ✅ MANUELL VERIFY-HEADER HINZUFÜGEN
+                lines = sip_message.split('\r\n')
                 
-                if send_frame(sock, sip_message.encode()):
+                # Finde die Stelle wo wir den Verify-Header einfügen können (vor Content-Headern)
+                insert_position = -1
+                for i, line in enumerate(lines):
+                    if line.startswith('Content-Type:') or line.startswith('Content-Length:'):
+                        insert_position = i
+                        break
+                
+                if insert_position != -1:
+                    lines.insert(insert_position, f"Verify-Code: {verify_code}")
+                else:
+                    # Falls keine Content-Header gefunden, vor dem leeren Zeilen-Trenner einfügen
+                    for i, line in enumerate(lines):
+                        if line == '':
+                            lines.insert(i, f"Verify-Code: {verify_code}")
+                            break
+                    else:
+                        # Notfall: am Ende einfügen
+                        lines.insert(-1, f"Verify-Code: {verify_code}")
+                
+                sip_message_with_verify = '\r\n'.join(lines)
+                
+                print(f"[CLIENT RELAY] Sending discovery request to {seed_host}:{seed_port} with verify-code: {verify_code}")
+                
+                if send_frame(sock, sip_message_with_verify.encode()):
                     # Empfange Response
                     print(f"[CLIENT RELAY] Waiting for response from {seed_host}:{seed_port}")
                     response_data = recv_frame(sock)
@@ -2484,7 +2536,7 @@ class ClientRelayManager:
         }
 
     def _ping_server(self, server_ip, server_data, results_dict):
-        """VERBESSERTES Ping das beide Ports 5060 und 5061 testet"""
+        """VERBESSERTES Ping das beide Ports 5060 und 5061 testet MIT VERIFY-CODE"""
         try:
             reported_port = server_data.get('port', 5060)
             
@@ -2509,28 +2561,66 @@ class ClientRelayManager:
                     start_time = time.time()
                     sock.connect((server_ip, port))
                     
-                    # Baue Ping-Nachricht
+                    # ✅ VERIFY-CODE FÜR PING-NACHRICHT GENERIEREN
+                    client_name = getattr(self, '_client_name', 'ping_tester')
+                    generator = init_verify_generator(client_name, client_name)
+                    verify_code = generator.generate_verify_code()
+                    print(f"🔐 [PING] Ping Verify-Code für {server_ip}:{port}: {verify_code}")
+                    
+                    # Baue Ping-Nachricht MIT VERIFY-CODE
                     ping_data = {
                         "MESSAGE_TYPE": "PING",
                         "TIMESTAMP": int(start_time),
-                        "CLIENT_NAME": "ping_tester"
+                        "CLIENT_NAME": client_name
                     }
                     
                     ping_msg = self.client.build_sip_message("MESSAGE", server_ip, ping_data)
                     
+                    # ✅ MANUELL VERIFY-HEADER HINZUFÜGEN
+                    lines = ping_msg.split('\r\n')
+                    
+                    # Finde die Stelle wo wir den Verify-Header einfügen können (vor Content-Headern)
+                    insert_position = -1
+                    for i, line in enumerate(lines):
+                        if line.startswith('Content-Type:') or line.startswith('Content-Length:'):
+                            insert_position = i
+                            break
+                    
+                    if insert_position != -1:
+                        lines.insert(insert_position, f"Verify-Code: {verify_code}")
+                    else:
+                        # Falls keine Content-Header gefunden, vor dem leeren Zeilen-Trenner einfügen
+                        for i, line in enumerate(lines):
+                            if line == '':
+                                lines.insert(i, f"Verify-Code: {verify_code}")
+                                break
+                        else:
+                            # Notfall: am Ende einfügen
+                            lines.insert(-1, f"Verify-Code: {verify_code}")
+                    
+                    ping_msg_with_verify = '\r\n'.join(lines)
+                    
                     # Sende Ping mit Frame
-                    if send_frame(sock, ping_msg.encode('utf-8')):
+                    if send_frame(sock, ping_msg_with_verify.encode('utf-8')):
                         # Warte auf Pong mit Frame
                         response = recv_frame(sock, timeout=2.0)
                         if response:
-                            end_time = time.time()
-                            ping_time = (end_time - start_time) * 1000
-                            
-                            if ping_time < best_ping:
-                                best_ping = ping_time
-                                successful_port = port
-                                
-                            print(f"[PING] {server_ip}:{port}: {ping_time:.2f}ms - SUCCESS")
+                            # ✅ PRÜFE OB ES EINE GÜLTIGE PONG-ANTWORT IST
+                            try:
+                                response_str = response.decode('utf-8', errors='ignore')
+                                if "PONG" in response_str or "pong" in response_str.lower():
+                                    end_time = time.time()
+                                    ping_time = (end_time - start_time) * 1000
+                                    
+                                    if ping_time < best_ping:
+                                        best_ping = ping_time
+                                        successful_port = port
+                                        
+                                    print(f"[PING] {server_ip}:{port}: {ping_time:.2f}ms - SUCCESS")
+                                else:
+                                    print(f"[PING] {server_ip}:{port}: Invalid response (not PONG)")
+                            except:
+                                print(f"[PING] {server_ip}:{port}: Invalid response format")
                         else:
                             print(f"[PING] {server_ip}:{port}: No response")
                     else:
@@ -5814,80 +5904,83 @@ class PHONEBOOK(ctk.CTk):
             print(f"[SEND ERROR] Failed to queue message: {str(e)}")
             return False
     def build_sip_message(self, method, recipient, custom_data=None, from_server=False, client_name=None, server_host=None):
-        """VOLLSTÄNDIG EINHEITLICHE SIP-NACHRICHTENERSTELLUNG MIT VERIFY-CODE"""
-        if custom_data is None:
-            custom_data = {}
-        
-        if not isinstance(custom_data, dict):
-            raise ValueError("custom_data must be a dictionary")
-        
-        # Basis-Datenstruktur
-        message_data = {
-            "MESSAGE_TYPE": custom_data.get("MESSAGE_TYPE", "UNKNOWN"),
-            "TIMESTAMP": int(time.time()),
-            "VERSION": "2.0"
-        }
-        
-        # Benutzerdaten hinzufügen
-        for key, value in custom_data.items():
-            if key != "MESSAGE_TYPE":
-                message_data[key] = value
-        
-        # JSON-Body erstellen
-        try:
-            body = json.dumps(message_data, separators=(',', ':'))
-        except Exception as e:
-            raise ValueError(f"JSON encoding failed: {e}")
-        
-        # Absenderadresse bestimmen
-        if from_server:
-            from_header = f"<sip:server@{server_host}>" if server_host else "<sip:server>"
-        else:
-            # Client-Absender
-            if not client_name or client_name == "unknown":
-                client_name = getattr(self, '_client_name', 'unknown')
+            """VOLLSTÄNDIG EINHEITLICHE SIP-NACHRICHTENERSTELLUNG MIT VERIFY-CODE"""
+            if custom_data is None:
+                custom_data = {}
             
-            try:
-                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                s.connect(("8.8.8.8", 80))
-                client_ip = s.getsockname()[0]
-                s.close()
-            except:
-                client_ip = "127.0.0.1"
+            if not isinstance(custom_data, dict):
+                raise ValueError("custom_data must be a dictionary")
             
-            from_header = f"<sip:{client_name}@{client_ip}>"
-        
-        # ✅ VERIFY-CODE MIT KORREKTEM GENERATOR GENERIEREN
-        verify_header = ""
-        if not from_server:
+            # Basis-Datenstruktur
+            message_data = {
+                "MESSAGE_TYPE": custom_data.get("MESSAGE_TYPE", "UNKNOWN"),
+                "TIMESTAMP": int(time.time()),
+                "VERSION": "2.0"
+            }
+            
+            # Benutzerdaten hinzufügen
+            for key, value in custom_data.items():
+                if key != "MESSAGE_TYPE":
+                    message_data[key] = value
+            
+            # JSON-Body erstellen
             try:
-                # ✅ VERWENDE DEN KORREKTEN CLIENT-GENERATOR STATT "default"
-                if hasattr(self, 'client_generator'):
-                    verify_code = self.client_generator.generate_verify_code()
-                    print(f"🔐 [CLIENT] Verify-Code mit Generator '{self.client_generator.client_id}': {verify_code}")
-                else:
-                    # Fallback falls Generator nicht existiert
-                    verify_code = generate_verify_code(client_id=client_name)
-                    print(f"🔐 [CLIENT] Verify-Code mit Fallback für '{client_name}': {verify_code}")
-                
-                verify_header = f"Verify-Code: {verify_code}\r\n"
+                body = json.dumps(message_data, separators=(',', ':'))
             except Exception as e:
-                print(f"⚠️ [VERIFY] Failed to generate verify code: {e}")
-                # Fallback: Ohne Verify-Code senden (für erste Nachricht)
-                verify_header = ""
-        
-        # SIP-Nachricht erstellen
-        sip_message = (
-            f"{method} sip:{recipient} SIP/2.0\r\n"
-            f"From: {from_header}\r\n"
-            f"To: <sip:{recipient}>\r\n"
-            f"{verify_header}"  # ✅ Verify-Code Header
-            f"Content-Type: application/json\r\n"
-            f"Content-Length: {len(body)}\r\n\r\n"
-            f"{body}"
-        )
-        
-        return sip_message
+                raise ValueError(f"JSON encoding failed: {e}")
+            
+            # Absenderadresse bestimmen
+            if from_server:
+                from_header = f"<sip:server@{server_host}>" if server_host else "<sip:server>"
+            else:
+                # Client-Absender
+                if not client_name or client_name == "unknown":
+                    client_name = getattr(self, '_client_name', 'unknown')
+                
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.connect(("8.8.8.8", 80))
+                    client_ip = s.getsockname()[0]
+                    s.close()
+                except:
+                    client_ip = "127.0.0.1"
+                
+                from_header = f"<sip:{client_name}@{client_ip}>"
+            
+            # ✅ VERIFY-CODE MIT KORREKTEM GENERATOR GENERIEREN
+            verify_header = ""
+            if not from_server:
+                try:
+                    # ✅ VERWENDE DEN KORREKTEN CLIENT-GENERATOR STATT "default"
+                    if hasattr(self, 'client_generator'):
+                        verify_code = self.client_generator.generate_verify_code()
+                        print(f"🔐 [CLIENT] Verify-Code mit Generator '{self.client_generator.client_id}': {verify_code}")
+                    else:
+                        # ✅ KORREKTUR: DIREKTEN GENERATOR VERWENDEN STATT NICHT-EXISTIERENDER FUNKTION
+                        if not client_name or client_name == "unknown":
+                            client_name = getattr(self, '_client_name', 'unknown')
+                        generator = init_verify_generator(client_name, client_name)
+                        verify_code = generator.generate_verify_code()
+                        print(f"🔐 [CLIENT] Verify-Code mit Generator '{client_name}': {verify_code}")
+                    
+                    verify_header = f"Verify-Code: {verify_code}\r\n"
+                except Exception as e:
+                    print(f"⚠️ [VERIFY] Failed to generate verify code: {e}")
+                    # Fallback: Ohne Verify-Code senden (für erste Nachricht)
+                    verify_header = ""
+            
+            # SIP-Nachricht erstellen
+            sip_message = (
+                f"{method} sip:{recipient} SIP/2.0\r\n"
+                f"From: {from_header}\r\n"
+                f"To: <sip:{recipient}>\r\n"
+                f"{verify_header}"  # ✅ Verify-Code Header
+                f"Content-Type: application/json\r\n"
+                f"Content-Length: {len(body)}\r\n\r\n"
+                f"{body}"
+            )
+            
+            return sip_message
     def parse_sip_message(self,message):
         """VOLLSTÄNDIG EINHEITLICHER SIP-PARSER - FÜR CLIENT UND SERVER IDENTISCH"""
         # 1. Input-Normalisierung
@@ -6709,13 +6802,24 @@ class PHONEBOOK(ctk.CTk):
         """Handle PING messages by responding with PONG"""
         try:
             if hasattr(self, 'client_socket') and self.client_socket:
+                # ✅ VERIFY-CODE FÜR PONG-NACHRICHT GENERIEREN
+                if hasattr(self, 'client_generator'):
+                    verify_code = self.client_generator.generate_verify_code()
+                    print(f"🔐 [PING] PONG Verify-Code: {verify_code}")
+                else:
+                    client_name = getattr(self, '_client_name', 'ping_client')
+                    generator = init_verify_generator(client_name, client_name)
+                    verify_code = generator.generate_verify_code()
+                    print(f"🔐 [PING] PONG Verify-Code (Fallback): {verify_code}")
+                
                 pong_msg = self.build_sip_message(
                     "MESSAGE",
                     "server",
-                    {"PONG": "true"}
+                    {"PONG": "true"},
+                    additional_headers=[f"Verify-Code: {verify_code}"]  # ✅ VERIFY-CODE HINZUFÜGEN
                 )
                 self.client_socket.sendall(pong_msg.encode('utf-8'))
-                print("[DEBUG] Sent PONG response")
+                print("[DEBUG] Sent PONG response with verify-code")
                 return True
             return False
         except Exception as e:

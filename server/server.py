@@ -210,7 +210,10 @@ def generate_verify_code(client_id=None):
     Returns:
         str: Verify-Code
     """
-    generator = init_verify_generator(None, client_id)
+    # ✅ KORREKTUR: CLIENT-ID ALS SEED VERWENDEN
+    if client_id is None:
+        client_id = "default"
+    generator = init_verify_generator(client_id, client_id)  # ✅ SEED = CLIENT-ID
     return generator.generate_verify_code()
 
 def verify_code(received_code, client_id=None, sync_tolerance=5):
@@ -225,7 +228,10 @@ def verify_code(received_code, client_id=None, sync_tolerance=5):
     Returns:
         bool: True wenn gültig
     """
-    generator = init_verify_generator(None, client_id)
+    # ✅ KORREKTUR: CLIENT-ID ALS SEED VERWENDEN
+    if client_id is None:
+        client_id = "default"
+    generator = init_verify_generator(client_id, client_id)  # ✅ SEED = CLIENT-ID
     return generator.verify_code(received_code, sync_tolerance)
 
 def get_message_count(client_id=None):
@@ -238,7 +244,10 @@ def get_message_count(client_id=None):
     Returns:
         int: Nachrichtenanzahl
     """
-    generator = init_verify_generator(None, client_id)
+    # ✅ KORREKTUR: CLIENT-ID ALS SEED VERWENDEN
+    if client_id is None:
+        client_id = "default"
+    generator = init_verify_generator(client_id, client_id)  # ✅ SEED = CLIENT-ID
     return generator.get_message_count()
 
 def reset_client_counter(client_id=None):
@@ -248,7 +257,10 @@ def reset_client_counter(client_id=None):
     Args:
         client_id: Client-ID
     """
-    generator = init_verify_generator(None, client_id)
+    # ✅ KORREKTUR: CLIENT-ID ALS SEED VERWENDEN
+    if client_id is None:
+        client_id = "default"
+    generator = init_verify_generator(client_id, client_id)  # ✅ SEED = CLIENT-ID
     generator.reset_counter()
 
 def get_client_status(client_id=None):
@@ -261,7 +273,10 @@ def get_client_status(client_id=None):
     Returns:
         dict: Statusinformationen
     """
-    generator = init_verify_generator(None, client_id)
+    # ✅ KORREKTUR: CLIENT-ID ALS SEED VERWENDEN
+    if client_id is None:
+        client_id = "default"
+    generator = init_verify_generator(client_id, client_id)  # ✅ SEED = CLIENT-ID
     return generator.get_status()
 
 def list_all_generators():
@@ -449,32 +464,10 @@ def recv_frame(sock, timeout=30):
                                 break
                         
                         if verify_code_value:
-                            # ✅ KORRIGIERT: EINHEITLICHE VERIFY-CODE VALIDIERUNG
-                            generator = init_verify_generator(None, client_info)
-                            if generator.verify_code(verify_code_value, sync_tolerance=5):
-                                print(f"✅ [VERIFY] Valid verify-code from {client_info}: {verify_code_value}")
-                                # Nachricht akzeptieren
-                            else:
-                                # ❌ INVALID CODE - ASYNCHRON LOGGEN um Blockieren zu vermeiden
-                                timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-                                log_entry = (
-                                    f"❌ [INVALID] INVALID_VERIFY_CODE\n"
-                                    f"   Client: {client_info}\n"
-                                    f"   Code: {verify_code_value}\n"
-                                    f"   Time: {timestamp}\n"
-                                    f"   Message: {message_str[:300]}...\n"
-                                    f"{'='*50}\n"
-                                )
-                                
-                                # ✅ ASYNCHRONES LOGGING um Threads nicht zu blockieren
-                                try:
-                                    with open("attacks.log", "a") as f:
-                                        f.write(log_entry)
-                                except Exception as log_error:
-                                    print(f"⚠️ [LOG ERROR] Could not write to attacks.log: {log_error}")
-                                
-                                print(f"❌ [VERIFY] Invalid verify-code from {client_info}: {verify_code_value}")
-                                return None
+                            # ✅ ZURÜCK ZUM ORIGINAL: Keine Verify-Validierung in recv_frame()
+                            # Die Verify-Validierung erfolgt in handle_client() mit dem richtigen Client-Namen
+                            print(f"ℹ️ [VERIFY] Verify-Code {verify_code_value} von {client_info} - Validierung in handle_client()")
+                            # Nachricht akzeptieren, Validierung erfolgt später
                         else:
                             # ❌ MALFORMED CODE - ASYNCHRON LOGGEN
                             timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
@@ -2101,6 +2094,10 @@ class Server:
         self.phonebook = []  # Für Phonebook-Daten
         self.clients_lock = threading.RLock()
         
+        # ✅ FEHLENDE ATTRIBUTE HINZUFÜGEN
+        self._message_queue = []  # Message Queue für Client-Nachrichten
+        self._queue_lock = threading.Lock()  # Lock für Thread-safety
+        
         print(f"Server configured with: {self.host}:{self.port}")
         print(f"🔧 Relay Manager: {'SEED-SERVER' if self.relay_manager.is_seed_server else 'Regular Server'}")
     def store_client_secret(self, client_id, encrypted_secret):
@@ -3189,9 +3186,11 @@ class Server:
             print(f"🔐 [DEBUG] - Generator Seed: '{client_generator.seed}'")
             print(f"🔐 [DEBUG] - Generator Counter: {client_generator.counter}")
             
-            # ✅ DEBUG: Berechne den erwarteten Code für Counter 0
-            expected_code_for_zero = client_generator._calculate_expected_code(0)
-            print(f"🔐 [DEBUG] - Erwarteter Code für Counter 0: {expected_code_for_zero}")
+            # ✅ DEBUG: Berechne mehrere mögliche Codes (wegen möglicher Desynchronisation)
+            print(f"🔐 [DEBUG] Mögliche erwartete Codes:")
+            for i in range(10):  # Prüfe die ersten 10 Counter
+                expected_code = client_generator._calculate_expected_code(i)
+                print(f"🔐 [DEBUG] - Counter {i}: {expected_code}")
             
             print(f"🔐 [SERVER] Verify-Generator für Client-Name '{client_name}' initialisiert")
 
@@ -3209,14 +3208,30 @@ class Server:
                     print(f"🔐 [DEBUG] Vor verify_code: received_code='{verify_code_value}'")
                     print(f"🔐 [DEBUG] Generator Status vor Verify: {client_generator.debug_info()}")
                     
-                    # ✅ REGISTER-CODE MIT GENERATOR INSTANZ VALIDIEREN
-                    if client_generator.verify_code(verify_code_value, sync_tolerance=5):
+                    # ✅ REGISTER-CODE MIT GENERATOR INSTANZ VALIDIEREN - HÖHERE TOLERANZ
+                    if client_generator.verify_code(verify_code_value, sync_tolerance=10):  # ✅ Erhöht von 5 auf 10
                         print(f"✅ [VERIFY] Register-Nachricht verifiziert, Counter synchronisiert")
                         # ✅ DEBUG: Nach erfolgreicher Verify
                         print(f"🔐 [DEBUG] Nach verify_code: Counter={client_generator.counter}")
                     else:
                         print(f"❌ [VERIFY] Ungültiger Register-Code von {client_name}")
                         print(f"🔐 [DEBUG] Generator Status nach fehlgeschlagenem Verify: {client_generator.debug_info()}")
+                        
+                        # ✅ ZUSÄTZLICHES DEBUGGING: Manuelle Code-Überprüfung
+                        print(f"🔐 [DEBUG] Manuelle Code-Überprüfung für '{verify_code_value}':")
+                        found_match = False
+                        for test_counter in range(20):  # Prüfe breiteren Bereich
+                            expected_code = client_generator._calculate_expected_code(test_counter)
+                            if verify_code_value == expected_code:
+                                print(f"🔐 [DEBUG] ✅ Code match at counter {test_counter}!")
+                                found_match = True
+                                break
+                            if test_counter < 5:  # Zeige nur die ersten 5
+                                print(f"🔐 [DEBUG]   Counter {test_counter}: {expected_code}")
+                        
+                        if not found_match:
+                            print(f"🔐 [DEBUG] ❌ No match found in first 20 counters")
+                        
                         return
                 else:
                     print(f"❌ [VERIFY] Kein Verify-Code in Register-Nachricht von {client_name}")

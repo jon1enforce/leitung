@@ -1,363 +1,170 @@
 ⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:37912
-   Time: 2025-10-07 16:17:17
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:kingkong@192.168.8.166>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 167
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759846637,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:42590
-   Time: 2025-10-07 16:17:20
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:kingkong@192.168.8.166>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 168
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759846640,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:55282
-   Time: 2025-10-07 18:58:20
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:kingkong@192.168.8.166>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 168
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759856300,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:41128
-   Time: 2025-10-07 18:58:21
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:kingkong@192.168.8.166>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 168
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759856301,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:46060
-   Time: 2025-10-07 18:59:07
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:kingkong@192.168.8.166>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 168
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759856347,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:42966
-   Time: 2025-10-07 18:59:12
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:kingkong@192.168.8.166>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 167
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759856352,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:10708
-   Time: 2025-10-07 19:22:31
+   Client: 192.168.8.1:20287
+   Time: 2025-10-07 20:09:56
    Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
 From: <sip:godzilla@192.168.8.161>
 To: <sip:sichereleitung.duckdns.org>
 Content-Type: application/json
 Content-Length: 168
 
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759857751,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
+{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759860596,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
 ==================================================
 ⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:47939
-   Time: 2025-10-07 19:22:31
+   Client: 192.168.8.1:11281
+   Time: 2025-10-07 20:10:00
    Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
 From: <sip:godzilla@192.168.8.161>
 To: <sip:sichereleitung.duckdns.org>
 Content-Type: application/json
-Content-Length: 167
+Content-Length: 168
 
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759857751,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
+{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759860600,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
 ==================================================
 ⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:14352
-   Time: 2025-10-07 19:22:33
-   Message: REGISTER sip:sichereleitung.duckdns.org:5060 SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org:5060>
+   Client: 192.168.8.1:49242
+   Time: 2025-10-07 20:26:11
+   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
+From: <sip:kingkong@192.168.8.166>
+To: <sip:sichereleitung.duckdns.org>
+Content-Type: application/json
+Content-Length: 189
+
+{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759861571,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
+==================================================
+⚠️ [MISSING] MISSING_VERIFY_CODE
+   Client: 192.168.8.1:34694
+   Time: 2025-10-07 20:26:11
+   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
+From: <sip:kingkong@192.168.8.166>
+To: <sip:sichereleitung.duckdns.org>
+Content-Type: application/json
+Content-Length: 189
+
+{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759861571,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
+==================================================
+⚠️ [MISSING] MISSING_VERIFY_CODE
+   Client: 192.168.8.1:49686
+   Time: 2025-10-07 20:30:37
+   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
+From: <sip:kingkong@192.168.8.166>
+To: <sip:sichereleitung.duckdns.org>
+Content-Type: application/json
+Content-Length: 90
+
+{"MESSAGE_TYPE":"PING","TIMESTAMP":1759861836,"VERSION":"2.0","CLIENT_NAME":"ping_tester"}...
+==================================================
+⚠️ [MISSING] MISSING_VERIFY_CODE
+   Client: 192.168.8.1:51812
+   Time: 2025-10-07 20:30:37
+   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
+From: <sip:kingkong@192.168.8.166>
+To: <sip:sichereleitung.duckdns.org>
+Content-Type: application/json
+Content-Length: 90
+
+{"MESSAGE_TYPE":"PING","TIMESTAMP":1759861837,"VERSION":"2.0","CLIENT_NAME":"ping_tester"}...
+==================================================
+⚠️ [MISSING] MISSING_VERIFY_CODE
+   Client: 192.168.8.1:58840
+   Time: 2025-10-07 20:43:04
+   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
+From: <sip:kingkong@192.168.8.166>
+To: <sip:sichereleitung.duckdns.org>
+Content-Type: application/json
+Content-Length: 90
+
+{"MESSAGE_TYPE":"PING","TIMESTAMP":1759862584,"VERSION":"2.0","CLIENT_NAME":"ping_tester"}...
+==================================================
+⚠️ [MISSING] MISSING_VERIFY_CODE
+   Client: 192.168.8.1:39350
+   Time: 2025-10-07 20:43:04
+   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
+From: <sip:kingkong@192.168.8.166>
+To: <sip:sichereleitung.duckdns.org>
+Content-Type: application/json
+Content-Length: 90
+
+{"MESSAGE_TYPE":"PING","TIMESTAMP":1759862584,"VERSION":"2.0","CLIENT_NAME":"ping_tester"}...
+==================================================
+❌ [INVALID] INVALID_VERIFY_CODE
+   Client: 192.168.8.1:41160
+   Code: 1bb7
+   Time: 2025-10-07 21:24:43
+   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
+From: <sip:kingkong@192.168.8.166>
+To: <sip:sichereleitung.duckdns.org>
+Verify-Code: 1bb7
+Verify-Code: 2785
+Content-Type: application/json
+Content-Length: 168
+
+{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759865083,"VERSION":"2.0","type":"get_servers"...
+==================================================
+❌ [INVALID] INVALID_VERIFY_CODE
+   Client: 192.168.8.1:46172
+   Code: c26e
+   Time: 2025-10-07 21:24:43
+   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
+From: <sip:kingkong@192.168.8.166>
+To: <sip:sichereleitung.duckdns.org>
+Verify-Code: c26e
+Verify-Code: 11ea
+Content-Type: application/json
+Content-Length: 168
+
+{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759865083,"VERSION":"2.0","type":"get_servers"...
+==================================================
+❌ [INVALID] INVALID_VERIFY_CODE
+   Client: 192.168.8.1:46176
+   Code: 87d8
+   Time: 2025-10-07 21:24:43
+   Message: REGISTER sip:sichereleitung.duckdns.org:5061 SIP/2.0
+From: <sip:kingkong@192.168.8.166>
+To: <sip:sichereleitung.duckdns.org:5061>
+Verify-Code: 87d8
 Content-Type: application/json
 Content-Length: 919
 
-{"MESSAGE_TYPE":"REGISTER","TIMESTAMP":1759857753,"VERSION":"2.0","CLIENT_NAME":"godzilla","PUBLIC_KEY":"-----BE...
+{"MESSAGE_TYPE":"REGISTER","TIMESTAMP":1759865083,"VERSION":"2.0","CLIENT_NAME":"kingkong","P...
 ==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:12188
-   Time: 2025-10-07 19:22:54
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 167
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759857774,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:34109
-   Time: 2025-10-07 19:23:03
-   Message: REGISTER sip:sichereleitung.duckdns.org:5060 SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org:5060>
-Content-Type: application/json
-Content-Length: 919
-
-{"MESSAGE_TYPE":"REGISTER","TIMESTAMP":1759857783,"VERSION":"2.0","CLIENT_NAME":"godzilla","PUBLIC_KEY":"-----BE...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:48328
-   Time: 2025-10-07 19:24:04
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 167
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759857844,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:18049
-   Time: 2025-10-07 19:24:04
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 168
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759857844,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:4126
-   Time: 2025-10-07 19:24:05
-   Message: REGISTER sip:sichereleitung.duckdns.org:5060 SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org:5060>
-Content-Type: application/json
-Content-Length: 919
-
-{"MESSAGE_TYPE":"REGISTER","TIMESTAMP":1759857845,"VERSION":"2.0","CLIENT_NAME":"godzilla","PUBLIC_KEY":"-----BE...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:7591
-   Time: 2025-10-07 19:29:31
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 168
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759858171,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:6959
-   Time: 2025-10-07 19:29:31
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 168
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759858171,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:15794
-   Time: 2025-10-07 19:29:31
-   Message: REGISTER sip:sichereleitung.duckdns.org:5060 SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org:5060>
-Content-Type: application/json
-Content-Length: 919
-
-{"MESSAGE_TYPE":"REGISTER","TIMESTAMP":1759858171,"VERSION":"2.0","CLIENT_NAME":"godzilla","PUBLIC_KEY":"-----BE...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:20064
-   Time: 2025-10-07 19:29:53
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 168
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759858193,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:4755
-   Time: 2025-10-07 19:29:54
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 168
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759858194,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:41961
-   Time: 2025-10-07 19:29:54
-   Message: REGISTER sip:sichereleitung.duckdns.org:5060 SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org:5060>
-Content-Type: application/json
-Content-Length: 919
-
-{"MESSAGE_TYPE":"REGISTER","TIMESTAMP":1759858194,"VERSION":"2.0","CLIENT_NAME":"godzilla","PUBLIC_KEY":"-----BE...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:24283
-   Time: 2025-10-07 19:30:42
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 168
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759858242,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:30219
-   Time: 2025-10-07 19:30:42
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 168
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759858242,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:40883
-   Time: 2025-10-07 19:30:43
-   Message: REGISTER sip:sichereleitung.duckdns.org:5060 SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org:5060>
-Content-Type: application/json
-Content-Length: 919
-
-{"MESSAGE_TYPE":"REGISTER","TIMESTAMP":1759858243,"VERSION":"2.0","CLIENT_NAME":"godzilla","PUBLIC_KEY":"-----BE...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:27852
-   Time: 2025-10-07 19:31:41
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 167
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759858301,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:21339
-   Time: 2025-10-07 19:31:41
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 166
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759858301,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:24132
-   Time: 2025-10-07 19:31:41
-   Message: REGISTER sip:sichereleitung.duckdns.org:5060 SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org:5060>
-Content-Type: application/json
-Content-Length: 919
-
-{"MESSAGE_TYPE":"REGISTER","TIMESTAMP":1759858301,"VERSION":"2.0","CLIENT_NAME":"godzilla","PUBLIC_KEY":"-----BE...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:56070
-   Time: 2025-10-07 19:35:55
+❌ [INVALID] INVALID_VERIFY_CODE
+   Client: 192.168.8.1:46548
+   Code: 1bb7
+   Time: 2025-10-07 21:25:05
    Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
 From: <sip:kingkong@192.168.8.166>
 To: <sip:sichereleitung.duckdns.org>
+Verify-Code: 1bb7
+Verify-Code: 2785
 Content-Type: application/json
 Content-Length: 168
 
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759858555,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
+{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759865105,"VERSION":"2.0","type":"get_servers"...
 ==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:54240
-   Time: 2025-10-07 19:35:55
+❌ [INVALID] INVALID_VERIFY_CODE
+   Client: 192.168.8.1:55048
+   Code: c26e
+   Time: 2025-10-07 21:25:05
    Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
 From: <sip:kingkong@192.168.8.166>
 To: <sip:sichereleitung.duckdns.org>
+Verify-Code: c26e
+Verify-Code: 11ea
 Content-Type: application/json
 Content-Length: 168
 
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759858555,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
+{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759865105,"VERSION":"2.0","type":"get_servers"...
 ==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:10298
-   Time: 2025-10-07 19:36:10
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 168
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759858570,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:6095
-   Time: 2025-10-07 19:36:10
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 167
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759858570,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:14717
-   Time: 2025-10-07 19:36:10
-   Message: REGISTER sip:sichereleitung.duckdns.org:5060 SIP/2.0
-From: <sip:godzilla@192.168.8.161>
-To: <sip:sichereleitung.duckdns.org:5060>
+❌ [INVALID] INVALID_VERIFY_CODE
+   Client: 192.168.8.1:55064
+   Code: 87d8
+   Time: 2025-10-07 21:25:05
+   Message: REGISTER sip:sichereleitung.duckdns.org:5061 SIP/2.0
+From: <sip:kingkong@192.168.8.166>
+To: <sip:sichereleitung.duckdns.org:5061>
+Verify-Code: 87d8
 Content-Type: application/json
 Content-Length: 919
 
-{"MESSAGE_TYPE":"REGISTER","TIMESTAMP":1759858570,"VERSION":"2.0","CLIENT_NAME":"godzilla","PUBLIC_KEY":"-----BE...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:37892
-   Time: 2025-10-07 20:03:30
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:kingkong@192.168.8.166>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 167
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759860210,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
-==================================================
-⚠️ [MISSING] MISSING_VERIFY_CODE
-   Client: 192.168.8.1:42828
-   Time: 2025-10-07 20:03:30
-   Message: MESSAGE sip:sichereleitung.duckdns.org SIP/2.0
-From: <sip:kingkong@192.168.8.166>
-To: <sip:sichereleitung.duckdns.org>
-Content-Type: application/json
-Content-Length: 167
-
-{"MESSAGE_TYPE":"UNKNOWN","TIMESTAMP":1759860210,"VERSION":"2.0","type":"get_servers","requester_type":"client","client_nam...
+{"MESSAGE_TYPE":"REGISTER","TIMESTAMP":1759865105,"VERSION":"2.0","CLIENT_NAME":"kingkong","P...
 ==================================================
