@@ -79,6 +79,240 @@ PORT = 5061  # Port für die Übertragung
 
 
 
+# ✅ MÜSSEN IN BEIDEN DATEIEN IDENTISCH SEIN
+
+class VerifyGenerator:
+    """Threadsicherer Verify-Code-Generator - Eine Instanz pro Client"""
+    
+    def __init__(self, seed, client_id=None):
+        """
+        Initialisiert den Verify-Generator für einen Client
+        
+        Args:
+            seed: Der Seed für die Code-Generierung (z.B. client_name)
+            client_id: Eindeutige Client-ID (optional)
+        """
+        self.seed = str(seed)
+        self.client_id = client_id or "default"
+        self.counter = 0
+        self._lock = threading.Lock()  # ✅ Threadsicherheit pro Instanz
+        
+        print(f"🔐 [VERIFY] Generator für '{self.client_id}' mit Seed '{self.seed}' und Counter 0 erstellt")
+    
+    def generate_verify_code(self):
+        """
+        Generiert einen 4-stelligen hexadezimalen Verify-Code
+        
+        Returns:
+            str: 4-stelliger hexadezimaler Code
+        """
+        with self._lock:  # ✅ Threadsafe
+            base_string = f"{self.seed}:{self.counter}"
+            hash_obj = hashlib.sha256(base_string.encode('utf-8'))
+            hash_hex = hash_obj.hexdigest()
+            code = hash_hex[:4]
+            
+            current_counter = self.counter
+            self.counter += 1
+            
+            print(f"🔐 [VERIFY] #{current_counter} → #{self.counter} für '{self.client_id}': {code}")
+            return code
+    
+    def verify_code(self, received_code, sync_tolerance=5):
+        """
+        Verifiziert einen empfangenen Code mit Counter-Synchronisation
+        
+        Args:
+            received_code: Der empfangene Verify-Code
+            sync_tolerance: Anzahl der Counter-Schritte für Synchronisation
+            
+        Returns:
+            bool: True wenn Code gültig, False wenn ungültig
+        """
+        with self._lock:  # ✅ Threadsafe
+            # ✅ SYNCHRONISATION: Prüfe mehrere Counter-Werte
+            for offset in range(sync_tolerance):
+                test_counter = self.counter + offset
+                expected_base_string = f"{self.seed}:{test_counter}"
+                expected_hash = hashlib.sha256(expected_base_string.encode('utf-8'))
+                expected_hash_hex = expected_hash.hexdigest()
+                expected_code = expected_hash_hex[:4]
+                
+                if received_code == expected_code:
+                    # ✅ ERFOLG: COUNTER SYNCHRONISIEREN
+                    self.counter = test_counter + 1
+                    
+                    if offset > 0:
+                        print(f"✅ [VERIFY] Code #{test_counter} für '{self.client_id}' (sync +{offset}): {received_code}")
+                    else:
+                        print(f"✅ [VERIFY] Code #{test_counter} für '{self.client_id}': {received_code}")
+                    
+                    print(f"📊 [STATS] Counter synchronisiert: {self.counter}")
+                    return True
+            
+            # ❌ FEHLER: Kein passender Code gefunden
+            print(f"❌ [VERIFY] Code invalid für '{self.client_id}': {received_code}")
+            print(f"📊 [STATS] Erwartet Counter ~{self.counter}")
+            return False
+    
+    def get_message_count(self):
+        """
+        Gibt die Anzahl der Nachrichten für diesen Client zurück
+        
+        Returns:
+            int: Anzahl der generierten/verifizierten Nachrichten
+        """
+        with self._lock:  # ✅ Threadsafe
+            return self.counter
+    
+    def reset_counter(self):
+        """Setzt den Counter für diesen Client zurück"""
+        with self._lock:  # ✅ Threadsafe
+            old_counter = self.counter
+            self.counter = 0
+            print(f"🔐 [VERIFY] Counter für '{self.client_id}' zurückgesetzt: {old_counter} → 0")
+    
+    def get_status(self):
+        """
+        Gibt den aktuellen Status des Generators zurück
+        
+        Returns:
+            dict: Generator-Statusinformationen
+        """
+        with self._lock:  # ✅ Threadsafe
+            return {
+                'client_id': self.client_id,
+                'seed': self.seed,
+                'counter': self.counter,
+                'next_expected_code': self._calculate_expected_code(self.counter)
+            }
+    
+    def _calculate_expected_code(self, counter):
+        """Hilfsmethode zur Berechnung des erwarteten Codes für einen Counter"""
+        base_string = f"{self.seed}:{counter}"
+        hash_obj = hashlib.sha256(base_string.encode('utf-8'))
+        hash_hex = hash_obj.hexdigest()
+        return hash_hex[:4]
+    def debug_info(self):
+        """Gibt Debug-Informationen aus"""
+        next_code = self._calculate_expected_code(self.counter)
+        return f"Client-ID: '{self.client_id}', Seed: '{self.seed}', Counter: {self.counter}, Next: '{next_code}'"
+
+# ✅ Globale Verwaltung der Generator-Instanzen (threadsafe)
+_verify_generators = {}
+_verify_manager_lock = threading.Lock()
+
+def init_verify_generator(seed, client_id=None):
+    """
+    Initialisiert oder holt einen Verify-Generator für einen Client
+    
+    Args:
+        seed: Der Seed für die Code-Generierung (MUSS gesetzt sein!)
+        client_id: Eindeutige Client-ID
+    """
+    if not client_id:
+        client_id = "default"
+    
+    # ✅ WICHTIG: Seed muss gesetzt sein!
+    if seed is None:
+        raise ValueError("Seed cannot be None for verify generator")
+    
+    with _verify_manager_lock:
+        if client_id not in _verify_generators:
+            # ✅ NEUER GENERATOR MIT KORREKTEM SEED
+            _verify_generators[client_id] = VerifyGenerator(seed, client_id)
+            print(f"🔐 [VERIFY] Neuer Generator für '{client_id}' mit Seed '{seed}' erstellt")
+        else:
+            # ✅ EXISTIERENDEN GENERATOR LADEN
+            print(f"🔐 [VERIFY] Existierender Generator für '{client_id}' geladen (Seed: '{_verify_generators[client_id].seed}')")
+        
+        return _verify_generators[client_id]
+
+def generate_verify_code(client_id=None):
+    """
+    Generiert einen Verify-Code (Kompatibilitätsfunktion)
+    
+    Args:
+        client_id: Client-ID
+        
+    Returns:
+        str: Verify-Code
+    """
+    generator = init_verify_generator(None, client_id)
+    return generator.generate_verify_code()
+
+def verify_code(received_code, client_id=None, sync_tolerance=5):
+    """
+    Verifiziert einen Code (Kompatibilitätsfunktion)
+    
+    Args:
+        received_code: Empfangener Code
+        client_id: Client-ID
+        sync_tolerance: Synchronisationstoleranz
+        
+    Returns:
+        bool: True wenn gültig
+    """
+    generator = init_verify_generator(None, client_id)
+    return generator.verify_code(received_code, sync_tolerance)
+
+def get_message_count(client_id=None):
+    """
+    Gibt Nachrichtenanzahl zurück (Kompatibilitätsfunktion)
+    
+    Args:
+        client_id: Client-ID
+        
+    Returns:
+        int: Nachrichtenanzahl
+    """
+    generator = init_verify_generator(None, client_id)
+    return generator.get_message_count()
+
+def reset_client_counter(client_id=None):
+    """
+    Setzt Counter zurück (Kompatibilitätsfunktion)
+    
+    Args:
+        client_id: Client-ID
+    """
+    generator = init_verify_generator(None, client_id)
+    generator.reset_counter()
+
+def get_client_status(client_id=None):
+    """
+    Gibt Status für Client zurück
+    
+    Args:
+        client_id: Client-ID
+        
+    Returns:
+        dict: Statusinformationen
+    """
+    generator = init_verify_generator(None, client_id)
+    return generator.get_status()
+
+def list_all_generators():
+    """
+    Listet alle aktiven Generator-Instanzen auf
+    
+    Returns:
+        list: Liste aller Client-IDs
+    """
+    with _verify_manager_lock:
+        return list(_verify_generators.keys())
+
+def remove_generator(client_id):
+    """
+    Entfernt einen Generator (für Cleanup)
+    
+    Args:
+        client_id: Client-ID zu entfernen
+    """
+    with _verify_manager_lock:
+        if client_id in _verify_generators:
+            del _verify_generators[client_id]
+            print(f"🔐 [VERIFY] Generator für '{client_id}' entfernt")
 def secure_random(size):
     """
     Einfache Version die NUR die Zufallsdaten zurückgibt
@@ -4788,7 +5022,6 @@ class PHONEBOOK(ctk.CTk):
         self._client_name = load_client_name()
         if not self._client_name:
             self._client_name = "Unknown"
-        
         self.current_secret = None
         self.active_call = False
         self.server_ip = "127.0.0.1"
@@ -5329,6 +5562,12 @@ class PHONEBOOK(ctk.CTk):
         try:
             print(f"[CONNECTION] Starting stabilized connection to {server_ip}:{server_port}")
             
+            # ✅ VERIFY-GENERATOR INSTANZ ERSTELLEN (NEUE KLASSE)
+            print("SEED+++")
+            print(client_name)
+            self.client_generator = init_verify_generator(client_name, client_id=client_name)  # ✅ GENERATOR INSTANZ SPEICHERN
+            print(f"🔐 [CLIENT] Verify-Generator für Client-Name '{client_name}' initialisiert")
+            
             # 1. Socket für Stabilität konfigurieren
             client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1)
             if hasattr(socket, 'TCP_KEEPIDLE'):
@@ -5384,6 +5623,7 @@ class PHONEBOOK(ctk.CTk):
             print(f"[CONNECTION DEBUG] Registration data keys: {list(register_data.keys())}")
             print(f"[CONNECTION DEBUG] Public key in data: {'PUBLIC_KEY' in register_data}")
             
+            # ✅ build_sip_message WIRD AUTOMATISCH DEN VERIFY-CODE GENERIEREN (MIT GENERATOR INSTANZ)
             register_msg = self.build_sip_message(
                 "REGISTER", 
                 f"{server_ip}:{server_port}", 
@@ -5396,7 +5636,6 @@ class PHONEBOOK(ctk.CTk):
             if not send_frame(client_socket, register_msg.encode('utf-8')):
                 raise ConnectionError("Failed to send registration frame")
             print("[CONNECTION] Registration sent successfully")
-
 
             # 4. Erste Response empfangen und parsen
             print("[CONNECTION] Waiting for server response...")
@@ -5469,7 +5708,16 @@ class PHONEBOOK(ctk.CTk):
                 f.write(server_public_key)
             print("[CONNECTION] Server public key saved")
 
-            # 10. Zweite Response (Merkle Data) empfangen
+            # 10. Client ID vom Server empfangen und speichern
+            client_id = response_data.get('CLIENT_ID')
+            if client_id:
+                self.client_id = client_id
+                print(f"[CONNECTION] Server hat Client-ID zugewiesen: {client_id}")
+                save_client_id(client_id)
+            else:
+                print("⚠️ [CONNECTION] Keine CLIENT_ID in Server-Antwort")
+
+            # 11. Zweite Response (Merkle Data) empfangen
             print("[CONNECTION] Waiting for Merkle data...")
             merkle_response = recv_frame(client_socket, timeout=25)
             if not merkle_response:
@@ -5516,10 +5764,10 @@ class PHONEBOOK(ctk.CTk):
 
             print("[CONNECTION] Merkle verification successful")
 
-            # 11. Socket für Hauptloop neu konfigurieren
+            # 12. Socket für Hauptloop neu konfigurieren
             client_socket.settimeout(10.0)  # Angemessenes Timeout für Hauptloop
             
-            # 12. Hauptloop starten
+            # 13. Hauptloop starten
             print("[CONNECTION] Starting stabilized communication loop...")
             self.connection_loop(client_socket, server_ip, message_handler)
             return True
@@ -5565,9 +5813,8 @@ class PHONEBOOK(ctk.CTk):
         except Exception as e:
             print(f"[SEND ERROR] Failed to queue message: {str(e)}")
             return False
-
-    def build_sip_message(self,method, recipient, custom_data=None, from_server=False, client_name=None, server_host=None):
-        """VOLLSTÄNDIG EINHEITLICHE SIP-NACHRICHTENERSTELLUNG - FÜR CLIENT UND SERVER"""
+    def build_sip_message(self, method, recipient, custom_data=None, from_server=False, client_name=None, server_host=None):
+        """VOLLSTÄNDIG EINHEITLICHE SIP-NACHRICHTENERSTELLUNG MIT VERIFY-CODE"""
         if custom_data is None:
             custom_data = {}
         
@@ -5610,11 +5857,31 @@ class PHONEBOOK(ctk.CTk):
             
             from_header = f"<sip:{client_name}@{client_ip}>"
         
+        # ✅ VERIFY-CODE MIT KORREKTEM GENERATOR GENERIEREN
+        verify_header = ""
+        if not from_server:
+            try:
+                # ✅ VERWENDE DEN KORREKTEN CLIENT-GENERATOR STATT "default"
+                if hasattr(self, 'client_generator'):
+                    verify_code = self.client_generator.generate_verify_code()
+                    print(f"🔐 [CLIENT] Verify-Code mit Generator '{self.client_generator.client_id}': {verify_code}")
+                else:
+                    # Fallback falls Generator nicht existiert
+                    verify_code = generate_verify_code(client_id=client_name)
+                    print(f"🔐 [CLIENT] Verify-Code mit Fallback für '{client_name}': {verify_code}")
+                
+                verify_header = f"Verify-Code: {verify_code}\r\n"
+            except Exception as e:
+                print(f"⚠️ [VERIFY] Failed to generate verify code: {e}")
+                # Fallback: Ohne Verify-Code senden (für erste Nachricht)
+                verify_header = ""
+        
         # SIP-Nachricht erstellen
         sip_message = (
             f"{method} sip:{recipient} SIP/2.0\r\n"
             f"From: {from_header}\r\n"
             f"To: <sip:{recipient}>\r\n"
+            f"{verify_header}"  # ✅ Verify-Code Header
             f"Content-Type: application/json\r\n"
             f"Content-Length: {len(body)}\r\n\r\n"
             f"{body}"

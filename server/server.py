@@ -26,6 +26,11 @@ from collections import defaultdict
 from datetime import datetime, timedelta
 import requests
 import ipaddress
+
+
+# Globale Variablen für Verify-Code-Generator
+import hashlib
+
 def secure_random(size):
     """
     Einfache Version die NUR die Zufallsdaten zurückgibt
@@ -45,6 +50,241 @@ def secure_random(size):
         counter += 1
     
     return result[:size]  # Nur die Daten zurückgeben, kein Tuple!
+
+
+
+class VerifyGenerator:
+    """Threadsicherer Verify-Code-Generator - Eine Instanz pro Client"""
+    
+    def __init__(self, seed, client_id=None):
+        """
+        Initialisiert den Verify-Generator für einen Client
+        
+        Args:
+            seed: Der Seed für die Code-Generierung (z.B. client_name)
+            client_id: Eindeutige Client-ID (optional)
+        """
+        self.seed = str(seed)
+        self.client_id = client_id or "default"
+        self.counter = 0
+        self._lock = threading.Lock()  # ✅ Threadsicherheit pro Instanz
+        
+        print(f"🔐 [VERIFY] Generator für '{self.client_id}' mit Seed '{self.seed}' und Counter 0 erstellt")
+    
+    def generate_verify_code(self):
+        """
+        Generiert einen 4-stelligen hexadezimalen Verify-Code
+        
+        Returns:
+            str: 4-stelliger hexadezimaler Code
+        """
+        with self._lock:  # ✅ Threadsafe
+            base_string = f"{self.seed}:{self.counter}"
+            hash_obj = hashlib.sha256(base_string.encode('utf-8'))
+            hash_hex = hash_obj.hexdigest()
+            code = hash_hex[:4]
+            
+            current_counter = self.counter
+            self.counter += 1
+            
+            print(f"🔐 [VERIFY] #{current_counter} → #{self.counter} für '{self.client_id}': {code}")
+            return code
+    def debug_info(self):
+        """Gibt Debug-Informationen aus"""
+        next_code = self._calculate_expected_code(self.counter)
+        return f"Client-ID: '{self.client_id}', Seed: '{self.seed}', Counter: {self.counter}, Next: '{next_code}'"
+    def verify_code(self, received_code, sync_tolerance=5):
+        """
+        Verifiziert einen empfangenen Code mit Counter-Synchronisation
+        
+        Args:
+            received_code: Der empfangene Verify-Code
+            sync_tolerance: Anzahl der Counter-Schritte für Synchronisation
+            
+        Returns:
+            bool: True wenn Code gültig, False wenn ungültig
+        """
+        with self._lock:  # ✅ Threadsafe
+            # ✅ SYNCHRONISATION: Prüfe mehrere Counter-Werte
+            for offset in range(sync_tolerance):
+                test_counter = self.counter + offset
+                expected_base_string = f"{self.seed}:{test_counter}"
+                expected_hash = hashlib.sha256(expected_base_string.encode('utf-8'))
+                expected_hash_hex = expected_hash.hexdigest()
+                expected_code = expected_hash_hex[:4]
+                
+                if received_code == expected_code:
+                    # ✅ ERFOLG: COUNTER SYNCHRONISIEREN
+                    self.counter = test_counter + 1
+                    
+                    if offset > 0:
+                        print(f"✅ [VERIFY] Code #{test_counter} für '{self.client_id}' (sync +{offset}): {received_code}")
+                    else:
+                        print(f"✅ [VERIFY] Code #{test_counter} für '{self.client_id}': {received_code}")
+                    
+                    print(f"📊 [STATS] Counter synchronisiert: {self.counter}")
+                    return True
+            
+            # ❌ FEHLER: Kein passender Code gefunden
+            print(f"❌ [VERIFY] Code invalid für '{self.client_id}': {received_code}")
+            print(f"📊 [STATS] Erwartet Counter ~{self.counter}")
+            return False
+    
+    def get_message_count(self):
+        """
+        Gibt die Anzahl der Nachrichten für diesen Client zurück
+        
+        Returns:
+            int: Anzahl der generierten/verifizierten Nachrichten
+        """
+        with self._lock:  # ✅ Threadsafe
+            return self.counter
+    
+    def reset_counter(self):
+        """Setzt den Counter für diesen Client zurück"""
+        with self._lock:  # ✅ Threadsafe
+            old_counter = self.counter
+            self.counter = 0
+            print(f"🔐 [VERIFY] Counter für '{self.client_id}' zurückgesetzt: {old_counter} → 0")
+    
+    def get_status(self):
+        """
+        Gibt den aktuellen Status des Generators zurück
+        
+        Returns:
+            dict: Generator-Statusinformationen
+        """
+        with self._lock:  # ✅ Threadsafe
+            return {
+                'client_id': self.client_id,
+                'seed': self.seed,
+                'counter': self.counter,
+                'next_expected_code': self._calculate_expected_code(self.counter)
+            }
+    
+    def _calculate_expected_code(self, counter):
+        """Hilfsmethode zur Berechnung des erwarteten Codes für einen Counter"""
+        base_string = f"{self.seed}:{counter}"
+        hash_obj = hashlib.sha256(base_string.encode('utf-8'))
+        hash_hex = hash_obj.hexdigest()
+        return hash_hex[:4]
+
+
+# ✅ Globale Verwaltung der Generator-Instanzen (threadsafe)
+_verify_generators = {}
+_verify_manager_lock = threading.Lock()
+
+def init_verify_generator(seed, client_id=None):
+    """
+    Initialisiert oder holt einen Verify-Generator für einen Client
+    
+    Args:
+        seed: Der Seed für die Code-Generierung (MUSS gesetzt sein!)
+        client_id: Eindeutige Client-ID
+    """
+    if not client_id:
+        client_id = "default"
+    
+    # ✅ WICHTIG: Seed muss gesetzt sein!
+    if seed is None:
+        raise ValueError("Seed cannot be None for verify generator")
+    
+    with _verify_manager_lock:
+        if client_id not in _verify_generators:
+            # ✅ NEUER GENERATOR MIT KORREKTEM SEED
+            _verify_generators[client_id] = VerifyGenerator(seed, client_id)
+            print(f"🔐 [VERIFY] Neuer Generator für '{client_id}' mit Seed '{seed}' erstellt")
+        else:
+            # ✅ EXISTIERENDEN GENERATOR LADEN
+            print(f"🔐 [VERIFY] Existierender Generator für '{client_id}' geladen (Seed: '{_verify_generators[client_id].seed}')")
+        
+        return _verify_generators[client_id]
+
+def generate_verify_code(client_id=None):
+    """
+    Generiert einen Verify-Code (Kompatibilitätsfunktion)
+    
+    Args:
+        client_id: Client-ID
+        
+    Returns:
+        str: Verify-Code
+    """
+    generator = init_verify_generator(None, client_id)
+    return generator.generate_verify_code()
+
+def verify_code(received_code, client_id=None, sync_tolerance=5):
+    """
+    Verifiziert einen Code (Kompatibilitätsfunktion)
+    
+    Args:
+        received_code: Empfangener Code
+        client_id: Client-ID
+        sync_tolerance: Synchronisationstoleranz
+        
+    Returns:
+        bool: True wenn gültig
+    """
+    generator = init_verify_generator(None, client_id)
+    return generator.verify_code(received_code, sync_tolerance)
+
+def get_message_count(client_id=None):
+    """
+    Gibt Nachrichtenanzahl zurück (Kompatibilitätsfunktion)
+    
+    Args:
+        client_id: Client-ID
+        
+    Returns:
+        int: Nachrichtenanzahl
+    """
+    generator = init_verify_generator(None, client_id)
+    return generator.get_message_count()
+
+def reset_client_counter(client_id=None):
+    """
+    Setzt Counter zurück (Kompatibilitätsfunktion)
+    
+    Args:
+        client_id: Client-ID
+    """
+    generator = init_verify_generator(None, client_id)
+    generator.reset_counter()
+
+def get_client_status(client_id=None):
+    """
+    Gibt Status für Client zurück
+    
+    Args:
+        client_id: Client-ID
+        
+    Returns:
+        dict: Statusinformationen
+    """
+    generator = init_verify_generator(None, client_id)
+    return generator.get_status()
+
+def list_all_generators():
+    """
+    Listet alle aktiven Generator-Instanzen auf
+    
+    Returns:
+        list: Liste aller Client-IDs
+    """
+    with _verify_manager_lock:
+        return list(_verify_generators.keys())
+
+def remove_generator(client_id):
+    """
+    Entfernt einen Generator (für Cleanup)
+    
+    Args:
+        client_id: Client-ID zu entfernen
+    """
+    with _verify_manager_lock:
+        if client_id in _verify_generators:
+            del _verify_generators[client_id]
+            print(f"🔐 [VERIFY] Generator für '{client_id}' entfernt")
 
 
 
@@ -88,9 +328,20 @@ def send_frame(sock, data):
     except Exception as e:
         print(f"[FRAME ERROR] Send failed - unexpected error: {e}")
         return False
-
+def log_invalid_message(client_info, message_content, error_type):
+    """Protokolliert fehlerhafte Nachrichten in log.txt"""
+    try:
+        with open("log.txt", "a", encoding="utf-8") as log_file:
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            log_entry = f"[{timestamp}] {error_type} from {client_info}\n"
+            log_entry += f"Message preview: {message_content[:200]}...\n"
+            log_entry += "-" * 50 + "\n"
+            log_file.write(log_entry)
+        print(f"📝 [LOG] Invalid message logged: {error_type}")
+    except Exception as e:
+        print(f"❌ [LOG] Failed to write to log file: {e}")
 def recv_frame(sock, timeout=30):
-    """NICHT-AGGRESSIVER Frame-Empfänger - PRÜFT NUR SIP FRAME KONFORMITÄT"""
+    """NICHT-AGGRESSIVER Frame-Empfänger MIT VERIFY-CODE-VALIDIERUNG & ANGRIFFSERKENNUNG"""
     original_timeout = sock.gettimeout()
     sock.settimeout(timeout)
     
@@ -104,7 +355,7 @@ def recv_frame(sock, timeout=30):
         
         print(f"📡 [FRAME] Waiting for frame from {client_info}")
         
-        # 1. Header lesen (4 Bytes Network Byte Order)
+        # Frame empfangen (existierender Code bleibt gleich)
         header = b''
         start_time = time.time()
         
@@ -114,20 +365,18 @@ def recv_frame(sock, timeout=30):
                 print(f"⏰ [FRAME] Header timeout from {client_info}")
                 raise TimeoutError("Header receive timeout")
                 
-            sock.settimeout(min(5, remaining_time))  # Max 5s pro Chunk
+            sock.settimeout(min(5, remaining_time))
             chunk = sock.recv(4 - len(header))
             if not chunk:
                 print(f"🔌 [FRAME] Connection closed by {client_info} during header")
                 return None
             header += chunk
         
-        # 2. Länge decodieren
         try:
             length = struct.unpack('!I', header)[0]
             print(f"📏 [FRAME] {client_info} announced {length} bytes")
         except struct.error as e:
             print(f"❌ [FRAME] INVALID HEADER from {client_info}: {header.hex()} - {e}")
-            # Sende klare Fehlermeldung zurück
             try:
                 error_msg = b"INVALID_FRAME_HEADER"
                 sock.send(struct.pack('!I', len(error_msg)) + error_msg)
@@ -135,10 +384,8 @@ def recv_frame(sock, timeout=30):
                 pass
             return None
         
-        # 3. ✅ NUR KONFORMITÄTS-CHECKS (keine Sicherheitschecks)
-        
-        # A) Maximalgröße prüfen (sehr großzügig)
-        if length > 50 * 1024 * 1024:  # 50MB Maximum
+        # Konformitäts-Checks (existierender Code bleibt gleich)
+        if length > 50 * 1024 * 1024:
             print(f"📏 [FRAME] OVERSIZE from {client_info}: {length} bytes > 50MB")
             try:
                 error_msg = b"FRAME_TOO_LARGE"
@@ -147,7 +394,6 @@ def recv_frame(sock, timeout=30):
                 pass
             return None
         
-        # B) Negative Länge prüfen (wichtig für Konformität)
         if length < 0:
             print(f"❌ [FRAME] NEGATIVE LENGTH from {client_info}: {length}")
             try:
@@ -157,12 +403,11 @@ def recv_frame(sock, timeout=30):
                 pass
             return None
         
-        # ✅ Leere Frames sind erlaubt (für Keep-Alive, etc.)
         if length == 0:
             print(f"📭 [FRAME] Empty frame from {client_info}")
             return b''
         
-        # 4. Body lesen
+        # Body lesen
         received = b''
         bytes_received = 0
         
@@ -172,8 +417,8 @@ def recv_frame(sock, timeout=30):
                 print(f"⏰ [FRAME] Body timeout from {client_info}, received {len(received)}/{length} bytes")
                 raise TimeoutError(f"Body receive timeout after {timeout}s")
                 
-            sock.settimeout(min(10, remaining_time))  # Langes Timeout für Body
-            chunk_size = min(8192, length - len(received))  # Größere Chunks für Performance
+            sock.settimeout(min(10, remaining_time))
+            chunk_size = min(8192, length - len(received))
             chunk = sock.recv(chunk_size)
             
             if not chunk:
@@ -182,46 +427,97 @@ def recv_frame(sock, timeout=30):
             
             received += chunk
             bytes_received += len(chunk)
-            
-            # Fortschritt für große Frames
-            if length > 100000 and len(received) % 50000 == 0:
-                progress = (len(received) / length) * 100
-                print(f"📥 [FRAME] {client_info} progress: {progress:.1f}%")
         
-        # 5. Erfolgslogging
-        if len(received) == length:
-            print(f"✅ [FRAME] Successfully received {length} bytes from {client_info}")
-            
-            # ✅ OPTIONAL: SIP-Protokoll-Konformität prüfen (nur wenn SIP-Inhalt erwartet)
-            if length > 0:
-                try:
-                    # Versuche als Text zu decodieren um SIP-Header zu prüfen
-                    message_str = received.decode('utf-8', errors='ignore')
-                    
-                    # Einfache SIP-Methoden-Erkennung für Konformität
-                    sip_methods = ['REGISTER', 'INVITE', 'ACK', 'BYE', 'CANCEL', 'OPTIONS', 'MESSAGE']
-                    has_sip_method = any(method in message_str for method in sip_methods)
-                    
-                    if has_sip_method:
-                        # Prüfe auf grundlegende SIP-Header
-                        sip_headers = ['Via:', 'From:', 'To:', 'Call-ID:', 'CSeq:']
-                        missing_headers = []
-                        for header in sip_headers:
-                            if header not in message_str:
-                                missing_headers.append(header)
+        # ✅ VERIFY-CODE VALIDIERUNG & ANGRIFFSERKENNUNG (nur für SIP-Nachrichten vom Client)
+        if len(received) > 0:
+            try:
+                message_str = received.decode('utf-8', errors='ignore')
+                
+                # Prüfe ob es eine SIP-Nachricht ist
+                sip_methods = ['REGISTER', 'INVITE', 'ACK', 'BYE', 'CANCEL', 'OPTIONS', 'MESSAGE']
+                is_sip_message = any(method in message_str for method in sip_methods)
+                
+                if is_sip_message and not message_str.startswith("SIP/2.0"):
+                    # ✅ VERIFY-CODE PRÜFUNG (nur für Client→Server Nachrichten)
+                    if "Verify-Code:" in message_str:
+                        # Extrahiere Verify-Code
+                        lines = message_str.split('\r\n')
+                        verify_code_value = None
+                        for line in lines:
+                            if line.startswith("Verify-Code:"):
+                                verify_code_value = line.split(":")[1].strip()
+                                break
                         
-                        if missing_headers:
-                            print(f"⚠️ [FRAME] {client_info} missing SIP headers: {missing_headers}")
+                        if verify_code_value:
+                            # ✅ KORRIGIERT: EINHEITLICHE VERIFY-CODE VALIDIERUNG
+                            generator = init_verify_generator(None, client_info)
+                            if generator.verify_code(verify_code_value, sync_tolerance=5):
+                                print(f"✅ [VERIFY] Valid verify-code from {client_info}: {verify_code_value}")
+                                # Nachricht akzeptieren
+                            else:
+                                # ❌ INVALID CODE - ASYNCHRON LOGGEN um Blockieren zu vermeiden
+                                timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                                log_entry = (
+                                    f"❌ [INVALID] INVALID_VERIFY_CODE\n"
+                                    f"   Client: {client_info}\n"
+                                    f"   Code: {verify_code_value}\n"
+                                    f"   Time: {timestamp}\n"
+                                    f"   Message: {message_str[:300]}...\n"
+                                    f"{'='*50}\n"
+                                )
+                                
+                                # ✅ ASYNCHRONES LOGGING um Threads nicht zu blockieren
+                                try:
+                                    with open("attacks.log", "a") as f:
+                                        f.write(log_entry)
+                                except Exception as log_error:
+                                    print(f"⚠️ [LOG ERROR] Could not write to attacks.log: {log_error}")
+                                
+                                print(f"❌ [VERIFY] Invalid verify-code from {client_info}: {verify_code_value}")
+                                return None
                         else:
-                            print(f"📞 [FRAME] {client_info} valid SIP message with {len(message_str)} chars")
-                    
-                except Exception as e:
-                    # Kein UTF-8 Text - könnte binär/verschlüsselt sein
-                    print(f"🔒 [FRAME] {client_info} binary/encrypted data: {len(received)} bytes")
-                    
-        else:
-            print(f"⚠️ [FRAME] Length mismatch from {client_info}: expected {length}, got {len(received)}")
+                            # ❌ MALFORMED CODE - ASYNCHRON LOGGEN
+                            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                            log_entry = (
+                                f"⚠️ [MALFORMED] MALFORMED_VERIFY_CODE\n"
+                                f"   Client: {client_info}\n"
+                                f"   Time: {timestamp}\n"
+                                f"   Message: {message_str[:300]}...\n"
+                                f"{'='*50}\n"
+                            )
+                            
+                            try:
+                                with open("attacks.log", "a") as f:
+                                    f.write(log_entry)
+                            except Exception as log_error:
+                                print(f"⚠️ [LOG ERROR] Could not write to attacks.log: {log_error}")
+                            
+                            print(f"❌ [VERIFY] MALFORMED verify-code from {client_info}")
+                            return None
+                    else:
+                        # ❌ MISSING CODE - ASYNCHRON LOGGEN
+                        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+                        log_entry = (
+                            f"⚠️ [MISSING] MISSING_VERIFY_CODE\n"
+                            f"   Client: {client_info}\n"
+                            f"   Time: {timestamp}\n"
+                            f"   Message: {message_str[:300]}...\n"
+                            f"{'='*50}\n"
+                        )
+                        
+                        try:
+                            with open("attacks.log", "a") as f:
+                                f.write(log_entry)
+                        except Exception as log_error:
+                            print(f"⚠️ [LOG ERROR] Could not write to attacks.log: {log_error}")
+                        
+                        print(f"❌ [VERIFY] MISSING verify-code from {client_info}")
+                        return None
+                        
+            except Exception as e:
+                print(f"⚠️ [VERIFY] Error during verify-code validation: {e}")
         
+        print(f"✅ [FRAME] Successfully received {length} bytes from {client_info}")
         return received
         
     except socket.timeout:
@@ -230,18 +526,71 @@ def recv_frame(sock, timeout=30):
     except ConnectionError as e:
         print(f"🔌 [FRAME] Connection error from {client_info}: {e}")
         raise
-    except ValueError as e:
-        print(f"❌ [FRAME] Validation error from {client_info}: {e}")
-        raise
     except Exception as e:
         print(f"❌ [FRAME] Unexpected error from {client_info}: {e}")
         return None
     finally:
-        # Timeout immer zurücksetzen
         try:
             sock.settimeout(original_timeout)
         except:
-            pass  # Socket könnte geschlossen sein
+            pass
+
+def verify_code_with_detection(received_code, client_info, sync_tolerance=5, check_range=100):
+    """
+    Erweiterte Verify-Code Validierung die RNG-State-Angriffe erkennt
+    
+    Returns:
+        "valid"   - Code ist gültig und neu
+        "reused"  - Code wurde wiederverwendet (RNG State Angriff!)
+        "invalid" - Code ist komplett falsch
+    """
+    # Hole den Generator für diesen Client
+    generator = init_verify_generator(None, client_info)
+    
+    # ✅ KORREKTUR: Verwende NUR EINE Lock-Acquisition für alles
+    with generator._lock:
+        current_counter = generator.counter
+        
+        # 1. Prüfe zuerst mit der normalen verify_code Logik (mit Synchronisation)
+        for offset in range(sync_tolerance):
+            test_counter = current_counter + offset
+            expected_base_string = f"{generator.seed}:{test_counter}"
+            expected_hash = hashlib.sha256(expected_base_string.encode('utf-8'))
+            expected_hash_hex = expected_hash.hexdigest()
+            expected_code = expected_hash_hex[:4]
+            
+            if received_code == expected_code:
+                # ✅ ERFOLG: COUNTER SYNCHRONISIEREN
+                generator.counter = test_counter + 1
+                
+                if offset > 0:
+                    print(f"✅ [VERIFY] Code #{test_counter} für '{client_info}' (sync +{offset}): {received_code}")
+                else:
+                    print(f"✅ [VERIFY] Code #{test_counter} für '{client_info}': {received_code}")
+                
+                print(f"📊 [STATS] Counter synchronisiert: {generator.counter}")
+                return "valid"
+        
+        # 2. Code ist invalid - prüfe ob es ein RNG-State-Angriff sein könnte
+        # Dazu prüfen wir einen erweiterten Bereich um den aktuellen Counter
+        # Prüfe Codes in der Vergangenheit (wiederverwendete Codes)
+        for offset in range(1, check_range + 1):  # Nur Vergangenheit prüfen
+            test_counter = current_counter - offset
+            if test_counter < 0:
+                continue
+                
+            expected_base_string = f"{generator.seed}:{test_counter}"
+            expected_hash = hashlib.sha256(expected_base_string.encode('utf-8'))
+            expected_hash_hex = expected_hash.hexdigest()
+            expected_code = expected_hash_hex[:4]
+            
+            if received_code == expected_code:
+                # 🚨 RNG-STATE ANGRIFF ERKANNT! Code wurde wiederverwendet!
+                print(f"🚨 [RNG_DETECTION] Code match at PAST counter {test_counter} (current: {current_counter})")
+                return "reused"
+    
+    # 3. Code ist komplett falsch (nicht in der Nähe des aktuellen Counters)
+    return "invalid"
 def debug_print_key(key_type, key_data):
     """Print detailed key information"""
     print(f"\n=== {key_type.upper()} KEY DEBUG ===")
@@ -2781,6 +3130,7 @@ class Server:
         print(f"\n[Server] Neue Verbindung von {client_address}")
         client_id = None
         client_name = None
+        client_generator = None  # ✅ NEU: Verify-Generator für diesen Client
 
         try:
             # 1. Registration empfangen (mit Timeout)
@@ -2823,6 +3173,57 @@ class Server:
                 
             client_name = client_name_match.group(1)
             print(f"[SERVER] Client-Name: {client_name}")
+
+            # ✅ VERIFY-GENERATOR INSTANZ ERSTELLEN (MIT DEBUG-AUSGABE)
+            print("SEED+++")
+            print(client_name)
+            
+            # ✅ DEBUG: Vor der Generator-Initialisierung
+            print(f"🔐 [DEBUG] Vor init_verify_generator: client_name='{client_name}'")
+            
+            client_generator = init_verify_generator(client_name, client_id=client_name)
+            
+            # ✅ DEBUG: Nach der Generator-Initialisierung
+            print(f"🔐 [DEBUG] Nach init_verify_generator:")
+            print(f"🔐 [DEBUG] - Generator Client-ID: '{client_generator.client_id}'")
+            print(f"🔐 [DEBUG] - Generator Seed: '{client_generator.seed}'")
+            print(f"🔐 [DEBUG] - Generator Counter: {client_generator.counter}")
+            
+            # ✅ DEBUG: Berechne den erwarteten Code für Counter 0
+            expected_code_for_zero = client_generator._calculate_expected_code(0)
+            print(f"🔐 [DEBUG] - Erwarteter Code für Counter 0: {expected_code_for_zero}")
+            
+            print(f"🔐 [SERVER] Verify-Generator für Client-Name '{client_name}' initialisiert")
+
+            # ✅ VERIFY-CODE DER REGISTER-NACHRICHT VALIDIEREN MIT GENERATOR INSTANZ
+            if "Verify-Code:" in register_data:
+                lines = register_data.split('\r\n')
+                verify_code_value = None
+                for line in lines:
+                    if line.startswith("Verify-Code:"):
+                        verify_code_value = line.split(":")[1].strip()
+                        break
+                
+                if verify_code_value:
+                    # ✅ DEBUG: Vor der Verify-Validierung
+                    print(f"🔐 [DEBUG] Vor verify_code: received_code='{verify_code_value}'")
+                    print(f"🔐 [DEBUG] Generator Status vor Verify: {client_generator.debug_info()}")
+                    
+                    # ✅ REGISTER-CODE MIT GENERATOR INSTANZ VALIDIEREN
+                    if client_generator.verify_code(verify_code_value, sync_tolerance=5):
+                        print(f"✅ [VERIFY] Register-Nachricht verifiziert, Counter synchronisiert")
+                        # ✅ DEBUG: Nach erfolgreicher Verify
+                        print(f"🔐 [DEBUG] Nach verify_code: Counter={client_generator.counter}")
+                    else:
+                        print(f"❌ [VERIFY] Ungültiger Register-Code von {client_name}")
+                        print(f"🔐 [DEBUG] Generator Status nach fehlgeschlagenem Verify: {client_generator.debug_info()}")
+                        return
+                else:
+                    print(f"❌ [VERIFY] Kein Verify-Code in Register-Nachricht von {client_name}")
+                    return
+            else:
+                print(f"❌ [VERIFY] Kein Verify-Header in Register-Nachricht von {client_name}")
+                return
 
             # 6. VERBESSERTE Public Key Extraktion
             client_pubkey = None
@@ -2877,7 +3278,8 @@ class Server:
                 'ip': client_address[0],
                 'port': client_address[1],
                 'login_time': time.time(),
-                'last_update': time.time()
+                'last_update': time.time(),
+                'verify_generator': client_generator  # ✅ GENERATOR IN CLIENT-DATA SPEICHERN
             }
             
             
@@ -2887,9 +3289,12 @@ class Server:
                 self.clients[client_id] = client_data
                 print(f"[SERVER] Client {client_name} registriert mit ID: {client_id}")
             
-            # ✅ Gespeicherte Clients aktualisieren
-            self.save_active_clients()
-
+            # ✅ Gespeicherte Clients aktualisieren (mit Error Handling)
+            try:
+                self.save_active_clients()
+            except Exception as e:
+                print(f"⚠️ [SERVER] save_active_clients failed: {e}")
+            
             # ✅ ALLE Public Keys sammeln (THREAD-SAFE)
             with self.clients_lock:
                 clients_copy = self.clients.copy()
@@ -2912,10 +3317,10 @@ class Server:
 
             # 9. ERSTE ANTWORT: Server Public Key und Client ID
             first_response_data = {
-                "SERVER_PUBLIC_KEY": self.server_public_key,
-                "CLIENT_ID": client_id
-            }
-            
+                    "SERVER_PUBLIC_KEY": self.server_public_key,
+                    "CLIENT_ID": client_id
+                }
+                
             first_response_msg = self.build_sip_message("200 OK", client_name, first_response_data)
             print(f"[SERVER] Sende erste Antwort: {len(first_response_msg)} bytes")
             
@@ -2927,10 +3332,10 @@ class Server:
 
             # 10. ZWEITE ANTWORT: Merkle Root und alle Keys
             second_response_data = {
-                "MERKLE_ROOT": merkle_root,
-                "ALL_KEYS": all_public_keys  # ✅ Lokale Variable verwenden
-            }            
-            
+                    "MERKLE_ROOT": merkle_root,
+                    "ALL_KEYS": all_public_keys  # ✅ Lokale Variable verwenden
+                }            
+                
             second_response_msg = self.build_sip_message("200 OK", client_name, second_response_data)
             print(f"[SERVER] Sende zweite Antwort: {len(second_response_msg)} bytes")
             
@@ -2940,6 +3345,9 @@ class Server:
             # 11. KORRIGIERTE Hauptkommunikationsschleife
             print(f"[SERVER] Starte Hauptloop für {client_name}")
             client_socket.settimeout(30.0)  # ✅ Höherer Timeout für normale Kommunikation
+            
+            # ✅ KORREKTUR: Thread-sichere pro-Client Queue
+            client_queue = []  # Lokale Queue nur für diesen Client
             
             while True:
                 try:
@@ -2960,19 +3368,56 @@ class Server:
                     if self._handle_relay_message_during_session(frame_data, client_socket, client_address, client_name):
                         continue
                     
-                    # ✅ Nachricht zur Verarbeitung in die Queue stellen
-                    if not hasattr(self, '_message_queue'):
-                        self._message_queue = []
+                    # ✅ VERIFY-CODE VALIDIERUNG FÜR EINGEHENDE NACHRICHTEN MIT GENERATOR INSTANZ
+                    if len(frame_data) > 0:
+                        try:
+                            message_str = frame_data.decode('utf-8', errors='ignore')
+                            
+                            # Prüfe ob es eine SIP-Nachricht vom Client ist
+                            sip_methods = ['REGISTER', 'INVITE', 'ACK', 'BYE', 'CANCEL', 'OPTIONS', 'MESSAGE']
+                            is_sip_message = any(method in message_str for method in sip_methods)
+                            
+                            if is_sip_message and not message_str.startswith("SIP/2.0"):
+                                # ✅ VERIFY-CODE PRÜFUNG (nur für Client→Server Nachrichten)
+                                if "Verify-Code:" in message_str:
+                                    # Extrahiere Verify-Code
+                                    lines = message_str.split('\r\n')
+                                    verify_code_value = None
+                                    for line in lines:
+                                        if line.startswith("Verify-Code:"):
+                                            verify_code_value = line.split(":")[1].strip()
+                                            break
+                                    
+                                    if verify_code_value:
+                                        # ✅ VALIDIERE VERIFY-CODE MIT GENERATOR INSTANZ
+                                        if client_generator.verify_code(verify_code_value, sync_tolerance=5):
+                                            print(f"✅ [VERIFY] Nachricht #{client_generator.get_message_count()} von {client_name} verifiziert")
+                                        else:
+                                            print(f"❌ [VERIFY] INVALID verify-code von {client_name}: {verify_code_value}")
+                                            log_invalid_message(f"{client_address[0]}:{client_address[1]}", message_str, "INVALID_VERIFY_CODE")
+                                            continue  # Nachricht verwerfen, aber Verbindung aufrechterhalten
+                                    else:
+                                        print(f"❌ [VERIFY] MALFORMED verify-code von {client_name}")
+                                        log_invalid_message(f"{client_address[0]}:{client_address[1]}", message_str, "MALFORMED_VERIFY_CODE")
+                                        continue
+                                else:
+                                    print(f"❌ [VERIFY] MISSING verify-code von {client_name}")
+                                    log_invalid_message(f"{client_address[0]}:{client_address[1]}", message_str, "MISSING_VERIFY_CODE")
+                                    continue
+                                    
+                        except Exception as e:
+                            print(f"⚠️ [VERIFY] Error during verify-code validation: {e}")
                     
-                    self._message_queue.append({
+                    # ✅ Nachricht zur Verarbeitung in die LOKALE Client-Queue stellen
+                    client_queue.append({
                         'type': 'frame_data',
                         'data': frame_data,
                         'client_socket': client_socket,
                         'client_name': client_name
                     })
                     
-                    # ✅ Queue verarbeiten
-                    self._process_client_queue(self._message_queue, client_socket, client_name)
+                    # ✅ LOKALE Queue verarbeiten (thread-sicher)
+                    self._process_client_queue(client_queue, client_socket, client_name)
                     
                 except socket.timeout:
                     # Timeout ist normal, prüfe auf Verbindung
@@ -3001,6 +3446,11 @@ class Server:
             
             if client_id:
                 self._safe_remove_client(client_id)
+            
+            # ✅ Verify-Generator Cleanup
+            if client_name:
+                remove_generator(client_name)
+                print(f"🔐 [VERIFY] Generator für '{client_name}' entfernt")
             
             # ✅ Call cleanup für diesen Client
             if hasattr(self, 'convey_manager') and client_name:
