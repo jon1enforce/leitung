@@ -1,0 +1,342 @@
+\documentclass[10pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[german]{babel}
+\usepackage{geometry}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\geometry{a4paper, margin=2.5cm}
+
+\definecolor{codegreen}{rgb}{0,0.6,0}
+\definecolor{codegray}{rgb}{0.5,0.5,0.5}
+\definecolor{codepurple}{rgb}{0.58,0,0.82}
+\definecolor{backcolour}{rgb}{0.95,0.95,0.92}
+
+\lstdefinestyle{mystyle}{
+    backgroundcolor=\color{backcolour},   
+    commentstyle=\color{codegreen},
+    keywordstyle=\color{magenta},
+    numberstyle=\tiny\color{codegray},
+    stringstyle=\color{codepurple},
+    basicstyle=\ttfamily\footnotesize,
+    breakatwhitespace=false,         
+    breaklines=true,                 
+    captionpos=b,                    
+    keepspaces=true,                 
+    numbers=left,                    
+    numbersep=5pt,                  
+    showspaces=false,                
+    showstringspaces=false,
+    showtabs=false,                  
+    tabsize=2
+}
+
+\lstset{style=mystyle}
+
+\title{Sichere VoIP-Kommunikation - Protokollspezifikation}
+\author{Entwicklerversion 2.0}
+\date{\today}
+
+\begin{document}
+
+\maketitle
+
+\begin{abstract}
+Dieses Dokument beschreibt das erweiterte Protokoll für sichere VoIP-Kommunikation mit Fokus auf experimentelle Sicherheitsfeatures, RNG-Verifikation und Angriffserkennung. Das Protokoll lässt bewusst bestimmte Angriffsvektoren offen, um Angreiferverhalten zu analysieren.
+\end{abstract}
+
+\tableofcontents
+
+\section{Protokoll-Übersicht}
+
+\subsection{Kernprinzipien}
+\begin{itemize}
+\item \textbf{SIP-basiert} mit erweiterten Sicherheitsfeatures
+\item \textbf{Einheitliches Framing} für alle Nachrichten (4-Byte Header + Body)
+\item \textbf{Verify-Code System} zum Schutz gegen Replay-Angriffe
+\item \textbf{Quantenresistente Hashes} (SHA3-256) für Merkle Trees
+\item \textbf{Hybride Verschlüsselung} (RSA-4096 + AES-256-CBC)
+\end{itemize}
+
+\section{RNG-Verifikationssystem}
+
+\subsection{Zweck und Design}
+Das Verify-Code-System schützt SIP-Nachrichten, die von Natur aus unsicher sind. In der Experimentierphase wird der Seed (Client-Name) bewusst nicht geheim gehalten, um Angriffe auf den Initialisierungsvektor zu ermöglichen.
+
+\subsection{Technische Implementierung}
+
+\begin{lstlisting}[language=Python,caption=Verify-Code-Generator]
+class VerifyGenerator:
+    def __init__(self, seed, client_id=None):
+        self.seed = str(seed)  # Öffentlicher Client-Name
+        self.client_id = client_id
+        self.counter = 0
+        self._lock = threading.Lock()
+    
+    def generate_verify_code(self):
+        base_string = f"{self.seed}:{self.counter}"
+        hash_obj = hashlib.sha256(base_string.encode())
+        code = hash_obj.hexdigest()[:4]
+        self.counter += 1
+        return code
+\end{lstlisting}
+
+\subsection{Angriffserkennung}
+
+\begin{lstlisting}[language=Python,caption=Erweiterte Verify-Code-Validierung]
+def verify_code_with_detection(received_code, client_info):
+    # Normale Validierung zuerst
+    if generator.verify_code(received_code):
+        return "valid"
+    
+    # Prüfe auf Wiederverwendung (RNG-State-Angriff)
+    for offset in range(1, 100):
+        test_counter = current_counter - offset
+        expected_code = calculate_expected_code(test_counter)
+        if received_code == expected_code:
+            log_rng_attack(client_info, received_code)
+            return "reused"
+    
+    return "invalid"
+\end{lstlisting}
+
+\subsection{Protokollierung von Angriffen}
+
+\begin{lstlisting}[language=Python,caption=Angriffsprotokollierung]
+def log_rng_attack(client_info, code):
+    log_entry = (
+        "🚨 [RNG_STATE_ATTACK] VERIFY_CODE_REUSE\n"
+        f"   Client: {client_info}\n"
+        f"   Code: {code}\n"
+        f"   ANALYSIS: Angreifer verwendet bekannten RNG State!\n"
+        f"   ANALYSIS: Code wurde doppelt verwendet!\n"
+    )
+    with open("attacks.log", "a") as f:
+        f.write(log_entry)
+\end{lstlisting}
+
+\section{Sicherheitsfeatures}
+
+\subsection{Einheitliches Framing}
+
+\begin{lstlisting}[language=Python,caption=Frame-Format]
+def send_frame(sock, data):
+    # 4-Byte Header (Network Byte Order)
+    header = struct.pack('!I', len(data))
+    full_message = header + data
+    return sock.sendall(full_message)
+\end{lstlisting}
+
+\subsection{Quantensichere Merkle Trees}
+
+\begin{lstlisting}[language=Python,caption=Merkle-Tree-Berechnung]
+def build_merkle_tree(data_blocks):
+    tree = [quantum_safe_hash(block) for block in data_blocks]
+    while len(tree) > 1:
+        if len(tree) % 2 != 0:
+            tree.append(tree[-1])
+        tree = [quantum_safe_hash(tree[i] + tree[i+1]) 
+               for i in range(0, len(tree), 2)]
+    return tree[0]
+\end{lstlisting}
+
+\subsection{Hybride Verschlüsselung}
+
+\begin{lstlisting}[language=Python,caption=Verschlüsselungsprozess]
+def encrypt_phonebook_data(phonebook_json, client_public_key):
+    # 1. 48-Byte Secret generieren (16B IV + 32B AES Key)
+    secret = generate_secret()
+    
+    # 2. Secret mit RSA verschlüsseln
+    encrypted_secret = rsa_encrypt(secret, client_public_key)
+    
+    # 3. Daten mit AES verschlüsseln
+    encrypted_data = aes_encrypt(phonebook_json, secret)
+    
+    return encrypted_secret, encrypted_data
+\end{lstlisting}
+
+\section{Kommunikationsabläufe}
+
+\subsection{Client-Registration}
+
+\begin{enumerate}
+\item Client sendet REGISTER mit Public Key und Verify-Code
+\item Server validiert Verify-Code und registriert Client
+\item Server sendet Merkle Root aller Public Keys
+\item Client validiert Merkle Tree Integrität
+\end{enumerate}
+
+\subsection{Anrufinitiierung}
+
+\begin{enumerate}
+\item Client A fordert Public Key von Client B
+\item Server liefert Public Key mit Verify-Code
+\item Client A verschlüsselt Session-Key mit Client B's Public Key
+\item Server leitet verschlüsselte Daten an Client B weiter
+\item Bei Annahme: Bidirektionale Audio-Streams werden etabliert
+\end{enumerate}
+
+\section{UDP-Audio-Relay}
+
+\subsection{Architektur}
+
+\begin{lstlisting}[language=Python,caption=UDP-Relay-Setup]
+class CONVEY:
+    def __init__(self, server_instance):
+        self.udp_relay_port = 51822
+        self.audio_relays = {}
+        self._start_udp_relay()
+    
+    def _register_audio_relay(self, call_id, caller_ip, callee_ip):
+        self.audio_relays[call_id] = {
+            'caller_addr': (caller_ip, 51821),
+            'callee_addr': (callee_ip, 51821)
+        }
+\end{lstlisting}
+
+\subsection{Datenfluss}
+
+\begin{enumerate}
+\item Audio-Daten werden lokal mit AES-256-CBC verschlüsselt
+\item Verschlüsselte Pakete werden an UDP-Relay gesendet
+\item Relay leitet Pakete an Zielclient weiter
+\item Empfänger entschlüsselt lokal mit Session-Key
+\end{enumerate}
+
+\section{Server-Discovery und Load-Balancing}
+
+\subsection{Seed-Server Architektur}
+
+\begin{lstlisting}[language=Python,caption=Relay-Manager]
+class AccurateRelayManager:
+    def __init__(self, server_instance):
+        self.SEED_SERVERS = [
+            ("sichereleitung.duckdns.org", 5060),
+            ("sichereleitung.duckdns.org", 5061)
+        ]
+        self.known_servers = {}
+        self.server_load = 0
+\end{lstlisting}
+
+\subsection{Client-seitige Server-Auswahl}
+
+\begin{lstlisting}[language=Python,caption=Server-Discovery]
+class ClientRelayManager:
+    def discover_servers(self):
+        for seed_host, seed_port in self.SEED_SERVERS:
+            # Ping Server auf beiden Ports (5060/5061)
+            # Wähle Server mit niedrigster Last und Ping-Zeit
+            best_server = self._select_best_server()
+\end{lstlisting}
+
+\section{Erweiterte Audio-Features}
+
+\subsection{Qualitätsprofile}
+
+\begin{lstlisting}[language=Python,caption=Audio-Konfiguration]
+QUALITY_PROFILES = {
+    "highest": {"format": "S32_LE", "rate": 192000, "channels": 2},
+    "high": {"format": "24-bit", "rate": 192000, "channels": 2},
+    "middle": {"format": "24-bit", "rate": 48000, "channels": 2},
+    "low": {"format": "16-bit", "rate": 48000, "channels": 1}
+}
+\end{lstlisting}
+
+\subsection{Rauschfilterung}
+
+\begin{enumerate}
+\item 180-Sekunden Clear-Room Profilerstellung
+\item Adaptive Rauschschwellen basierend auf RMS
+\item Spektrale Rauschunterdrückung ohne scipy Abhängigkeit
+\item Frequenzspezifische Filter für 50Hz Brummen
+\end{enumerate}
+
+\section{Sicherheitsanalyse}
+
+\subsection{Bewusst offene Angriffsvektoren}
+
+\begin{itemize}
+\item \textbf{Verify-Code Seed}: Client-Name ist öffentlich → RNG-State-Angriffe möglich
+\item \textbf{SIP-Header}: Traditionelle SIP-Verwundbarkeiten bleiben bestehen
+\item \textbf{Timing-Angriffe}: Keine zusätzlichen Timing-Gegenmaßnahmen
+\end{itemize}
+
+\subsection{Erkennungsmechanismen}
+
+\begin{itemize}
+\item \textbf{RNG-State-Angriffe}: Verify-Code Wiederverwendung wird protokolliert
+\item \textbf{Replay-Angriffe}: Counter-System verhindert Replay innerhalb Toleranz
+\item \textbf{Man-in-the-Middle}: Merkle Tree validiert Schlüsselintegrität
+\end{itemize}
+
+\subsection{Protokollierte Angriffstypen}
+
+\begin{lstlisting}[caption=Angriffsprotokoll-Beispiele]
+# attacks.log Einträge:
+🚨 [RNG_STATE_ATTACK] VERIFY_CODE_REUSE
+❌ [INVALID] INVALID_VERIFY_CODE
+⚠️ [MALFORMED] MALFORMED_VERIFY_CODE
+⚠️ [MISSING] MISSING_VERIFY_CODE
+📏 [FRAME] OVERSIZE (DDoS-Versuch)
+\end{lstlisting}
+
+\section{Performance-Optimierungen}
+
+\subsection{Thread-Safety}
+
+\begin{lstlisting}[language=Python,caption=Thread-sichere Datenstrukturen]
+class VerifyGenerator:
+    def __init__(self, seed, client_id):
+        self._lock = threading.Lock()  # Pro Client-Instanz
+    
+    def verify_code(self, received_code):
+        with self._lock:  # Thread-sicher
+            # Verifikationslogik
+\end{lstlisting}
+
+\subsection{Queue-basierte Verarbeitung}
+
+\begin{lstlisting}[language=Python,caption=Nachrichten-Queue]
+def handle_server_message(self, raw_data):
+    if not hasattr(self, '_message_queue'):
+        self._message_queue = []
+    
+    self._message_queue.append({
+        'type': 'frame_data',
+        'data': raw_data,
+        'timestamp': time.time()
+    })
+    
+    # Asynchrone Verarbeitung
+    self._process_queue_simple()
+\end{lstlisting}
+
+\section{Entwicklerhinweise}
+
+\subsection{Experimentelle Features}
+
+\begin{itemize}
+\item RNG-Verifikation dient primär der Angriffserkennung, nicht -verhinderung
+\item Bewusst einfache Implementierung für Analysezwecke
+\item Extensive Protokollierung in \texttt{attacks.log} für Forensik
+\end{itemize}
+
+\subsection{Produktionseinsatz}
+
+Für Produktionseinsatz empfohlen:
+\begin{itemize}
+\item Gemeinsames Geheimnis für Verify-Code Seed
+\item Erhöhte Verify-Code Länge (8+ Zeichen)
+\item Strengere Counter-Toleranz
+\item Zusätzliche Timing-Gegenmaßnahmen
+\end{itemize}
+
+\begin{thebibliography}{9}
+\bibitem{rfc3261} Rosenberg, J. \emph{SIP: Session Initiation Protocol}. RFC 3261.
+\bibitem{merkle} Merkle, R. C. \emph{A Digital Signature Based on a Conventional Encryption Function}. CRYPTO 1987.
+\bibitem{sha3} Dworkin, M. J. \emph{SHA-3 Standard: Permutation-Based Hash and Extendable-Output Functions}. FIPS PUB 202.
+\end{thebibliography}
+
+\end{document}
