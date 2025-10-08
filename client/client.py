@@ -2915,8 +2915,8 @@ class CALL:
         
         return True
 
-    def audio_stream_in(self, iv, key):
-        """Empfängt Audio über UDP Relay - MIT VERBESSERTEM DEBUGGING"""
+    def audio_stream_in(self, target_ip, target_port, iv, key):
+        """Empfängt Audio über UDP Relay - KONSISTENT UND KORRIGIERT"""
         audio_socket = None
         
         if not self.audio_available:
@@ -2928,8 +2928,9 @@ class CALL:
             return False
         
         try:
+            print(f"[AUDIO IN] Starting receiver - Relay: {target_ip}:{target_port}")
             print(f"[AUDIO IN] Output: 16-bit Mono @ {self.audio_config.RATE}Hz")
-            print(f"[AUDIO IN] Listening on port: {self.PORT}")
+            print(f"[AUDIO IN] Listening on port: {target_port}")  # ✅ Korrekt anzeigen
             
             # ✅ STREAM NUR ÖFFNEN WENN CALL AKTIV UND AUDIO VERFÜGBAR
             if self.active_call and self.audio_available and self.audio:
@@ -2946,11 +2947,12 @@ class CALL:
                 print("❌ [AUDIO IN] Call ended oder Audio nicht verfügbar")
                 return False
             
+            # ✅ KORREKTUR: Verwende target_port für Binding (nicht self.PORT)
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            audio_socket.bind(('0.0.0.0', self.PORT))
+            audio_socket.bind(('0.0.0.0', target_port))  # ✅ KORREKT: target_port verwenden
             audio_socket.settimeout(0.1)
             
-            print("🎧 [AUDIO IN] Receiver active - waiting for audio packets...")
+            print(f"🎧 [AUDIO IN] Receiver active on port {target_port} - waiting for audio packets...")
             packet_counter = 0
             timeout_counter = 0
             
@@ -3070,7 +3072,7 @@ class CALL:
             
             recv_thread = threading.Thread(
                 target=self.audio_stream_in,
-                args=(iv, key),
+                args=(target_ip, target_port, iv, key),  # ✅ 4 Parameter übergeben
                 daemon=True,
                 name="AudioIn"
             )
@@ -3101,14 +3103,6 @@ class CALL:
                     "Audio Error", 
                     f"Audio-Streams konnten nicht gestartet werden: {str(e)}"
                 ))
-
-    def __del__(self):
-        """Destruktor für Ressourcen-Cleanup"""
-        try:
-            if hasattr(self, 'audio') and self.audio:
-                self.audio.terminate()
-        except:
-            pass
     def show_audio_devices_popup(self):
         """Audio-Geräte, Qualitätsauswahl und Rauschfilterung - KORRIGIERTE DPI-VERSION"""
         try:
@@ -4625,153 +4619,98 @@ class CALL:
             print(f"[CALL CRITICAL ERROR] Failed to send framed SIP response: {str(e)}")
             return False
 
-    def handle_call_response(self, msg, client_socket, client_name):
-        """Verarbeitet Call-Antworten - VOLLSTÄNDIG KORRIGIERT"""
+    def handle_call_response(self, msg):
+        """Verarbeitet Call-Antworten - VOLLSTÄNDIG KORRIGIERT FÜR CLIENT"""
         try:
+            print(f"[CALL] Handling call response, type: {type(msg)}")
+            
+            # ✅ EINHEITLICHE DATENEXTRAKTION
             custom_data = msg.get('custom_data', {})
+            if not custom_data:
+                # Fallback: Verwende msg direkt wenn keine custom_data
+                custom_data = {k: v for k, v in msg.items() if k != 'headers'}
+            
             response = custom_data.get('RESPONSE')
-            caller_id = custom_data.get('CALLER_CLIENT_ID')  # ✅ Client-ID vom Anrufer
-            responding_client_name = client_name  # ✅ Der Client der antwortet
+            caller_id = custom_data.get('CALLER_CLIENT_ID')
             
-            print(f"[CONVEY] Framed SIP call response from {responding_client_name}: {response}")
-            print(f"[CONVEY DEBUG] Caller ID from request: {caller_id}")
-            print(f"[CONVEY DEBUG] Responding client: {responding_client_name}")
-            print(f"[CONVEY DEBUG] Custom data keys: {list(custom_data.keys())}")
+            print(f"[CALL DEBUG] Response: {response}, Caller ID: {caller_id}")
+            print(f"[CALL DEBUG] Custom data keys: {list(custom_data.keys())}")
 
-            if not response or not caller_id:
-                print("[CONVEY ERROR] Missing response or caller_id in framed SIP")
-                return False
-                
-            # ✅ KORREKTE CALL-SUCHE: Finde Call wo callee_name == responding_client_name UND caller_id == caller_id
-            call_id = None
-            call_data = None
-            
-            print(f"[CONVEY DEBUG] Searching through {len(self.active_calls)} active calls")
-            for cid, data in self.active_calls.items():
-                print(f"[CONVEY DEBUG] Call {cid}:")
-                print(f"  caller_id: {data.get('caller_id')}, caller_name: {data.get('caller_name')}")
-                print(f"  callee_id: {data.get('callee_id')}, callee_name: {data.get('callee_name')}")
-                
-                # ✅ KORREKTUR: Vergleiche Namen statt IDs!
-                if (data.get('callee_name') == responding_client_name and 
-                    data.get('caller_id') == caller_id):
-                    call_id = cid
-                    call_data = data
-                    print(f"[CONVEY DEBUG] ✓ Found matching call: {cid}")
-                    break
-            
-            if not call_data:
-                print(f"[CONVEY ERROR] No active call found for {responding_client_name} -> caller {caller_id}")
-                print(f"[CONVEY DEBUG] Available calls: {list(self.active_calls.keys())}")
-                for cid, data in self.active_calls.items():
-                    print(f"  Call {cid}: {data.get('caller_name')}({data.get('caller_id')}) -> {data.get('callee_name')}({data.get('callee_id')})")
+            if not response:
+                print("[CALL ERROR] Missing response in call response")
                 return False
             
-            print(f"[CONVEY] Processing call response for call {call_id}")
-            
-            # ✅ FRAME-SIP BEARBEITUNG
+            # ✅ CLIENT-SPEZIFISCHE VERARBEITUNG (nicht Server!)
             if response == "accepted":
-                print(f"[CONVEY] Call {call_id} accepted by {responding_client_name}")
+                print(f"[CALL] Call accepted by callee")
                 
-                # UDP Relay registrieren
-                relay_success = self._register_audio_relay(call_id, call_data['caller_name'], responding_client_name)
+                # Extrahiere Relay-Informationen falls vorhanden
+                use_relay = custom_data.get('USE_AUDIO_RELAY', False)
+                relay_ip = custom_data.get('AUDIO_RELAY_IP')
+                relay_port = custom_data.get('AUDIO_RELAY_PORT', 51822)
                 
-                # ✅ FRAME-SIP ACCEPTED NACHRICHT MIT RELAY INFORMATIONEN
-                response_data = {
-                    "MESSAGE_TYPE": "CALL_RESPONSE",
-                    "RESPONSE": "accepted",
-                    "CALLER_CLIENT_ID": caller_id,
-                    "TIMESTAMP": int(time.time())
-                }
-                
-                # Füge Relay-Informationen hinzu falls verfügbar
-                if relay_success:
-                    response_data.update({
-                        "USE_AUDIO_RELAY": True,
-                        "AUDIO_RELAY_IP": self.server.host,  # Server IP für Relay
-                        "AUDIO_RELAY_PORT": self.udp_relay_port
-                    })
-                    print(f"[CONVEY] ✅ UDP Relay registered: {self.server.host}:{self.udp_relay_port}")
+                if use_relay and relay_ip:
+                    print(f"[CALL] Using UDP Relay: {relay_ip}:{relay_port}")
+                    self.use_udp_relay = True
+                    self.relay_server_ip = relay_ip
+                    self.relay_server_port = relay_port
+                    
+                    # ✅ STARTE AUDIO STREAMS MIT RELAY
+                    if hasattr(self, 'current_secret') and self.current_secret:
+                        print(f"[CALL] Starting audio streams with relay")
+                        self._start_audio_streams()
+                    else:
+                        print("[CALL ERROR] No session secret for audio streams")
                 else:
-                    print("[CONVEY WARNING] UDP Relay registration failed")
-                
-                response_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], response_data)
-                send_success = send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
-                
-                if send_success:
-                    call_data['status'] = 'accepted'
-                    print(f"[CONVEY] ✅ Call accepted response sent to {call_data['caller_name']}")
+                    print("[CALL] Direct connection (no relay)")
                     
-                    # ✅ FRAME-SIP CALLEE BESTÄTIGUNG
-                    callee_msg_data = {
-                        "MESSAGE_TYPE": "CALL_CONFIRMED",
-                        "TIMESTAMP": int(time.time())
-                    }
-                    
-                    # Füge Relay-Informationen hinzu falls verfügbar
-                    if relay_success:
-                        callee_msg_data.update({
-                            "USE_AUDIO_RELAY": True,
-                            "AUDIO_RELAY_IP": self.server.host,
-                            "AUDIO_RELAY_PORT": self.udp_relay_port
-                        })
-                    
-                    callee_msg = self.server.build_sip_message("MESSAGE", responding_client_name, callee_msg_data)
-                    send_frame(client_socket, callee_msg.encode('utf-8'))
-                    
-                    print(f"[CONVEY] ✅ Framed SIP call {call_id} accepted with UDP Relay: {relay_success}")
-                else:
-                    print(f"[CONVEY ERROR] Failed to send accepted response to caller")
+                # UI aktualisieren
+                if hasattr(self.client, 'update_call_ui'):
+                    recipient_name = "Unknown"
+                    if hasattr(self, 'pending_call') and self.pending_call:
+                        recipient_name = self.pending_call['recipient'].get('name', 'Unknown')
+                    self.client.update_call_ui(True, "connected", recipient_name)
                     
             elif response == "rejected":
-                print(f"[CONVEY] Call {call_id} rejected by {responding_client_name}")
+                print(f"[CALL] Call rejected by callee")
                 
-                # ✅ FRAME-SIP REJECTED NACHRICHT
-                response_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], {
-                    "MESSAGE_TYPE": "CALL_RESPONSE",
-                    "RESPONSE": "rejected",
-                    "CALLER_CLIENT_ID": caller_id,
-                    "TIMESTAMP": int(time.time())
-                })
-                send_success = send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
+                # Fehler-UI anzeigen
+                if hasattr(self.client, 'after'):
+                    self.client.after(0, lambda: messagebox.showinfo(
+                        "Call Rejected", 
+                        "Der Empfänger hat den Anruf abgelehnt."
+                    ))
                 
-                if send_success:
-                    call_data['status'] = 'rejected'
-                    print(f"[CONVEY] ✅ Call rejected response sent to {call_data['caller_name']}")
-                else:
-                    print(f"[CONVEY ERROR] Failed to send rejected response to caller")
-                    
+                # Ressourcen bereinigen
+                self.cleanup_call_resources()
+                
             elif response == "error":
-                print(f"[CONVEY] Call {call_id} error from {responding_client_name}")
+                print(f"[CALL] Call error from callee")
                 
-                # ✅ FRAME-SIP ERROR NACHRICHT
-                response_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], {
-                    "MESSAGE_TYPE": "CALL_RESPONSE", 
-                    "RESPONSE": "error",
-                    "ERROR": "CALLEE_ERROR",
-                    "CALLER_CLIENT_ID": caller_id,
-                    "TIMESTAMP": int(time.time())
-                })
-                send_success = send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
+                error_msg = custom_data.get('ERROR', 'Unknown error')
+                if hasattr(self.client, 'after'):
+                    self.client.after(0, lambda: messagebox.showerror(
+                        "Call Error", 
+                        f"Fehler beim Empfänger: {error_msg}"
+                    ))
                 
-                if send_success:
-                    call_data['status'] = 'error'
-                    print(f"[CONVEY] ✅ Call error response sent to {call_data['caller_name']}")
+                # Ressourcen bereinigen
+                self.cleanup_call_resources()
             
-            # ✅ SAUBERES CLEANUP
-            if response in ['accepted', 'rejected', 'error']:
-                if call_id in self.active_calls:
-                    if response in ['rejected', 'error']:
-                        self._unregister_audio_relay(call_id)
-                    del self.active_calls[call_id]
-                    print(f"[CONVEY] ✅ Call {call_id} cleaned up")
+            else:
+                print(f"[CALL WARNING] Unknown response type: {response}")
+                return False
             
+            print(f"[CALL] ✓ Call response '{response}' processed successfully")
             return True
             
         except Exception as e:
-            print(f"[CONVEY ERROR] Framed SIP call response failed: {str(e)}")
+            print(f"[CALL ERROR] Call response handling failed: {str(e)}")
             import traceback
             traceback.print_exc()
+            
+            # Im Fehlerfall Ressourcen bereinigen
+            self.cleanup_call_resources()
             return False
 
     def handle_call_confirmed(self, msg):
@@ -4850,20 +4789,6 @@ class CALL:
                         
         except Exception as e:
             print(f"[CALL ERROR] Session key handling failed: {str(e)}")
-
-
-
-    def _convert_24bit_to_16bit(self, audio_24bit):
-        """Konvertiert 24-bit Audio zu 16-bit"""
-        try:
-            audio_16bit = b''
-            for i in range(0, len(audio_24bit), 3):
-                if i + 3 <= len(audio_24bit):
-                    audio_16bit += audio_24bit[i+1:i+3]
-            return audio_16bit
-        except Exception as e:
-            print(f"[CONVERSION ERROR] {e}, returning original data")
-            return audio_24bit
 
 
 
@@ -5011,27 +4936,6 @@ class CALL:
             except:
                 pass
 
-    def _get_public_ip(self):
-        """Ermittelt die öffentliche IP"""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
-        except:
-            return "127.0.0.1"
-
-    def _get_local_ip(self):
-        """Ermittelt die lokale IP"""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
-        except:
-            return "127.0.0.1"
 
     def on_entry_click(self, entry):
         """Handler für Klicks auf Telefonbucheinträge"""
@@ -6788,17 +6692,6 @@ class PHONEBOOK(ctk.CTk):
         self.canvas.configure(scrollregion=self.canvas.bbox("all"))
         self.canvas.yview_moveto(0)  # Zum Anfang scrollen
 
-    def _get_local_ip(self):
-        """Ermittelt die lokale IP-Adresse"""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            local_ip = s.getsockname()[0]
-            s.close()
-            return local_ip
-        except:
-            return "127.0.0.1"
-
 
     def on_hangup_click(self):
         """Beendet den aktuellen Anruf und bereinigt alle Ressourcen"""
@@ -7380,15 +7273,6 @@ class PHONEBOOK(ctk.CTk):
             print(f"[CLIENT ID ERROR] {str(e)}")
             return "unknown"
 
-    def _get_public_ip(self):
-        """Ermittelt die öffentliche IP-Adresse"""
-        try:
-            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            s.connect(("8.8.8.8", 80))
-            ip = s.getsockname()[0]
-            s.close()
-            return ip
-        except:
             return "127.0.0.1"
 
     def _process_sip_message(self, message):
