@@ -213,7 +213,7 @@ def generate_verify_code(client_id=None):
     # ✅ KORREKTUR: CLIENT-ID ALS SEED VERWENDEN
     if client_id is None:
         client_id = "default"
-    generator = init_verify_generator(client_id, client_id)  # ✅ SEED = CLIENT-ID
+    generator = init_verify_generator(client_name, client_name)  # ✅ SEED = CLIENT-ID
     return generator.generate_verify_code()
 
 def verify_code(received_code, client_id=None, sync_tolerance=5):
@@ -231,7 +231,7 @@ def verify_code(received_code, client_id=None, sync_tolerance=5):
     # ✅ KORREKTUR: CLIENT-ID ALS SEED VERWENDEN
     if client_id is None:
         client_id = "default"
-    generator = init_verify_generator(client_id, client_id)  # ✅ SEED = CLIENT-ID
+    generator = init_verify_generator(client_name, client_name)  # ✅ SEED = CLIENT-ID
     return generator.verify_code(received_code, sync_tolerance)
 
 def get_message_count(client_id=None):
@@ -247,7 +247,7 @@ def get_message_count(client_id=None):
     # ✅ KORREKTUR: CLIENT-ID ALS SEED VERWENDEN
     if client_id is None:
         client_id = "default"
-    generator = init_verify_generator(client_id, client_id)  # ✅ SEED = CLIENT-ID
+    generator = init_verify_generator(client_name, client_name)  # ✅ SEED = CLIENT-ID
     return generator.get_message_count()
 
 def reset_client_counter(client_id=None):
@@ -260,7 +260,7 @@ def reset_client_counter(client_id=None):
     # ✅ KORREKTUR: CLIENT-ID ALS SEED VERWENDEN
     if client_id is None:
         client_id = "default"
-    generator = init_verify_generator(client_id, client_id)  # ✅ SEED = CLIENT-ID
+    generator = init_verify_generator(client_name, client_name)  # ✅ SEED = CLIENT-ID
     generator.reset_counter()
 
 def get_client_status(client_id=None):
@@ -276,7 +276,7 @@ def get_client_status(client_id=None):
     # ✅ KORREKTUR: CLIENT-ID ALS SEED VERWENDEN
     if client_id is None:
         client_id = "default"
-    generator = init_verify_generator(client_id, client_id)  # ✅ SEED = CLIENT-ID
+    generator = init_verify_generator(client_name, client_name)  # ✅ SEED = CLIENT-ID
     return generator.get_status()
 
 def list_all_generators():
@@ -3178,7 +3178,7 @@ class Server:
             # ✅ DEBUG: Vor der Generator-Initialisierung
             print(f"🔐 [DEBUG] Vor init_verify_generator: client_name='{client_name}'")
             
-            client_generator = init_verify_generator(client_name, client_id=client_name)
+            client_generator = init_verify_generator(client_name, client_name)
             
             # ✅ DEBUG: Nach der Generator-Initialisierung
             print(f"🔐 [DEBUG] Nach init_verify_generator:")
