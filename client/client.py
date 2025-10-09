@@ -2823,23 +2823,22 @@ class CALL:
 
 
     def audio_stream_out(self, target_ip, target_port, iv, key):
-        """Sendet Audio über UDP Relay - MIT VERBESSERTEM DEBUGGING"""
+        """Sendet Audio über UDP Relay - OHNE INITIALE ACTIVE_CALL PRÜFUNG"""
         if not self.audio_available:
             print("❌ [AUDIO OUT] Kein Audio-Backend verfügbar")
             return False
             
         audio_socket = None
         
-        if not self.active_call:
-            print("❌ [AUDIO OUT] No active call")
-            return False
+        # ✅ KORREKTUR: KEINE INITIALE ACTIVE_CALL PRÜFUNG
+        print(f"[AUDIO OUT] Starting stream - Active call: {self.active_call}")
         
         try:
             print(f"[AUDIO OUT] Starting: {self.audio_config.sample_format_name}")
             print(f"[AUDIO OUT] Target: {target_ip}:{target_port}")
             
-            # ✅ STREAM NUR ÖFFNEN WENN CALL AKTIV UND AUDIO VERFÜGBAR
-            if self.active_call and self.audio_available and self.audio:
+            # ✅ STREAM ÖFFNEN (ohne initiale active_call Prüfung)
+            if self.audio_available and self.audio:
                 self.input_stream = self.audio_config.audio.open(
                     format=self.audio_config.FORMAT,
                     channels=self.audio_config.CHANNELS,
@@ -2850,7 +2849,7 @@ class CALL:
                 )
                 print("✅ [AUDIO OUT] Input stream opened")
             else:
-                print("❌ [AUDIO OUT] Call ended oder Audio nicht verfügbar")
+                print("❌ [AUDIO OUT] Audio nicht verfügbar")
                 return False
             
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -2860,6 +2859,7 @@ class CALL:
             packet_counter = 0
             error_counter = 0
             
+            # ✅ NUR IN DER HAUPTSCHLEIFE active_call prüfen
             while self.active_call and self.audio_available:
                 try:
                     raw_data = self.input_stream.read(
@@ -2867,9 +2867,8 @@ class CALL:
                         exception_on_overflow=False
                     )
                     
-                    # ✅ DEBUG: Zeige gelegentlich Paket-Info
                     packet_counter += 1
-                    if packet_counter % 100 == 0:  # Nur alle 100 Pakete loggen
+                    if packet_counter % 100 == 0:
                         print(f"[AUDIO OUT] Sent {packet_counter} packets to relay")
                     
                     # Rauschfilterung anwenden (falls aktiv)
@@ -2889,9 +2888,9 @@ class CALL:
                     continue
                 except Exception as e:
                     error_counter += 1
-                    if self.active_call and error_counter % 10 == 0:  # Nur jeden 10. Fehler loggen
+                    if self.active_call and error_counter % 10 == 0:
                         print(f"[AUDIO OUT ERROR] {str(e)}")
-                    if error_counter > 100:  # Zu viele Fehler - abbrechen
+                    if error_counter > 100:
                         break
                         
             print(f"[AUDIO OUT] Transmission ended. Total packets: {packet_counter}")
@@ -2916,24 +2915,23 @@ class CALL:
         return True
 
     def audio_stream_in(self, target_ip, target_port, iv, key):
-        """Empfängt Audio über UDP Relay - KONSISTENT UND KORRIGIERT"""
+        """Empfängt Audio über UDP Relay - OHNE INITIALE ACTIVE_CALL PRÜFUNG"""
         audio_socket = None
         
         if not self.audio_available:
             print("❌ [AUDIO IN] Kein Audio-Backend verfügbar")
             return False
                 
-        if not self.active_call:
-            print("❌ [AUDIO IN] No active call")
-            return False
+        # ✅ KORREKTUR: KEINE INITIALE ACTIVE_CALL PRÜFUNG
+        print(f"[AUDIO IN] Starting receiver - Active call: {self.active_call}")
         
         try:
             print(f"[AUDIO IN] Starting receiver - Relay: {target_ip}:{target_port}")
             print(f"[AUDIO IN] Output: 16-bit Mono @ {self.audio_config.RATE}Hz")
-            print(f"[AUDIO IN] Listening on port: {target_port}")  # ✅ Korrekt anzeigen
+            print(f"[AUDIO IN] Listening on port: {target_port}")
             
-            # ✅ STREAM NUR ÖFFNEN WENN CALL AKTIV UND AUDIO VERFÜGBAR
-            if self.active_call and self.audio_available and self.audio:
+            # ✅ STREAM ÖFFNEN (ohne initiale active_call Prüfung)
+            if self.audio_available and self.audio:
                 self.output_stream = self.audio_config.audio.open(
                     format=pyaudio.paInt16,
                     channels=1,
@@ -2944,25 +2942,25 @@ class CALL:
                 )
                 print("✅ [AUDIO IN] Output stream opened")
             else:
-                print("❌ [AUDIO IN] Call ended oder Audio nicht verfügbar")
+                print("❌ [AUDIO IN] Audio nicht verfügbar")
                 return False
             
-            # ✅ KORREKTUR: Verwende target_port für Binding (nicht self.PORT)
+            # ✅ KORREKTUR: Verwende target_port für Binding
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            audio_socket.bind(('0.0.0.0', target_port))  # ✅ KORREKT: target_port verwenden
+            audio_socket.bind(('0.0.0.0', target_port))
             audio_socket.settimeout(0.1)
             
             print(f"🎧 [AUDIO IN] Receiver active on port {target_port} - waiting for audio packets...")
             packet_counter = 0
             timeout_counter = 0
             
+            # ✅ NUR IN DER HAUPTSCHLEIFE active_call prüfen
             while self.active_call and self.audio_available:
                 try:
                     encrypted_data, addr = audio_socket.recvfrom(4096)
                     packet_counter += 1
                     
-                    # ✅ DEBUG: Zeige gelegentlich Paket-Info
-                    if packet_counter % 100 == 0:  # Nur alle 100 Pakete loggen
+                    if packet_counter % 100 == 0:
                         print(f"[AUDIO IN] Received {packet_counter} packets from {addr}")
                     
                     # Entschlüsseln
@@ -2972,11 +2970,11 @@ class CALL:
                     # An Ausgabestream senden
                     self.output_stream.write(received_data)
                     
-                    timeout_counter = 0  # Reset timeout counter bei erfolgreichem Empfang
+                    timeout_counter = 0
                     
                 except socket.timeout:
                     timeout_counter += 1
-                    if timeout_counter % 500 == 0:  # Nur alle 500 Timeouts loggen
+                    if timeout_counter % 500 == 0:
                         print(f"[AUDIO IN] No packets received for {timeout_counter} attempts")
                     continue
                 except Exception as e:
@@ -3005,14 +3003,16 @@ class CALL:
         
         return True
     def _start_audio_streams(self):
-        """Startet bidirektionale Audio-Streams MIT KORREKTEM RELAY"""
+        """Startet bidirektionale Audio-Streams MIT 2-PORT SYSTEM"""
         # ✅ ACTIVE_CALL ZUERST SETZEN - VOR ALLEM ANDEREN!
         self.active_call = True
+        self.client.active_call = True
         print(f"[AUDIO] Active call set to: {self.active_call}")
         
         if not self.current_secret:
             print("[AUDIO] No session key available")
             self.active_call = False
+            self.client.active_call = False
             return
             
         # ✅ PRÜFE OB AUDIO VERFÜGBAR IST
@@ -3024,10 +3024,11 @@ class CALL:
             # UI aktualisieren
             if hasattr(self.client, 'update_call_ui'):
                 caller_name = "Unbekannt"
-                if self.pending_call and 'recipient' in self.pending_call:
-                    caller_name = self.pending_call['recipient'].get('name', 'Unbekannt')
-                elif self.incoming_call:
+                # ✅ KORREKTUR: SICHERE NAMENSEXTRAKTION OHNE 'recipient'
+                if self.incoming_call:
                     caller_name = self.incoming_call.get('caller_name', 'Unbekannt')
+                elif self.pending_call and 'caller_name' in self.pending_call:
+                    caller_name = self.pending_call.get('caller_name', 'Unbekannt')
                 
                 self.client.update_call_ui(True, "no_audio", caller_name)
             return
@@ -3037,11 +3038,24 @@ class CALL:
             iv = self.current_secret[:16]
             key = self.current_secret[16:48]
             
-            # ✅ KORREKTUR: IMMER RELAY SERVER VERWENDEN
+            # ✅ KORREKTUR: 2-PORT SYSTEM
             if self.use_udp_relay and self.relay_server_ip:
                 target_ip = self.relay_server_ip
-                target_port = self.relay_server_port
-                print(f"[AUDIO] Using UDP Relay: {target_ip}:{target_port}")
+                
+                # Bestimme ob wir Caller oder Callee sind
+                if hasattr(self, 'pending_call') and self.pending_call:
+                    # Wir sind der CALLER
+                    listen_port = 51821  # Wir empfangen auf 51821
+                    send_to_port = 51822  # Wir senden zu Callee auf 51822
+                    role = "Caller"
+                else:
+                    # Wir sind der CALLEE  
+                    listen_port = 51822  # Wir empfangen auf 51822
+                    send_to_port = 51821  # Wir senden zu Caller auf 51821
+                    role = "Callee"
+                    
+                print(f"[AUDIO] {role} mode - Listen: {listen_port}, Send to: {send_to_port}")
+                
             else:
                 # ❌ KEIN FALLBACK MEHR - RELAY IST VERPFLICHTEND
                 print("[AUDIO] ❌ ERROR: No UDP relay configured - audio cannot work without relay!")
@@ -3053,7 +3067,7 @@ class CALL:
                 self.active_call = False
                 return
             
-            print(f"[AUDIO] Starting streams - Relay: {target_ip}:{target_port}")
+            print(f"[AUDIO] Starting streams - Relay: {target_ip}")
             print(f"[AUDIO] Stream format: {self.audio_config.sample_format_name}")
             
             # Beende bestehende Audio-Threads
@@ -3062,17 +3076,17 @@ class CALL:
             # Starte Timer-Anzeige
             self._start_call_timer()
             
-            # ✅ KORREKTE PARAMETER FÜR AUDIO STREAMS MIT AKTUELLER INSTANZ
+            # ✅ KORREKTE PARAMETER FÜR AUDIO STREAMS MIT 2-PORT SYSTEM
             send_thread = threading.Thread(
                 target=self.audio_stream_out, 
-                args=(target_ip, target_port, iv, key),
+                args=(target_ip, send_to_port, iv, key),  # Senden zum anderen Port
                 daemon=True,
                 name="AudioOut"
             )
             
             recv_thread = threading.Thread(
                 target=self.audio_stream_in,
-                args=(target_ip, target_port, iv, key),  # ✅ 4 Parameter übergeben
+                args=(target_ip, listen_port, iv, key),   # Empfangen auf eigenem Port
                 daemon=True,
                 name="AudioIn"
             )
@@ -3086,10 +3100,11 @@ class CALL:
             # UI aktualisieren
             if hasattr(self.client, 'update_call_ui'):
                 caller_name = "Unbekannt"
-                if self.pending_call and 'recipient' in self.pending_call:
-                    caller_name = self.pending_call['recipient'].get('name', 'Unbekannt')
-                elif self.incoming_call:
+                # ✅ KORREKTUR: SICHERE NAMENSEXTRAKTION OHNE 'recipient'
+                if self.incoming_call:
                     caller_name = self.incoming_call.get('caller_name', 'Unbekannt')
+                elif self.pending_call and 'caller_name' in self.pending_call:
+                    caller_name = self.pending_call.get('caller_name', 'Unbekannt')
                 
                 self.client.update_call_ui(True, "connected", caller_name)
                 
@@ -3098,6 +3113,7 @@ class CALL:
         except Exception as e:
             print(f"[AUDIO ERROR] Failed to start streams: {e}")
             self.active_call = False
+            self.client.active_call = False
             if hasattr(self.client, 'after'):
                 self.client.after(0, lambda: messagebox.showerror(
                     "Audio Error", 
@@ -4536,7 +4552,43 @@ class CALL:
                 pass
             self.cleanup_call_resources()
             return False
-
+    def _send_call_response(self, response, caller_id):
+        """Sendet Call-Response an Server - FEHLTE IN DER CALL KLASSE"""
+        try:
+            print(f"[CALL] Preparing {response} response for caller {caller_id}")
+            
+            # ✅ KORREKT: Einheitliches SIP + JSON Format
+            response_data = {
+                "MESSAGE_TYPE": "CALL_RESPONSE",
+                "RESPONSE": response,
+                "CALLER_CLIENT_ID": caller_id,
+                "TIMESTAMP": int(time.time()),
+                "CLIENT_NAME": getattr(self.client, '_client_name', 'Unknown')
+            }
+            
+            # ✅ KORREKT: SIP-Nachricht mit JSON Body erstellen
+            response_msg = self.client.build_sip_message("MESSAGE", "server", response_data)
+            
+            print(f"[CALL] Built framed SIP message: {len(response_msg)} chars")
+            
+            # ✅ KORREKT: Immer send_frame verwenden
+            if hasattr(self.client, 'client_socket') and self.client.client_socket:
+                success = send_frame(self.client.client_socket, response_msg.encode('utf-8'))
+                print(f"[CALL] send_frame result: {success}")
+                
+                if success:
+                    print(f"[CALL] ✓ Framed SIP response '{response}' sent successfully")
+                else:
+                    print(f"[CALL ERROR] ✗ Failed to send framed SIP response")
+                    
+                return success
+            else:
+                print("[CALL ERROR] No socket available for framed SIP response")
+                return False
+            
+        except Exception as e:
+            print(f"[CALL CRITICAL ERROR] Failed to send framed SIP response: {str(e)}")
+            return False
     def _reject_incoming_call(self, caller_id):
         """Lehnt eingehenden Anruf ab - VOLLSTÄNDIG FRAME-SIP KOMPATIBEL"""
         try:
@@ -4581,44 +4633,6 @@ class CALL:
         print("=== END DEBUG ===\n")
 
     
-    def _send_call_response(self, response, caller_id):
-        """VOLLSTÄNDIG FRAME-SIP KOMPATIBEL: Sendet Response im korrekten Format"""
-        try:
-            print(f"[CALL] Preparing framed SIP {response} response for caller {caller_id}")
-            
-            # ✅ KORREKT: Einheitliches SIP + JSON Format
-            response_data = {
-                "MESSAGE_TYPE": "CALL_RESPONSE",
-                "RESPONSE": response,
-                "CALLER_CLIENT_ID": caller_id,
-                "TIMESTAMP": int(time.time()),
-                "CLIENT_NAME": getattr(self.client, '_client_name', 'Unknown')
-            }
-            
-            # ✅ KORREKT: SIP-Nachricht mit JSON Body erstellen
-            response_msg = self.client.build_sip_message("MESSAGE", "server", response_data)
-            
-            print(f"[CALL] Built framed SIP message: {len(response_msg)} chars")
-            
-            # ✅ KORREKT: Immer send_frame verwenden
-            if hasattr(self.client, 'client_socket') and self.client.client_socket:
-                success = send_frame(self.client.client_socket, response_msg.encode('utf-8'))
-                print(f"[CALL] send_frame result: {success}")
-                
-                if success:
-                    print(f"[CALL] ✓ Framed SIP response '{response}' sent successfully")
-                else:
-                    print(f"[CALL ERROR] ✗ Failed to send framed SIP response")
-                    
-                return success
-            else:
-                print("[CALL ERROR] No socket available for framed SIP response")
-                return False
-            
-        except Exception as e:
-            print(f"[CALL CRITICAL ERROR] Failed to send framed SIP response: {str(e)}")
-            return False
-
     def handle_call_response(self, msg):
         """Verarbeitet Call-Antworten - VOLLSTÄNDIG KORRIGIERT FÜR CLIENT"""
         try:
@@ -4645,7 +4659,7 @@ class CALL:
                 print(f"[CALL] Call accepted by callee")
                 
                 # Extrahiere Relay-Informationen falls vorhanden
-                use_relay = custom_data.get('USE_AUDIO_RELAY', False)
+                use_relay = custom_data.get('USE_AUDIO_RELAY', True)
                 relay_ip = custom_data.get('AUDIO_RELAY_IP')
                 relay_port = custom_data.get('AUDIO_RELAY_PORT', 51822)
                 
@@ -4655,20 +4669,25 @@ class CALL:
                     self.relay_server_ip = relay_ip
                     self.relay_server_port = relay_port
                     
-                    # ✅ STARTE AUDIO STREAMS MIT RELAY
-                    if hasattr(self, 'current_secret') and self.current_secret:
-                        print(f"[CALL] Starting audio streams with relay")
-                        self._start_audio_streams()
-                    else:
-                        print("[CALL ERROR] No session secret for audio streams")
+                    # ✅ KORREKTUR: NUR RELAY KONFIGURIEREN, ABER AUDIO STREAMS NOCH NICHT STARTEN
+                    # Die Audio Streams werden erst nach CALL_CONFIRMED gestartet
+                    print(f"[CALL] Relay configured, waiting for CALL_CONFIRMED to start audio")
+                    
                 else:
                     print("[CALL] Direct connection (no relay)")
                     
-                # UI aktualisieren
+                # ✅ KORREKTUR: SICHERER UI UPDATE OHNE 'recipient' FIELD
                 if hasattr(self.client, 'update_call_ui'):
                     recipient_name = "Unknown"
+                    # Verschiedene Möglichkeiten um den Namen zu finden
                     if hasattr(self, 'pending_call') and self.pending_call:
-                        recipient_name = self.pending_call['recipient'].get('name', 'Unknown')
+                        if 'recipient' in self.pending_call:
+                            recipient_name = self.pending_call['recipient'].get('name', 'Unknown')
+                        elif 'caller_name' in self.pending_call:
+                            recipient_name = self.pending_call.get('caller_name', 'Unknown')
+                        elif hasattr(self.client, 'selected_entry'):
+                            recipient_name = self.client.selected_entry.get('name', 'Unknown')
+                    
                     self.client.update_call_ui(True, "connected", recipient_name)
                     
             elif response == "rejected":
@@ -4713,6 +4732,8 @@ class CALL:
             self.cleanup_call_resources()
             return False
 
+
+
     def handle_call_confirmed(self, msg):
         """Verarbeitet Call-Bestätigung für Angerufene - JETZT MIT UDP RELAY"""
         try:
@@ -4744,6 +4765,7 @@ class CALL:
                 
                 # ✅ KRITISCH: active_call ZUERST setzen!
                 self.active_call = True
+                self.client.active_call = True
                 print(f"[CALL] Active call set to: {self.active_call}")
                 
                 # ✅ KORREKTUR: Audio streams MIT current_secret starten
@@ -5064,7 +5086,6 @@ class PHONEBOOK(ctk.CTk):
         if not self._client_name:
             self._client_name = "Unknown"
         self.current_secret = None
-        self.active_call = False
         self.server_ip = "127.0.0.1"
         self._message_queue = []
         self._processing_queue = False

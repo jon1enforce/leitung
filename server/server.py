@@ -1288,10 +1288,10 @@ class CONVEY:
             print(f"[UDP RELAY ERROR] Failed to start: {e}")
 
     def _handle_udp_relay(self):
-        """VERBESSERTER UDP Relay mit besserem Logging und Fehlerbehandlung"""
+        """VERBESSERTER UDP Relay MIT 2-PORT SYSTEM"""
         import select
         
-        print("[UDP RELAY] ✅ Starting improved relay handler")
+        print("[UDP RELAY] ✅ Starting 2-port relay handler")
         packet_count = 0
         error_count = 0
         last_log_time = time.time()
@@ -1323,19 +1323,24 @@ class CONVEY:
                     print(f"[UDP RELAY] Active: {packet_count} packets, {len(self.audio_relays)} calls")
                     last_log_time = current_time
                 
-                # ✅ PAKET WEITERLEITEN
+                # ✅ PAKET WEITERLEITEN MIT 2-PORT LOGIK
                 relay_success = False
                 target_addr = None
                 call_id_found = None
                 
-                # 🔄 SCHNELLE ZIELSUCHE
+                # 🔄 SCHNELLE ZIELSUCHE MIT 2-PORT SYSTEM
                 for call_id, clients in list(self.audio_relays.items()):
-                    if addr == clients.get('caller_addr'):
-                        target_addr = clients.get('callee_addr')
+                    caller_addr = clients.get('caller_addr')
+                    callee_addr = clients.get('callee_addr')
+                    
+                    # Wenn Paket vom Caller kommt → sende an Callee
+                    if addr == caller_addr:
+                        target_addr = callee_addr
                         call_id_found = call_id
                         break
-                    elif addr == clients.get('callee_addr'):
-                        target_addr = clients.get('caller_addr')
+                    # Wenn Paket vom Callee kommt → sende an Caller  
+                    elif addr == callee_addr:
+                        target_addr = caller_addr
                         call_id_found = call_id
                         break
                 
@@ -1373,16 +1378,22 @@ class CONVEY:
         
         print(f"[UDP RELAY] 🛑 Relay handler stopped. Total packets: {packet_count}")
 
+
     def _register_audio_relay(self, call_id, caller_name, callee_name):
-        """Registriert Audio-Relay MIT KORREKTEN PORTS"""
+        """Registriert Audio-Relay MIT 2-PORT SYSTEM"""
         try:
             print(f"[RELAY] Registering audio relay: {caller_name} <-> {callee_name}")
             
             caller_ip = None
             callee_ip = None
-            # ✅ KORREKTUR: Clients empfangen auf 51821, senden zu Relay auf 51822
-            caller_port = 51821  # Client EMPFÄNGT auf diesem Port
-            callee_port = 51821  # Client EMPFÄNGT auf diesem Port
+            
+            # ✅ KORREKTUR: 2-PORT SYSTEM
+            caller_listen_port = 51821  # Caller EMPFÄNGT auf diesem Port
+            callee_listen_port = 51822  # Callee EMPFÄNGT auf diesem Port
+            
+            print(f"[RELAY] Port mapping:")
+            print(f"  Caller: listens on {caller_listen_port}, sends to {callee_listen_port}")
+            print(f"  Callee: listens on {callee_listen_port}, sends to {caller_listen_port}")
             
             # ✅ VERBESSERTE CLIENT-SUCHE MIT DETAILIERTEM DEBUGGING
             with self.server.clients_lock:
@@ -1437,9 +1448,9 @@ class CONVEY:
                 print(f"[RELAY ERROR] ❌ Could not find callee IP for {callee_name}")
                 return False
             
-            # ✅ ADRESSEN SETZEN
-            caller_addr = (caller_ip, caller_port)
-            callee_addr = (callee_ip, callee_port)
+            # ✅ ADRESSEN SETZEN MIT 2-PORT SYSTEM
+            caller_addr = (caller_ip, caller_listen_port)
+            callee_addr = (callee_ip, callee_listen_port)
             
             print(f"[RELAY] Final addresses:")
             print(f"  Caller: {caller_addr}")
@@ -1469,6 +1480,7 @@ class CONVEY:
         with self.relay_lock:
             if call_id in self.audio_relays:
                 del self.audio_relays[call_id]
+                print(f"[RELAY] Unregistered audio relay for call {call_id}")
 
     def handle_get_public_key(self, msg, client_socket, client_name):
         """VOLLSTÄNDIG KORRIGIERT: Public-Key-Antwort mit erweitertem Debugging"""
@@ -1607,7 +1619,7 @@ class CONVEY:
         try:
             custom_data = msg.get('custom_data', {})
             response = custom_data.get('RESPONSE')
-            caller_id = custom_data.get('CALLER_CLIENT_ID')  # ✅ Client-ID
+            caller_id = custom_data.get('CALLER_CLIENT_ID')
             
             print(f"[CONVEY] Framed SIP call response from {client_name}: {response}")
             print(f"[CONVEY DEBUG] Caller ID: {caller_id}")
@@ -1617,7 +1629,7 @@ class CONVEY:
                 print("[CONVEY ERROR] Missing response or caller_id in framed SIP")
                 return False
                 
-            # ✅ KORREKTUR: CALL-SUCHE NUR MIT CLIENT-ID
+            # ✅ KORREKTUR: CALL-SUCHE MIT KONSISTENTEN IDS
             call_id = None
             call_data = None
             
@@ -1625,10 +1637,14 @@ class CONVEY:
             for cid, data in self.active_calls.items():
                 print(f"[CONVEY DEBUG] Call {cid}: caller_id={data.get('caller_id')}, callee_id={data.get('callee_id')}, callee_name={data.get('callee_name')}")
                 
-                # ✅ KORREKTUR: Suche NUR nach callee_id (nicht Name)
-                # client_name ist hier die Client-ID des antwortenden Clients
-                callee_matches = data['callee_id'] == client_name  # ❌ KORREKTUR: Nur ID-Vergleich
-                caller_matches = data['caller_id'] == caller_id
+                # ✅ KORREKTUR: Suche nach callee_id (ID) statt callee_name
+                # client_name ist hier der NAME, aber wir müssen nach der ID suchen
+                callee_matches = str(data['callee_id']) == str(client_name)  # ID-Vergleich
+                caller_matches = str(data['caller_id']) == str(caller_id)    # ID-Vergleich
+                
+                # ✅ FALLBACK: Suche auch nach callee_name falls ID nicht matcht
+                if not callee_matches:
+                    callee_matches = str(data['callee_name']) == str(client_name)  # Name-Vergleich
                 
                 if callee_matches and caller_matches:
                     call_id = cid
@@ -1637,7 +1653,7 @@ class CONVEY:
                     break
             
             if not call_data:
-                print(f"[CONVEY ERROR] No active call found for callee_id {client_name} -> caller_id {caller_id}")
+                print(f"[CONVEY ERROR] No active call found for client {client_name} -> caller_id {caller_id}")
                 print(f"[CONVEY DEBUG] Available calls: {list(self.active_calls.keys())}")
                 for cid, data in self.active_calls.items():
                     print(f"  Call {cid}: caller_id={data.get('caller_id')}, callee_id={data.get('callee_id')}, callee_name={data.get('callee_name')}")
@@ -1671,7 +1687,6 @@ class CONVEY:
                     "RESPONSE": "accepted",
                     "CALLER_CLIENT_ID": caller_id,
                     "TIMESTAMP": int(time.time()),
-                    # ✅ FEHLENDE FELDER HINZUGEFÜGT:
                     "USE_AUDIO_RELAY": True,
                     "AUDIO_RELAY_IP": server_ip,
                     "AUDIO_RELAY_PORT": self.udp_relay_port
@@ -1688,7 +1703,6 @@ class CONVEY:
                     callee_msg_data = {
                         "MESSAGE_TYPE": "CALL_CONFIRMED",
                         "TIMESTAMP": int(time.time()),
-                        # ✅ FEHLENDE FELDER HINZUGEFÜGT:
                         "USE_AUDIO_RELAY": True,
                         "AUDIO_RELAY_IP": server_ip,
                         "AUDIO_RELAY_PORT": self.udp_relay_port
@@ -1704,7 +1718,6 @@ class CONVEY:
             elif response == "rejected":
                 print(f"[CONVEY] Call {call_id} rejected by {client_name}")
                 
-                # ✅ FRAME-SIP REJECTED NACHRICHT
                 response_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], {
                     "MESSAGE_TYPE": "CALL_RESPONSE",
                     "RESPONSE": "rejected",
@@ -1722,7 +1735,6 @@ class CONVEY:
             elif response == "error":
                 print(f"[CONVEY] Call {call_id} error from {client_name}")
                 
-                # ✅ FRAME-SIP ERROR NACHRICHT
                 response_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], {
                     "MESSAGE_TYPE": "CALL_RESPONSE", 
                     "RESPONSE": "error",
