@@ -999,10 +999,10 @@ class AccurateRelayManager:
                     registration_data
                 )
                 
-                from server import send_frame  # Framed SIP verwenden
-                if send_frame(sock, sip_message.encode()):
+                # ✅ KORREKTUR: Verwende send_frame direkt statt Import
+                if send_frame(sock, sip_message.encode()):  # ❌ from server import entfernt
                     # Empfange Response
-                    response_data = recv_frame(sock)
+                    response_data = recv_frame(sock)  # ❌ from server import entfernt
                     if response_data:
                         response = json.loads(response_data.decode())
                         if response.get('status') == 'registered':
@@ -1041,9 +1041,9 @@ class AccurateRelayManager:
                     request_data
                 )
                 
-                from server import send_frame, recv_frame
-                if send_frame(sock, sip_message.encode()):
-                    response_data = recv_frame(sock)
+                # ✅ KORREKTUR: Verwende send_frame direkt statt Import
+                if send_frame(sock, sip_message.encode()):  # ❌ from server import entfernt
+                    response_data = recv_frame(sock)  # ❌ from server import entfernt
                     if response_data:
                         response = json.loads(response_data.decode())
                         if response.get('status') == 'success':
@@ -1098,8 +1098,8 @@ class AccurateRelayManager:
                 response_data
             )
             
-            from server import send_frame
-            return send_frame(client_socket, response_msg.encode())
+            # ✅ KORREKTUR: Verwende send_frame direkt statt Import
+            return send_frame(client_socket, response_msg.encode())  # ❌ from server import entfernt
             
         except Exception as e:
             print(f"Seed Request Error: {e}")
@@ -1203,8 +1203,8 @@ class AccurateRelayManager:
                     update_data
                 )
                 
-                from server import send_frame
-                if send_frame(sock, sip_message.encode()):
+                # ✅ KORREKTUR: Verwende send_frame direkt statt Import
+                if send_frame(sock, sip_message.encode()):  # ❌ from server import entfernt
                     print(f"📈 Load update an {seed_host}: {self.server_load}%")
                 
                 sock.close()
