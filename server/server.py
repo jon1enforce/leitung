@@ -1699,7 +1699,9 @@ class CONVEY:
                     call_data['status'] = 'accepted'
                     print(f"[CONVEY] ✅ Call accepted response sent to {call_data['caller_name']}")
                     
-                    # ✅ KORREKTUR: VOLLSTÄNDIGE CALLEE BESTÄTIGUNG
+                    # ✅✅✅ KORREKTUR: CALL_CONFIRMED an BEIDE CLIENTS
+                    
+                    # 1. CALL_CONFIRMED an CALLEE (godzilla)
                     callee_msg_data = {
                         "MESSAGE_TYPE": "CALL_CONFIRMED",
                         "TIMESTAMP": int(time.time()),
@@ -1710,6 +1712,20 @@ class CONVEY:
                     
                     callee_msg = self.server.build_sip_message("MESSAGE", client_name, callee_msg_data)
                     send_frame(client_socket, callee_msg.encode('utf-8'))
+                    print(f"[CONVEY] ✅ CALL_CONFIRMED sent to callee {client_name}")
+                    
+                    # 2. ✅✅✅ NEU: CALL_CONFIRMED an CALLER (kingkong)
+                    caller_confirmed_data = {
+                        "MESSAGE_TYPE": "CALL_CONFIRMED",
+                        "TIMESTAMP": int(time.time()),
+                        "USE_AUDIO_RELAY": True,
+                        "AUDIO_RELAY_IP": server_ip,
+                        "AUDIO_RELAY_PORT": self.udp_relay_port
+                    }
+                    
+                    caller_confirmed_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], caller_confirmed_data)
+                    send_frame(call_data['caller_socket'], caller_confirmed_msg.encode('utf-8'))
+                    print(f"[CONVEY] ✅ CALL_CONFIRMED sent to caller {call_data['caller_name']}")
                     
                     print(f"[CONVEY] ✅ Framed SIP call {call_id} accepted with UDP Relay: {relay_success}")
                 else:
