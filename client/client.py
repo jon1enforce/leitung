@@ -4152,7 +4152,9 @@ class CALL:
             session_secret = os.urandom(48)  # 16 IV + 32 AES Key
             iv = session_secret[:16]
             aes_key = session_secret[16:48]
-                
+            
+            self.current_secret = session_secret  
+            print(f"[CALL] Session secret stored in current_secret: {len(session_secret)} bytes")    
             # 5. Call-Daten vorbereiten
             call_data = {
                 "caller_name": self.client._client_name,
