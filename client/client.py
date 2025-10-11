@@ -2823,31 +2823,46 @@ class CALL:
 
 
     def audio_stream_out(self, target_ip, target_port, iv, key):
-        """Sendet Audio über UDP Relay - OHNE INITIALE ACTIVE_CALL PRÜFUNG"""
+        """Sendet Audio über UDP Relay - MIT KORREKTEM AUDIO-CONFIG INPUT PROFIL"""
         if not self.audio_available:
             print("❌ [AUDIO OUT] Kein Audio-Backend verfügbar")
             return False
             
         audio_socket = None
         
-        # ✅ KORREKTUR: KEINE INITIALE ACTIVE_CALL PRÜFUNG
-        print(f"[AUDIO OUT] Starting stream - Active call: {self.active_call}")
+        # ✅ NEU: ROBUSTER ACTIVE_CALL CHECK MIT TIMEOUT
+        print(f"[AUDIO OUT] Starting stream - Initial active_call: {self.active_call}")
+        
+        # Warte maximal 1 Sekunde auf active_call = True
+        import time
+        wait_start = time.time()
+        while not self.active_call and (time.time() - wait_start) < 1.0:
+            time.sleep(0.01)  # 10ms Intervalle
+        
+        if not self.active_call:
+            print("❌ [AUDIO OUT] Active call never became True - aborting after 1s timeout")
+            return False
+            
+        print(f"✅ [AUDIO OUT] Stream starting - Active call confirmed: {self.active_call}")
         
         try:
+            # ✅ KORREKT: Verwende AudioConfig Profile für Input
             print(f"[AUDIO OUT] Starting: {self.audio_config.sample_format_name}")
+            print(f"[AUDIO OUT] Sample Rate: {self.audio_config.RATE}Hz, Channels: {self.audio_config.CHANNELS}")
+            print(f"[AUDIO OUT] Format: {self.audio_config.FORMAT} ({self.audio_config.actual_format})")
             print(f"[AUDIO OUT] Target: {target_ip}:{target_port}")
             
-            # ✅ STREAM ÖFFNEN (ohne initiale active_call Prüfung)
+            # ✅ KORREKT: STREAM ÖFFNEN MIT AUDIO-CONFIG INPUT PROFIL
             if self.audio_available and self.audio:
                 self.input_stream = self.audio_config.audio.open(
-                    format=self.audio_config.FORMAT,
-                    channels=self.audio_config.CHANNELS,
-                    rate=self.audio_config.RATE,
+                    format=self.audio_config.FORMAT,  # ✅ Korrektes Format aus AudioConfig
+                    channels=self.audio_config.CHANNELS,  # ✅ Korrekte Kanäle aus AudioConfig
+                    rate=self.audio_config.RATE,  # ✅ Korrekte Sample Rate aus AudioConfig
                     input=True,
-                    frames_per_buffer=self.audio_config.CHUNK,
-                    input_device_index=self.audio_config.input_device_index
+                    frames_per_buffer=self.audio_config.CHUNK,  # ✅ Korrekte Chunk Size aus AudioConfig
+                    input_device_index=self.audio_config.input_device_index  # ✅ Korrektes Input Device
                 )
-                print("✅ [AUDIO OUT] Input stream opened")
+                print("✅ [AUDIO OUT] Input stream opened with AudioConfig profile")
             else:
                 print("❌ [AUDIO OUT] Audio nicht verfügbar")
                 return False
@@ -2863,7 +2878,7 @@ class CALL:
             while self.active_call and self.audio_available:
                 try:
                     raw_data = self.input_stream.read(
-                        self.audio_config.CHUNK, 
+                        self.audio_config.CHUNK,  # ✅ Korrekte Chunk Size
                         exception_on_overflow=False
                     )
                     
@@ -2913,44 +2928,72 @@ class CALL:
                 print("✅ [AUDIO OUT] Socket closed")
         
         return True
-
     def audio_stream_in(self, target_ip, target_port, iv, key):
-        """Empfängt Audio über UDP Relay - OHNE INITIALE ACTIVE_CALL PRÜFUNG"""
+        """Empfängt Audio über UDP Relay - MIT COMPATIBILITY WRAPPER"""
         audio_socket = None
         
         if not self.audio_available:
             print("❌ [AUDIO IN] Kein Audio-Backend verfügbar")
             return False
                 
-        # ✅ KORREKTUR: KEINE INITIALE ACTIVE_CALL PRÜFUNG
-        print(f"[AUDIO IN] Starting receiver - Active call: {self.active_call}")
+        # ✅ ROBUSTER ACTIVE_CALL CHECK MIT TIMEOUT
+        print(f"[AUDIO IN] Starting receiver - Initial active_call: {self.active_call}")
+        
+        # Warte maximal 1 Sekunde auf active_call = True
+        import time
+        wait_start = time.time()
+        while not self.active_call and (time.time() - wait_start) < 1.0:
+            time.sleep(0.01)
+        
+        if not self.active_call:
+            print("❌ [AUDIO IN] Active call never became True - aborting after 1s timeout")
+            return False
+            
+        print(f"✅ [AUDIO IN] Receiver starting - Active call confirmed: {self.active_call}")
         
         try:
-            print(f"[AUDIO IN] Starting receiver - Relay: {target_ip}:{target_port}")
-            print(f"[AUDIO IN] Output: 16-bit Mono @ {self.audio_config.RATE}Hz")
-            print(f"[AUDIO IN] Listening on port: {target_port}")
+            # ✅ KORREKT: Bestimme den KORREKTEN LISTEN PORT
+            if hasattr(self, 'pending_call') and self.pending_call:
+                listen_port = 51821
+                role = "Caller"
+            else:
+                listen_port = 51822
+                role = "Callee"
+                
+            print(f"[AUDIO IN] {role} mode - Listening on port: {listen_port}")
+            print(f"[AUDIO IN] Sending to relay port: {target_port}")
             
-            # ✅ STREAM ÖFFNEN (ohne initiale active_call Prüfung)
+            # ✅✅✅ KORREKT: COMPATIBILITY WRAPPER NUTZEN!
+            # Der AudioConfig Wrapper bestimmt automatisch das beste Format
+            print(f"[AUDIO IN] Using AudioConfig compatibility wrapper:")
+            print(f"  Output Format: {self.audio_config.actual_format}")
+            print(f"  Sample Rate: {self.audio_config.RATE}Hz")
+            print(f"  Channels: {self.audio_config.CHANNELS}")
+            print(f"  Device Index: {self.audio_config.output_device_index}")
+            
             if self.audio_available and self.audio:
                 self.output_stream = self.audio_config.audio.open(
-                    format=pyaudio.paInt16,
-                    channels=1,
-                    rate=self.audio_config.RATE,
+                    format=self.audio_config.FORMAT,  # ✅ Compatibility Wrapper Format!
+                    channels=self.audio_config.CHANNELS,  # ✅ Compatibility Wrapper Channels!
+                    rate=self.audio_config.RATE,  # ✅ Compatibility Wrapper Sample Rate!
                     output=True,
                     frames_per_buffer=self.audio_config.CHUNK,
                     output_device_index=self.audio_config.output_device_index
                 )
-                print("✅ [AUDIO IN] Output stream opened")
+                print(f"✅ [AUDIO IN] Output stream opened with Compatibility Wrapper:")
+                print(f"   Format: {self.audio_config.sample_format_name}")
+                print(f"   Channels: {self.audio_config.CHANNELS}")
+                print(f"   Sample Rate: {self.audio_config.RATE}Hz")
             else:
                 print("❌ [AUDIO IN] Audio nicht verfügbar")
                 return False
             
-            # ✅ KORREKTUR: Verwende target_port für Binding
+            # ✅ KORREKT: Verwende listen_port für Binding
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            audio_socket.bind(('0.0.0.0', target_port))
+            audio_socket.bind(('0.0.0.0', listen_port))
             audio_socket.settimeout(0.1)
             
-            print(f"🎧 [AUDIO IN] Receiver active on port {target_port} - waiting for audio packets...")
+            print(f"🎧 [AUDIO IN] Receiver active on port {listen_port}")
             packet_counter = 0
             timeout_counter = 0
             
@@ -3003,11 +3046,16 @@ class CALL:
         
         return True
     def _start_audio_streams(self):
-        """Startet bidirektionale Audio-Streams MIT 2-PORT SYSTEM"""
+        """Startet bidirektionale Audio-Streams MIT KORREKTEN AUDIO-CONFIG PROFILEN"""
         # ✅ ACTIVE_CALL ZUERST SETZEN - VOR ALLEM ANDEREN!
         self.active_call = True
         self.client.active_call = True
         print(f"[AUDIO] Active call set to: {self.active_call}")
+        
+        # ✅ NEU: KRITISCHE SYNCHRONISATION - Warte bis active_call propagiert ist
+        import time
+        time.sleep(0.05)  # 50ms für Thread-Synchronisation
+        print(f"[AUDIO] After sync - Active call confirmed: {self.active_call}")
         
         if not self.current_secret:
             print("[AUDIO] No session key available")
@@ -3067,6 +3115,8 @@ class CALL:
             
             print(f"[AUDIO] Starting streams - Relay: {target_ip}")
             print(f"[AUDIO] Stream format: {self.audio_config.sample_format_name}")
+            print(f"[AUDIO] Sample Rate: {self.audio_config.RATE}Hz, Channels: {self.audio_config.CHANNELS}")
+            print(f"[AUDIO] Format: {self.audio_config.FORMAT} ({self.audio_config.actual_format})")
             
             # ✅✅✅ KORREKTUR: Audio-Threads ZUERST stoppen, DANN active_call setzen!
             self._stop_audio_streams()  # Jetzt ist active_call noch False - kein Problem!
@@ -3074,7 +3124,7 @@ class CALL:
             # Starte Timer-Anzeige
             self._start_call_timer()
             
-            # ✅ KORREKTE PARAMETER FÜR AUDIO STREAMS
+            # ✅ KORREKTE PARAMETER FÜR AUDIO STREAMS MIT AUDIO-CONFIG PROFILEN
             send_thread = threading.Thread(
                 target=self.audio_stream_out, 
                 args=(target_ip, send_to_port, iv, key),
