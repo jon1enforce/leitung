@@ -3024,7 +3024,6 @@ class CALL:
             # UI aktualisieren
             if hasattr(self.client, 'update_call_ui'):
                 caller_name = "Unbekannt"
-                # ✅ KORREKTUR: SICHERE NAMENSEXTRAKTION OHNE 'recipient'
                 if self.incoming_call:
                     caller_name = self.incoming_call.get('caller_name', 'Unbekannt')
                 elif self.pending_call and 'caller_name' in self.pending_call:
@@ -3045,24 +3044,23 @@ class CALL:
                 # Bestimme ob wir Caller oder Callee sind
                 if hasattr(self, 'pending_call') and self.pending_call:
                     # Wir sind der CALLER
-                    listen_port = 51821  # Wir empfangen auf 51821
-                    send_to_port = 51822  # Wir senden zu Callee auf 51822
+                    listen_port = 51821
+                    send_to_port = 51822
                     role = "Caller"
                 else:
                     # Wir sind der CALLEE  
-                    listen_port = 51822  # Wir empfangen auf 51822
-                    send_to_port = 51821  # Wir senden zu Caller auf 51821
+                    listen_port = 51822
+                    send_to_port = 51821
                     role = "Callee"
                     
                 print(f"[AUDIO] {role} mode - Listen: {listen_port}, Send to: {send_to_port}")
                 
             else:
-                # ❌ KEIN FALLBACK MEHR - RELAY IST VERPFLICHTEND
-                print("[AUDIO] ❌ ERROR: No UDP relay configured - audio cannot work without relay!")
+                print("[AUDIO] ❌ ERROR: No UDP relay configured!")
                 if hasattr(self.client, 'after'):
                     self.client.after(0, lambda: messagebox.showerror(
                         "Audio Error", 
-                        "Keine Relay-Verbindung verfügbar. Audio-Übertragung nicht möglich."
+                        "Keine Relay-Verbindung verfügbar."
                     ))
                 self.active_call = False
                 return
@@ -3070,23 +3068,23 @@ class CALL:
             print(f"[AUDIO] Starting streams - Relay: {target_ip}")
             print(f"[AUDIO] Stream format: {self.audio_config.sample_format_name}")
             
-            # Beende bestehende Audio-Threads
-            self._stop_audio_streams()
+            # ✅✅✅ KORREKTUR: Audio-Threads ZUERST stoppen, DANN active_call setzen!
+            self._stop_audio_streams()  # Jetzt ist active_call noch False - kein Problem!
             
             # Starte Timer-Anzeige
             self._start_call_timer()
             
-            # ✅ KORREKTE PARAMETER FÜR AUDIO STREAMS MIT 2-PORT SYSTEM
+            # ✅ KORREKTE PARAMETER FÜR AUDIO STREAMS
             send_thread = threading.Thread(
                 target=self.audio_stream_out, 
-                args=(target_ip, send_to_port, iv, key),  # Senden zum anderen Port
+                args=(target_ip, send_to_port, iv, key),
                 daemon=True,
                 name="AudioOut"
             )
             
             recv_thread = threading.Thread(
                 target=self.audio_stream_in,
-                args=(target_ip, listen_port, iv, key),   # Empfangen auf eigenem Port
+                args=(target_ip, listen_port, iv, key),
                 daemon=True,
                 name="AudioIn"
             )
@@ -3100,7 +3098,6 @@ class CALL:
             # UI aktualisieren
             if hasattr(self.client, 'update_call_ui'):
                 caller_name = "Unbekannt"
-                # ✅ KORREKTUR: SICHERE NAMENSEXTRAKTION OHNE 'recipient'
                 if self.incoming_call:
                     caller_name = self.incoming_call.get('caller_name', 'Unbekannt')
                 elif self.pending_call and 'caller_name' in self.pending_call:
@@ -3114,11 +3111,6 @@ class CALL:
             print(f"[AUDIO ERROR] Failed to start streams: {e}")
             self.active_call = False
             self.client.active_call = False
-            if hasattr(self.client, 'after'):
-                self.client.after(0, lambda: messagebox.showerror(
-                    "Audio Error", 
-                    f"Audio-Streams konnten nicht gestartet werden: {str(e)}"
-                ))
     def show_audio_devices_popup(self):
         """Audio-Geräte, Qualitätsauswahl und Rauschfilterung - KORRIGIERTE DPI-VERSION"""
         try:
