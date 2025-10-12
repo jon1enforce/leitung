@@ -2823,7 +2823,7 @@ class CALL:
 
 
     def audio_stream_out(self, target_ip, target_port, iv, key, session_id):
-        """Sendet Audio über UDP Relay MIT SESSION-MARKIERUNG (SHA3)"""
+        """Sendet Audio über UDP Relay MIT KORRIGIERTER SYNCHRONISATION"""
         if not self.audio_available:
             print("❌ [AUDIO OUT] Kein Audio-Backend verfügbar")
             return False
@@ -2832,18 +2832,30 @@ class CALL:
         
         print(f"[AUDIO OUT] Starting OUTGOING stream for session {session_id}")
         print(f"[AUDIO OUT] Target: {target_ip}:{target_port}")
+        print(f"[AUDIO OUT] Initial active_call: {self.active_call}")
         
-        # Warte auf active_call
+        # ✅ KORREKTUR: VERKÜRZTER TIMEOUT + BESSERE SYNCHRONISATION
         import time
         wait_start = time.time()
+        check_count = 0
         
         while not self.active_call:
-            if (time.time() - wait_start) > 2.0:
-                print("❌ [AUDIO OUT] Timeout waiting for active_call")
-                return False
-            time.sleep(0.01)
+            check_count += 1
+            current_time = time.time()
             
-        print(f"✅ [AUDIO OUT] Active call confirmed for session {session_id}")
+            # ✅ DETAILIERTES DEBUGGING
+            if check_count % 10 == 0:  # Alle 100ms loggen
+                print(f"[AUDIO OUT] Waiting for active_call... ({check_count} checks, {current_time - wait_start:.1f}s)")
+                print(f"[AUDIO OUT] Current active_call state: {self.active_call}")
+            
+            if (current_time - wait_start) > 1.5:  # Nur 1.5 Sekunden warten
+                print("❌ [AUDIO OUT] Timeout waiting for active_call")
+                print(f"[AUDIO OUT] Final state - active_call: {self.active_call}")
+                return False
+                
+            time.sleep(0.01)  # 10ms warten
+            
+        print(f"✅ [AUDIO OUT] Active call confirmed: {self.active_call}")
         
         try:
             # Input Stream öffnen
@@ -2921,7 +2933,7 @@ class CALL:
         
         return True
     def audio_stream_in(self, target_ip, listen_port, iv, key, expected_session_id):
-        """Empfängt Audio über UDP Relay MIT SESSION-FILTERUNG (SHA3)"""
+        """Empfängt Audio über UDP Relay MIT KORRIGIERTER SYNCHRONISATION"""
         audio_socket = None
         
         if not self.audio_available:
@@ -2929,18 +2941,30 @@ class CALL:
             return False
                 
         print(f"[AUDIO IN] Starting listener for session {expected_session_id} on port {listen_port}")
+        print(f"[AUDIO IN] Initial active_call: {self.active_call}")
         
-        # Warte auf active_call
+        # ✅ KORREKTUR: VERKÜRZTER TIMEOUT + BESSERE SYNCHRONISATION
         import time
         wait_start = time.time()
+        check_count = 0
         
         while not self.active_call:
-            if (time.time() - wait_start) > 2.0:
-                print("❌ [AUDIO IN] Timeout waiting for active_call")
-                return False
-            time.sleep(0.01)
+            check_count += 1
+            current_time = time.time()
             
-        print(f"✅ [AUDIO IN] Active call confirmed for session {expected_session_id}")
+            # ✅ DETAILIERTES DEBUGGING
+            if check_count % 10 == 0:  # Alle 100ms loggen
+                print(f"[AUDIO IN] Waiting for active_call... ({check_count} checks, {current_time - wait_start:.1f}s)")
+                print(f"[AUDIO IN] Current active_call state: {self.active_call}")
+            
+            if (current_time - wait_start) > 1.5:  # Nur 1.5 Sekunden warten
+                print("❌ [AUDIO IN] Timeout waiting for active_call")
+                print(f"[AUDIO IN] Final state - active_call: {self.active_call}")
+                return False
+                
+            time.sleep(0.01)  # 10ms warten
+            
+        print(f"✅ [AUDIO IN] Active call confirmed: {self.active_call}")
         
         try:
             # Output Stream öffnen
@@ -3039,7 +3063,7 @@ class CALL:
         
         return True
     def _start_audio_streams(self):
-        """Startet bidirektionale Audio-Streams MIT SESSION-FILTERUNG (SHA3)"""
+        """Startet bidirektionale Audio-Streams MIT VERBESSERTER SYNCHRONISATION"""
         try:
             print(f"[AUDIO] Starting audio streams - Initial active_call: {self.active_call}")
             
@@ -3055,7 +3079,7 @@ class CALL:
             
             # ✅ SICHERE SESSION-ID MIT SHA3
             import hashlib
-            session_id = hashlib.sha3_256(self.current_secret).hexdigest()[:16]  # 16 Zeichen für bessere Kollisionssicherheit
+            session_id = hashlib.sha3_256(self.current_secret).hexdigest()[:16]
             self.session_id = session_id
             
             if self.use_udp_relay and self.relay_server_ip:
@@ -3081,15 +3105,20 @@ class CALL:
                 print("[AUDIO] ❌ ERROR: No UDP relay configured!")
                 return
             
-            # ✅ ACTIVE_CALL SETZEN VOR THREAD-START
+            # ✅✅✅ KRITISCHE KORREKTUR: BESSERE SYNCHRONISATION
+            print("[AUDIO] Setting active_call to True...")
             self.active_call = True
             self.client.active_call = True
             
+            # ✅ VERLÄNGERTE VERZÖGERUNG FÜR THREAD-SYNCHRONISATION
             import time
-            time.sleep(0.1)
+            time.sleep(0.2)  # 200ms für bessere Synchronisation
             print(f"[AUDIO] Active call confirmed after sync: {self.active_call}")
             
+            # Alte Audio-Threads stoppen
             self._stop_audio_streams()
+            
+            # Starte Timer-Anzeige
             self._start_call_timer()
             
             iv = self.current_secret[:16]
@@ -3110,6 +3139,7 @@ class CALL:
                 name=f"AudioIn_{session_id}"
             )
             
+            # ✅ THREADS STARTEN
             send_thread.start()
             recv_thread.start()
             
