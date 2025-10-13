@@ -2874,11 +2874,16 @@ class CALL:
             else:
                 return False
             
-            # ✅ ✅ ✅ KORREKTUR: IMMER PORT 51823 ALS QUELLE VERWENDEN
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-            # ✅ KORREKTUR: SO_REUSEADDR FÜR PORT-SHARING
-            audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # ✅ KORREKTUR: SO_REUSEPORT FÜR ECHTES PORT-SHARING
+            try:
+                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                print("✅ [AUDIO OUT] SO_REUSEPORT enabled")
+            except:
+                # Fallback: SO_REUSEADDR
+                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                print("✅ [AUDIO OUT] SO_REUSEADDR enabled (fallback)")
 
             # ✅ KORREKTUR: BEIDE CLIENTS SENDEN VON PORT 51823
             source_port = 51823  # ✅ FESTER PORT FÜR BEIDE CLIENTS
@@ -3003,8 +3008,14 @@ class CALL:
             
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-            # ✅ KORREKTUR: SO_REUSEADDR FÜR PORT-SHARING
-            audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            # ✅ KORREKTUR: SO_REUSEPORT FÜR ECHTES PORT-SHARING
+            try:
+                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                print("✅ [AUDIO IN] SO_REUSEPORT enabled")
+            except:
+                # Fallback: SO_REUSEADDR
+                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                print("✅ [AUDIO IN] SO_REUSEADDR enabled (fallback)")
 
             # ✅ KORREKTUR: IMMER AUF PORT 51823 LAUSCHEN
             listen_port = 51823  # ✅ FESTER EMPFANGSPORT FÜR BEIDE CLIENTS
@@ -4889,6 +4900,11 @@ class CALL:
         """Aktualisiert die Timer-Anzeige in der UI"""
         if not self.call_timer_running or not self.active_call:
             return
+        
+        # ✅ PRÜFE OB UI NOCH EXISTIERT
+        if not hasattr(self.client, 'winfo_exists') or not self.client.winfo_exists():
+            self.stop_call_timer()
+            return
             
         try:
             elapsed = int(time.time() - self.call_start_time)
@@ -4908,6 +4924,7 @@ class CALL:
                 
         except Exception as e:
             print(f"[TIMER UI ERROR] {str(e)}")
+            self.stop_call_timer()
 
     def stop_call_timer(self):
         """Stoppt die Timer-Anzeige"""
