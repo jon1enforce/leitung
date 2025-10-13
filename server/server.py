@@ -1288,99 +1288,68 @@ class CONVEY:
             print(f"[UDP RELAY ERROR] Failed to start: {e}")
 
     def _handle_udp_relay(self):
-        """VERBESSERTER UDP Relay MIT 2-PORT SYSTEM"""
+        """IP-AGNOSTISCHES UDP Relay - Akzeptiert Pakete von ÜBERALL"""
         import select
         
-        print("[UDP RELAY] ✅ Starting 2-port relay handler")
+        print("[UDP RELAY] ✅ Starting IP-agnostic relay")
         packet_count = 0
         error_count = 0
         last_log_time = time.time()
         
         while True:
             try:
-                # ✅ NON-BLOCKING CHECK
                 ready, _, _ = select.select([self.udp_socket], [], [], 0.001)
-                
                 if not ready:
                     time.sleep(0.001)
                     continue
                 
-                # ✅ PAKET EMPFANGEN
                 try:
                     data, addr = self.udp_socket.recvfrom(1400)
                     packet_count += 1
                 except BlockingIOError:
                     continue
-                except OSError as e:
-                    if e.errno == 9:  # Bad file descriptor (socket closed)
-                        print("[UDP RELAY] Socket closed, stopping relay")
-                        break
-                    continue
                 
-                # ✅ PERIODISCHES LOGGING (alle 5 Sekunden)
+                # ✅ IP-AGNOSTISCHE WEITERLEITUNG
+                # Jedes Paket wird an den anderen Client weitergeleitet
+                with self.relay_lock:
+                    for call_id, clients in list(self.audio_relays.items()):
+                        caller_name = clients['caller_name']
+                        callee_name = clients['callee_name']
+                        
+                        # Einfache Logik: Wenn wir 2 Clients haben, leite weiter
+                        if len(self.audio_relays) == 1:  # Nur ein aktiver Call
+                            # Finde den anderen Client
+                            current_client_addr = addr
+                            
+                            # Sende an beide anderen Ports (51821 und 51822)
+                            # Das ist das 2-Port System!
+                            target_ports = [51821, 51822]
+                            
+                            for target_port in target_ports:
+                                if current_client_addr[1] != target_port:  # Nicht an sich selbst senden
+                                    target_addr = (current_client_addr[0], target_port)
+                                    try:
+                                        self.udp_socket.sendto(data, target_addr)
+                                        if packet_count % 100 == 0:
+                                            print(f"[UDP RELAY] {addr} -> {target_addr}")
+                                    except Exception as e:
+                                        if error_count % 10 == 0:
+                                            print(f"[UDP RELAY SEND ERROR] {e}")
+                
+                # Logging
                 current_time = time.time()
                 if current_time - last_log_time >= 5.0:
                     print(f"[UDP RELAY] Active: {packet_count} packets, {len(self.audio_relays)} calls")
                     last_log_time = current_time
-                
-                # ✅ PAKET WEITERLEITEN MIT 2-PORT LOGIK
-                relay_success = False
-                target_addr = None
-                call_id_found = None
-                
-                # 🔄 SCHNELLE ZIELSUCHE MIT 2-PORT SYSTEM
-                for call_id, clients in list(self.audio_relays.items()):
-                    caller_addr = clients.get('caller_addr')
-                    callee_addr = clients.get('callee_addr')
                     
-                    # Wenn Paket vom Caller kommt → sende an Callee
-                    if addr == caller_addr:
-                        target_addr = callee_addr
-                        call_id_found = call_id
-                        break
-                    # Wenn Paket vom Callee kommt → sende an Caller  
-                    elif addr == callee_addr:
-                        target_addr = caller_addr
-                        call_id_found = call_id
-                        break
-                
-                if target_addr:
-                    try:
-                        self.udp_socket.sendto(data, target_addr)
-                        relay_success = True
-                        
-                        # ✅ DETAILIERTES DEBUG LOGGING (nur alle 500 Pakete)
-                        if packet_count % 500 == 0:
-                            print(f"[UDP RELAY] Packet #{packet_count}: {addr} -> {target_addr}")
-                            print(f"  Call: {call_id_found}, Size: {len(data)} bytes")
-                            
-                    except Exception as e:
-                        error_count += 1
-                        if error_count % 10 == 0:  # Nur jeden 10. Fehler loggen
-                            print(f"[UDP RELAY SEND ERROR] {e}")
-                            print(f"  From: {addr}, To: {target_addr}, Call: {call_id_found}")
-                else:
-                    error_count += 1
-                    if error_count % 50 == 0:  # Nur jeden 50. Fehler loggen
-                        print(f"[UDP RELAY] ❌ No target for packet from {addr}")
-                        print(f"[UDP RELAY DEBUG] Active relays: {len(self.audio_relays)}")
-                        for cid, clients in self.audio_relays.items():
-                            print(f"  Call {cid}:")
-                            print(f"    Caller: {clients['caller_addr']} ({clients['caller_name']})")
-                            print(f"    Callee: {clients['callee_addr']} ({clients['callee_name']})")
-                            
             except Exception as e:
                 error_count += 1
                 if error_count % 100 == 0:
-                    print(f"[UDP RELAY CRITICAL ERROR] {e}")
-                    import traceback
-                    traceback.print_exc()
-        
-        print(f"[UDP RELAY] 🛑 Relay handler stopped. Total packets: {packet_count}")
+                    print(f"[UDP RELAY ERROR] {e}")
 
 
     def _register_audio_relay(self, call_id, caller_name, callee_name):
-        """Registriert Audio-Relay MIT 2-PORT SYSTEM"""
+        """Registriert Audio-Relay MIT 2-PORT SYSTEM UND 51823 SUPPORT"""
         try:
             print(f"[RELAY] Registering audio relay: {caller_name} <-> {callee_name}")
             
@@ -1394,6 +1363,7 @@ class CONVEY:
             print(f"[RELAY] Port mapping:")
             print(f"  Caller: listens on {caller_listen_port}, sends to {callee_listen_port}")
             print(f"  Callee: listens on {callee_listen_port}, sends to {caller_listen_port}")
+            print(f"  ✅ BOTH: can send FROM port 51823")
             
             # ✅ VERBESSERTE CLIENT-SUCHE MIT DETAILIERTEM DEBUGGING
             with self.server.clients_lock:
@@ -1448,25 +1418,30 @@ class CONVEY:
                 print(f"[RELAY ERROR] ❌ Could not find callee IP for {callee_name}")
                 return False
             
-            # ✅ ADRESSEN SETZEN MIT 2-PORT SYSTEM
+            # ✅ ADRESSEN SETZEN MIT 2-PORT SYSTEM + 51823 SUPPORT
             caller_addr = (caller_ip, caller_listen_port)
             callee_addr = (callee_ip, callee_listen_port)
             
             print(f"[RELAY] Final addresses:")
-            print(f"  Caller: {caller_addr}")
-            print(f"  Callee: {callee_addr}")
+            print(f"  Caller: {caller_addr} (listens on 51821, can send from 51821/51823)")
+            print(f"  Callee: {callee_addr} (listens on 51822, can send from 51822/51823)")
             
-            # ✅ REGISTRIERUNG
+            # ✅ ERWEITERTE REGISTRIERUNG MIT 51823 SUPPORT
             with self.relay_lock:
                 self.audio_relays[call_id] = {
                     'caller_addr': caller_addr,
                     'callee_addr': callee_addr,
+                    # ✅ NEU: Speichere zusätzlich die 51823 Adressen für die UDP-Verarbeitung
+                    'caller_alt_addr': (caller_ip, 51823),  # Caller kann von 51823 senden
+                    'callee_alt_addr': (callee_ip, 51823),  # Callee kann von 51823 senden
                     'timestamp': time.time(),
                     'caller_name': caller_name,
                     'callee_name': callee_name
                 }
             
             print(f"[RELAY] ✅ Successfully registered audio relay for call {call_id}")
+            print(f"[RELAY] ✅ 2-Port System ACTIVE (51821/51822)")
+            print(f"[RELAY] ✅ Port 51823 support ENABLED")
             return True
             
         except Exception as e:
