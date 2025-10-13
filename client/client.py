@@ -982,7 +982,7 @@ class AudioConfig:
         self.quality_profile = "middle"
         
         self.CHUNK = 128
-        self.PORT = 51821
+
         
         # Output Format-Check
         self.output_supports_24bit = True
@@ -2879,9 +2879,9 @@ class CALL:
             
             # Bestimme Quell-Port basierend auf Rolle
             if hasattr(self, 'pending_call') and self.pending_call:
-                source_port = 51821  # Caller sendet VON Port 51821
+                source_port = 51823  # Caller sendet VON Port 51821
             else:
-                source_port = 51822  # Callee sendet VON Port 51822
+                source_port = 51823  # Callee sendet VON Port 51822
                 
             try:
                 audio_socket.bind(('0.0.0.0', source_port))  # ✅ NEUE ZEILE
