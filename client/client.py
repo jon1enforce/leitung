@@ -2876,10 +2876,13 @@ class CALL:
             
             # ✅ ✅ ✅ KORREKTUR: IMMER PORT 51823 ALS QUELLE VERWENDEN
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            
+
+            # ✅ KORREKTUR: SO_REUSEADDR FÜR PORT-SHARING
+            audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
             # ✅ KORREKTUR: BEIDE CLIENTS SENDEN VON PORT 51823
             source_port = 51823  # ✅ FESTER PORT FÜR BEIDE CLIENTS
-            
+
             try:
                 audio_socket.bind(('0.0.0.0', source_port))
                 print(f"✅ [AUDIO OUT] Bound to source port {source_port}")
@@ -2999,10 +3002,13 @@ class CALL:
                 return False
             
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            
+
+            # ✅ KORREKTUR: SO_REUSEADDR FÜR PORT-SHARING
+            audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+
             # ✅ KORREKTUR: IMMER AUF PORT 51823 LAUSCHEN
             listen_port = 51823  # ✅ FESTER EMPFANGSPORT FÜR BEIDE CLIENTS
-            
+
             try:
                 audio_socket.bind(('0.0.0.0', listen_port))
                 print(f"✅ [AUDIO IN] Bound to port {listen_port} for session {expected_session_id}")
