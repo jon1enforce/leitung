@@ -2825,7 +2825,7 @@ class CALL:
 
 
     def audio_stream_out(self, target_ip, target_port, iv, key, session_id):
-        """Sendet Audio über UDP Relay MIT FESTEM QUELL-PORT"""
+        """Sendet Audio über UDP Relay MIT FESTEM QUELL-PORT 51823"""
         if not self.audio_available:
             print("❌ [AUDIO OUT] Kein Audio-Backend verfügbar")
             return False
@@ -2874,17 +2874,14 @@ class CALL:
             else:
                 return False
             
-            # ✅ ✅ ✅ MINIMALINVASIVE KORREKTUR: FESTEN QUELL-PORT BINDEN
+            # ✅ ✅ ✅ KORREKTUR: IMMER PORT 51823 ALS QUELLE VERWENDEN
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             
-            # Bestimme Quell-Port basierend auf Rolle
-            if hasattr(self, 'pending_call') and self.pending_call:
-                source_port = 51823  # Caller sendet VON Port 51821
-            else:
-                source_port = 51823  # Callee sendet VON Port 51822
-                
+            # ✅ KORREKTUR: BEIDE CLIENTS SENDEN VON PORT 51823
+            source_port = 51823  # ✅ FESTER PORT FÜR BEIDE CLIENTS
+            
             try:
-                audio_socket.bind(('0.0.0.0', source_port))  # ✅ NEUE ZEILE
+                audio_socket.bind(('0.0.0.0', source_port))
                 print(f"✅ [AUDIO OUT] Bound to source port {source_port}")
             except OSError as e:
                 print(f"❌ [AUDIO OUT] Failed to bind to source port {source_port}: {e}")
@@ -2893,7 +2890,7 @@ class CALL:
             audio_socket.settimeout(0.1)
             
             print(f"🎤 [AUDIO OUT] Transmission ACTIVE for session {session_id}")
-            print(f"   Source: port {source_port}, Target: {target_ip}:{target_port}")  # ✅ DEBUG INFO
+            print(f"   Source: port {source_port}, Target: {target_ip}:{target_port}")
             
             packet_counter = 0
             
@@ -2951,6 +2948,7 @@ class CALL:
                 print(f"✅ [AUDIO OUT] Session {session_id} - Socket closed")
         
         return True
+
     def audio_stream_in(self, target_ip, listen_port, iv, key, expected_session_id):
         """Empfängt Audio über UDP Relay MIT KORRIGIERTER SYNCHRONISATION"""
         audio_socket = None
@@ -3001,6 +2999,9 @@ class CALL:
                 return False
             
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            
+            # ✅ KORREKTUR: IMMER AUF PORT 51823 LAUSCHEN
+            listen_port = 51823  # ✅ FESTER EMPFANGSPORT FÜR BEIDE CLIENTS
             
             try:
                 audio_socket.bind(('0.0.0.0', listen_port))
@@ -3081,8 +3082,9 @@ class CALL:
                 print(f"✅ [AUDIO IN] Session {expected_session_id} - Socket closed")
         
         return True
+
     def _start_audio_streams(self):
-        """Startet bidirektionale Audio-Streams MIT VERBESSERTER SYNCHRONISATION"""
+        """Startet bidirektionale Audio-Streams - KORRIGIERTE PORT-LOGIK"""
         try:
             print(f"[AUDIO] Starting audio streams - Initial active_call: {self.active_call}")
             
@@ -3104,14 +3106,16 @@ class CALL:
             if self.use_udp_relay and self.relay_server_ip:
                 target_ip = self.relay_server_ip
                 
-                # Rollen und Ports bestimmen
+                # ✅ KORREKTUR: BEIDE CLIENTS LAUSCHEN AUF 51823, SENDEN ZU SERVER-PORTS
                 if hasattr(self, 'pending_call') and self.pending_call:
-                    listen_port = 51821
-                    send_to_port = 51822
+                    # CALLER: Sendet zu Server:51821, Empfängt auf 51823
+                    listen_port = 51823    # ✅ Caller lauscht auf 51823
+                    send_to_port = 51821   # ✅ Caller sendet zu Server:51821
                     role = "Caller"
                 elif hasattr(self, 'incoming_call') and self.incoming_call:
-                    listen_port = 51822
-                    send_to_port = 51821
+                    # CALLEE: Sendet zu Server:51822, Empfängt auf 51823  
+                    listen_port = 51823    # ✅ Callee lauscht auf 51823
+                    send_to_port = 51822   # ✅ Callee sendet zu Server:51822
                     role = "Callee"
                 else:
                     print("[AUDIO] ❌ ERROR: Cannot determine call role!")
@@ -3127,7 +3131,6 @@ class CALL:
             # ✅✅✅ KRITISCHE KORREKTUR: NUR EINE active_call VARIABLE!
             print("[AUDIO] Setting active_call to True...")
             self.active_call = True  # ✅ NUR DIESE EINE!
-            # ❌ self.client.active_call = True  # ENTFERNT!
             
             # ✅ VERLÄNGERTE VERZÖGERUNG FÜR THREAD-SYNCHRONISATION
             import time
@@ -3150,7 +3153,7 @@ class CALL:
             
             recv_thread = threading.Thread(
                 target=self.audio_stream_in,
-                args=(target_ip, listen_port, iv, key, session_id),  # ✅ listen_port bleibt gleich
+                args=(target_ip, listen_port, iv, key, session_id),
                 daemon=True,
                 name=f"AudioIn_{session_id}"
             )
@@ -3162,7 +3165,8 @@ class CALL:
             self.audio_threads = [send_thread, recv_thread]
             self.call_start_time = time.time()
             
-            print(f"[AUDIO] ✅ Session {session_id} started - {role} on ports {listen_port}/{send_to_port}")
+            print(f"[AUDIO] ✅ Session {session_id} started - {role}")
+            print(f"[AUDIO] ✅ Listening on: {listen_port}, Sending to: {target_ip}:{send_to_port}")
             
         except Exception as e:
             print(f"[AUDIO ERROR] Failed to start streams: {e}")
