@@ -3002,25 +3002,7 @@ class Server:
             expected_id = existing_id + 1
         
         return str(numeric_ids[-1] + 1)
-
-    def _safe_remove_client(self, client_id):
-        """Thread-safe client removal"""
-        with self.clients_lock:
-            if client_id in self.clients:
-                del self.clients[client_id]
-                print(f"[SERVER] Client {client_id} entfernt")
-        
-        # Key-Liste aktualisieren
-        with self.clients_lock:
-            clients_copy = self.clients.copy()
-        
-        all_public_keys = [self.server_public_key]
-        for cid, client_info in clients_copy.items():
-            if 'public_key' in client_info:
-                all_public_keys.append(client_info['public_key'])
-        
-        with self.key_lock:
-            self.all_public_keys = all_public_keys            
+         
     def _handle_relay_manager_request(self, register_data, client_socket, client_address):
         """Verarbeitet Anfragen vom Relay-Manager (andere Server)"""
         try:
@@ -3102,13 +3084,20 @@ class Server:
             return True
         return False
     def _safe_remove_client(self, client_id):
-        """Thread-safe client removal"""
+        """Thread-safe client removal - ENTFERNT CLIENT KOMPLETT"""
         with self.clients_lock:
             if client_id in self.clients:
+                # ✅ VERIFY-GENERATOR ENTFERNEN
+                client_name = self.clients[client_id].get('name')
+                if client_name:
+                    remove_generator(client_name)
+                    print(f"🔐 [VERIFY] Generator für '{client_name}' entfernt")
+                
+                # ✅ CLIENT KOMPLETT ENTFERNEN
                 del self.clients[client_id]
-                print(f"[SERVER] Client {client_id} entfernt")
+                print(f"[SERVER] Client {client_id} komplett entfernt")
         
-        # Key-Liste aktualisieren
+        # ✅ KEY-LISTE AKTUALISIEREN
         with self.clients_lock:
             clients_copy = self.clients.copy()
         
@@ -3119,6 +3108,20 @@ class Server:
         
         with self.key_lock:
             self.all_public_keys = all_public_keys
+        
+        # ✅ AKTIVE CLIENTS DATEI AKTUALISIEREN (Client entfernen)
+        try:
+            if os.path.exists("active_clients.json"):
+                with open("active_clients.json", "r") as f:
+                    active_clients = json.load(f)
+                
+                if client_id in active_clients:
+                    del active_clients[client_id]
+                    with open("active_clients.json", "w") as f:
+                        json.dump(active_clients, f, indent=2)
+                    print(f"[SERVER] Client {client_id} aus active_clients.json entfernt")
+        except Exception as e:
+            print(f"⚠️ [SERVER] Fehler beim Aktualisieren active_clients.json: {e}")
 
     def _generate_client_id_locked(self):
         """Private method - muss innerhalb von clients_lock aufgerufen werden!"""
