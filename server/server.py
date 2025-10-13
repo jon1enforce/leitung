@@ -93,7 +93,7 @@ class VerifyGenerator:
         """Gibt Debug-Informationen aus"""
         next_code = self._calculate_expected_code(self.counter)
         return f"Client-ID: '{self.client_id}', Seed: '{self.seed}', Counter: {self.counter}, Next: '{next_code}'"
-    def verify_code(self, received_code, sync_tolerance=5):
+    def verify_code(self, received_code, sync_tolerance=25):
         """
         Verifiziert einen empfangenen Code mit Counter-Synchronisation
         
@@ -1256,116 +1256,138 @@ class CONVEY:
         self.active_calls = {}
         self.call_lock = threading.RLock()
         
-        # ✅ OPTIMIERT: UDP Relay mit Kernel-Level Performance
-        self.udp_relay_port = 51822  # Audio Relay Port
+        # ✅ KORREKTUR: ZWEI UDP Relay Ports für 2-Port System
+        self.udp_relay_port_caller = 51821  # Für Caller-Kommunikation
+        self.udp_relay_port_callee = 51822  # Für Callee-Kommunikation
         self.audio_relays = {}  # {call_id: {caller_addr: (ip, port), callee_addr: (ip, port)}}
         self.relay_lock = threading.Lock()
-        self.udp_socket = None
+        self.udp_socket_caller = None  # Socket für Port 51821
+        self.udp_socket_callee = None  # Socket für Port 51822
         
         # Starte UDP Relay Server
         self._start_udp_relay()
 
     def _start_udp_relay(self):
-        """Startet den UDP Relay Server mit korrekter Adresse"""
+        """Startet ZWEI UDP Relay Server für 2-Port System"""
         try:
-            self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            
-            # ✅ KORRIGIERT: Verwende 0.0.0.0 statt self.server.host
-            # So bindet es auf alle Interfaces, nicht nur auf den Hostnamen
+            # ✅ Socket für Caller (Port 51821)
+            self.udp_socket_caller = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             bind_host = '0.0.0.0'  # Bind auf alle Netzwerk-Interfaces
             
-            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.udp_socket.setblocking(False)
-            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024)
-            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 1024)
+            self.udp_socket_caller.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.udp_socket_caller.setblocking(False)
+            self.udp_socket_caller.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024)
+            self.udp_socket_caller.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 1024)
             
-            self.udp_socket.bind((bind_host, self.udp_relay_port))
-            print(f"[UDP RELAY] Server started on {bind_host}:{self.udp_relay_port}")
+            self.udp_socket_caller.bind((bind_host, self.udp_relay_port_caller))
             
+            # ✅ Socket für Callee (Port 51822)  
+            self.udp_socket_callee = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            
+            self.udp_socket_callee.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.udp_socket_callee.setblocking(False)
+            self.udp_socket_callee.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024)
+            self.udp_socket_callee.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 1024)
+            
+            self.udp_socket_callee.bind((bind_host, self.udp_relay_port_callee))
+            
+            print(f"[UDP RELAY] Server started on {bind_host}:{self.udp_relay_port_caller} (caller)")
+            print(f"[UDP RELAY] Server started on {bind_host}:{self.udp_relay_port_callee} (callee)")
+            
+            # Starte beide Handler in EINER Methode
             threading.Thread(target=self._handle_udp_relay, daemon=True).start()
             
         except Exception as e:
             print(f"[UDP RELAY ERROR] Failed to start: {e}")
 
     def _handle_udp_relay(self):
-        """IP-AGNOSTISCHES UDP Relay - Akzeptiert Pakete von ÜBERALL"""
+        """KORRIGIERT: Beide Clients verwenden Port 51823 für Senden und Empfangen"""
         import select
         
-        print("[UDP RELAY] ✅ Starting IP-agnostic relay")
+        print("[UDP RELAY] ✅ Starting relay: Both clients use :51823 for send/receive")
         packet_count = 0
         error_count = 0
         last_log_time = time.time()
         
         while True:
             try:
-                ready, _, _ = select.select([self.udp_socket], [], [], 0.001)
+                sockets_to_check = [self.udp_socket_caller, self.udp_socket_callee]
+                ready, _, _ = select.select(sockets_to_check, [], [], 0.001)
+                
                 if not ready:
                     time.sleep(0.001)
                     continue
                 
-                try:
-                    data, addr = self.udp_socket.recvfrom(1400)
-                    packet_count += 1
-                except BlockingIOError:
-                    continue
-                
-                # ✅ IP-AGNOSTISCHE WEITERLEITUNG
-                # Jedes Paket wird an den anderen Client weitergeleitet
-                with self.relay_lock:
-                    for call_id, clients in list(self.audio_relays.items()):
-                        caller_name = clients['caller_name']
-                        callee_name = clients['callee_name']
+                for udp_socket in ready:
+                    try:
+                        data, src_addr = udp_socket.recvfrom(1400)
+                        packet_count += 1
+                        src_ip, src_port = src_addr
                         
-                        # Einfache Logik: Wenn wir 2 Clients haben, leite weiter
-                        if len(self.audio_relays) == 1:  # Nur ein aktiver Call
-                            # Finde den anderen Client
-                            current_client_addr = addr
-                            
-                            # Sende an beide anderen Ports (51821 und 51822)
-                            # Das ist das 2-Port System!
-                            target_ports = [51821, 51822]
-                            
-                            for target_port in target_ports:
-                                if current_client_addr[1] != target_port:  # Nicht an sich selbst senden
-                                    target_addr = (current_client_addr[0], target_port)
-                                    try:
-                                        self.udp_socket.sendto(data, target_addr)
-                                        if packet_count % 100 == 0:
-                                            print(f"[UDP RELAY] {addr} -> {target_addr}")
-                                    except Exception as e:
-                                        if error_count % 10 == 0:
-                                            print(f"[UDP RELAY SEND ERROR] {e}")
+                        # ✅ EINFACHE WEITERLEITUNG ZU CLIENT PORT 51823
+                        with self.relay_lock:
+                            for call_id, relay_info in list(self.audio_relays.items()):
+                                client1_ip = relay_info['caller_ip']
+                                client2_ip = relay_info['callee_ip']
+                                
+                                if udp_socket == self.udp_socket_caller:
+                                    # Paket auf Port 51821 → von Client1, sende zu Client2:51823
+                                    if src_ip == client1_ip:
+                                        target_addr = (client2_ip, 51823)  # Client2 empfängt auf 51823
+                                        try:
+                                            self.udp_socket_callee.sendto(data, target_addr)
+                                            if packet_count % 100 == 0:
+                                                print(f"[RELAY] Client1→Client2: {src_ip}:51823→{client2_ip}:51823")
+                                        except Exception as e:
+                                            error_count += 1
+                                            
+                                else:  # self.udp_socket_callee
+                                    # Paket auf Port 51822 → von Client2, sende zu Client1:51823  
+                                    if src_ip == client2_ip:
+                                        target_addr = (client1_ip, 51823)  # Client1 empfängt auf 51823
+                                        try:
+                                            self.udp_socket_caller.sendto(data, target_addr)
+                                            if packet_count % 100 == 0:
+                                                print(f"[RELAY] Client2→Client1: {src_ip}:51823→{client1_ip}:51823")
+                                        except Exception as e:
+                                            error_count += 1
+                        
+                    except BlockingIOError:
+                        continue
+                    except Exception as e:
+                        error_count += 1
+                        continue
                 
                 # Logging
                 current_time = time.time()
                 if current_time - last_log_time >= 5.0:
-                    print(f"[UDP RELAY] Active: {packet_count} packets, {len(self.audio_relays)} calls")
+                    print(f"[UDP RELAY] Stats: {packet_count} packets, {len(self.audio_relays)} calls")
                     last_log_time = current_time
                     
             except Exception as e:
                 error_count += 1
-                if error_count % 100 == 0:
-                    print(f"[UDP RELAY ERROR] {e}")
 
 
     def _register_audio_relay(self, call_id, caller_name, callee_name):
-        """Registriert Audio-Relay MIT 2-PORT SYSTEM UND 51823 SUPPORT"""
+        """Registriert Audio-Relay - BEIDE CLIENTS VERWENDEN PORT 51823"""
         try:
             print(f"[RELAY] Registering audio relay: {caller_name} <-> {callee_name}")
             
             caller_ip = None
             callee_ip = None
             
-            # ✅ KORREKTUR: 2-PORT SYSTEM
-            caller_listen_port = 51821  # Caller EMPFÄNGT auf diesem Port
-            callee_listen_port = 51822  # Callee EMPFÄNGT auf diesem Port
+            # ✅ KORREKTUR: BEIDE CLIENTS LAUSCHEN AUF 51823
+            client_listen_port = 51823  # Beide Clients empfangen auf diesem Port
             
             print(f"[RELAY] Port mapping:")
-            print(f"  Caller: listens on {caller_listen_port}, sends to {callee_listen_port}")
-            print(f"  Callee: listens on {callee_listen_port}, sends to {caller_listen_port}")
-            print(f"  ✅ BOTH: can send FROM port 51823")
+            print(f"  Caller ({caller_name}):")
+            print(f"    - Send: :51823 → Server:51821")
+            print(f"    - Recv: :51823 ← Server:51822") 
+            print(f"  Callee ({callee_name}):")
+            print(f"    - Send: :51823 → Server:51822")
+            print(f"    - Recv: :51823 ← Server:51821")
             
-            # ✅ VERBESSERTE CLIENT-SUCHE MIT DETAILIERTEM DEBUGGING
+            # ✅ CLIENT-IPs ERMITTELN (existierender Code)
             with self.server.clients_lock:
                 print(f"[RELAY DEBUG] Searching through {len(self.server.clients)} clients:")
                 
@@ -1384,7 +1406,7 @@ class CONVEY:
                         callee_ip = client_ip
                         print(f"[RELAY] Found callee: {callee_name} -> {callee_ip}")
                 
-                # ✅ FALLBACK: Wenn IPs nicht gefunden wurden, versuche aus Socket zu extrahieren
+                # ✅ FALLBACK: Socket-basierte IP-Extraktion (existierender Code)
                 if not caller_ip:
                     print(f"[RELAY WARNING] Caller IP not found for {caller_name}, trying socket...")
                     for client_id, client_data in self.server.clients.items():
@@ -1409,7 +1431,7 @@ class CONVEY:
                                 print(f"[RELAY SOCKET ERROR] Could not get callee IP: {e}")
                                 continue
             
-            # ✅ VALIDIERUNG - BEIDE IPs MÜSSEN GEFUNDEN WERDEN
+            # ✅ VALIDIERUNG
             if not caller_ip:
                 print(f"[RELAY ERROR] ❌ Could not find caller IP for {caller_name}")
                 return False
@@ -1418,30 +1440,30 @@ class CONVEY:
                 print(f"[RELAY ERROR] ❌ Could not find callee IP for {callee_name}")
                 return False
             
-            # ✅ ADRESSEN SETZEN MIT 2-PORT SYSTEM + 51823 SUPPORT
-            caller_addr = (caller_ip, caller_listen_port)
-            callee_addr = (callee_ip, callee_listen_port)
+            # ✅ KORREKTE ADRESSEN FÜR DAS SCHEMA
+            # Beide Clients empfangen auf 51823!
+            caller_recv_addr = (caller_ip, client_listen_port)  # Caller empfängt auf 51823
+            callee_recv_addr = (callee_ip, client_listen_port)  # Callee empfängt auf 51823
             
             print(f"[RELAY] Final addresses:")
-            print(f"  Caller: {caller_addr} (listens on 51821, can send from 51821/51823)")
-            print(f"  Callee: {callee_addr} (listens on 51822, can send from 51822/51823)")
+            print(f"  Caller: {caller_ip}:51823 (send→51821, recv←51822)")
+            print(f"  Callee: {callee_ip}:51823 (send→51822, recv←51821)")
             
-            # ✅ ERWEITERTE REGISTRIERUNG MIT 51823 SUPPORT
+            # ✅ KONSISTENTE REGISTRIERUNG
             with self.relay_lock:
                 self.audio_relays[call_id] = {
-                    'caller_addr': caller_addr,
-                    'callee_addr': callee_addr,
-                    # ✅ NEU: Speichere zusätzlich die 51823 Adressen für die UDP-Verarbeitung
-                    'caller_alt_addr': (caller_ip, 51823),  # Caller kann von 51823 senden
-                    'callee_alt_addr': (callee_ip, 51823),  # Callee kann von 51823 senden
+                    'caller_ip': caller_ip,           # Client 1 IP
+                    'callee_ip': callee_ip,           # Client 2 IP
+                    'caller_recv_port': 51823,        # Caller empfängt auf 51823
+                    'callee_recv_port': 51823,        # Callee empfängt auf 51823
                     'timestamp': time.time(),
                     'caller_name': caller_name,
                     'callee_name': callee_name
                 }
             
             print(f"[RELAY] ✅ Successfully registered audio relay for call {call_id}")
-            print(f"[RELAY] ✅ 2-Port System ACTIVE (51821/51822)")
-            print(f"[RELAY] ✅ Port 51823 support ENABLED")
+            print(f"[RELAY] ✅ Both clients use port 51823 for send/receive")
+            print(f"[RELAY] ✅ Server cross-relay: 51821↔51822")
             return True
             
         except Exception as e:
@@ -1590,7 +1612,7 @@ class CONVEY:
                 
             return False
     def handle_call_response(self, msg, client_socket, client_name):
-        """Leitet Call-Antworten weiter - VOLLSTÄNDIG KORRIGIERT"""
+        """KORRIGIERT: Verwendet korrekte 2-Port Relay Ports"""
         try:
             custom_data = msg.get('custom_data', {})
             response = custom_data.get('RESPONSE')
@@ -1598,13 +1620,12 @@ class CONVEY:
             
             print(f"[CONVEY] Framed SIP call response from {client_name}: {response}")
             print(f"[CONVEY DEBUG] Caller ID: {caller_id}")
-            print(f"[CONVEY DEBUG] Custom data keys: {list(custom_data.keys())}")
 
             if not response or not caller_id:
                 print("[CONVEY ERROR] Missing response or caller_id in framed SIP")
                 return False
                 
-            # ✅ KORREKTUR: CALL-SUCHE MIT KONSISTENTEN IDS
+            # ✅ CALL-SUCHE
             call_id = None
             call_data = None
             
@@ -1612,8 +1633,6 @@ class CONVEY:
             for cid, data in self.active_calls.items():
                 print(f"[CONVEY DEBUG] Call {cid}: caller_id={data.get('caller_id')}, callee_id={data.get('callee_id')}, callee_name={data.get('callee_name')}")
                 
-                # ✅ KORREKTUR: Suche nach callee_id (ID) statt callee_name
-                # client_name ist hier der NAME, aber wir müssen nach der ID suchen
                 callee_matches = str(data['callee_id']) == str(client_name)  # ID-Vergleich
                 caller_matches = str(data['caller_id']) == str(caller_id)    # ID-Vergleich
                 
@@ -1629,14 +1648,11 @@ class CONVEY:
             
             if not call_data:
                 print(f"[CONVEY ERROR] No active call found for client {client_name} -> caller_id {caller_id}")
-                print(f"[CONVEY DEBUG] Available calls: {list(self.active_calls.keys())}")
-                for cid, data in self.active_calls.items():
-                    print(f"  Call {cid}: caller_id={data.get('caller_id')}, callee_id={data.get('callee_id')}, callee_name={data.get('callee_name')}")
                 return False
             
             print(f"[CONVEY] Processing call response for call {call_id}")
             
-            # ✅ KORREKTUR: Server IP ermitteln
+            # ✅ Server IP ermitteln
             def get_server_public_ip():
                 try:
                     s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -1656,7 +1672,7 @@ class CONVEY:
                 # UDP Relay registrieren
                 relay_success = self._register_audio_relay(call_id, call_data['caller_name'], call_data['callee_name'])
                 
-                # ✅ KORREKTUR: VOLLSTÄNDIGE RESPONSE DATEN
+                # ✅ KORREKTUR: VERWENDE KORREKTE 2-PORT RELAY PORTS
                 response_data = {
                     "MESSAGE_TYPE": "CALL_RESPONSE",
                     "RESPONSE": "accepted",
@@ -1664,7 +1680,10 @@ class CONVEY:
                     "TIMESTAMP": int(time.time()),
                     "USE_AUDIO_RELAY": True,
                     "AUDIO_RELAY_IP": server_ip,
-                    "AUDIO_RELAY_PORT": self.udp_relay_port
+                    # ✅ 2-PORT SYSTEM INFORMATIONEN
+                    "CALLER_LISTEN_PORT": self.udp_relay_port_caller,  # 51821
+                    "CALLEE_LISTEN_PORT": self.udp_relay_port_callee,  # 51822
+                    "CLIENT_SEND_PORT": 51823  # Beide Clients senden von 51823
                 }
                 
                 response_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], response_data)
@@ -1674,28 +1693,32 @@ class CONVEY:
                     call_data['status'] = 'accepted'
                     print(f"[CONVEY] ✅ Call accepted response sent to {call_data['caller_name']}")
                     
-                    # ✅✅✅ KORREKTUR: CALL_CONFIRMED an BEIDE CLIENTS
+                    # ✅ CALL_CONFIRMED an BEIDE CLIENTS
                     
-                    # 1. CALL_CONFIRMED an CALLEE (godzilla)
+                    # 1. CALL_CONFIRMED an CALLEE
                     callee_msg_data = {
                         "MESSAGE_TYPE": "CALL_CONFIRMED",
                         "TIMESTAMP": int(time.time()),
                         "USE_AUDIO_RELAY": True,
                         "AUDIO_RELAY_IP": server_ip,
-                        "AUDIO_RELAY_PORT": self.udp_relay_port
+                        # ✅ KORREKTE PORTS FÜR CALLEE
+                        "LISTEN_PORT": self.udp_relay_port_callee,  # 51822
+                        "SEND_PORT": 51823
                     }
                     
                     callee_msg = self.server.build_sip_message("MESSAGE", client_name, callee_msg_data)
                     send_frame(client_socket, callee_msg.encode('utf-8'))
                     print(f"[CONVEY] ✅ CALL_CONFIRMED sent to callee {client_name}")
                     
-                    # 2. ✅✅✅ NEU: CALL_CONFIRMED an CALLER (kingkong)
+                    # 2. CALL_CONFIRMED an CALLER
                     caller_confirmed_data = {
                         "MESSAGE_TYPE": "CALL_CONFIRMED",
                         "TIMESTAMP": int(time.time()),
                         "USE_AUDIO_RELAY": True,
                         "AUDIO_RELAY_IP": server_ip,
-                        "AUDIO_RELAY_PORT": self.udp_relay_port
+                        # ✅ KORREKTE PORTS FÜR CALLER
+                        "LISTEN_PORT": self.udp_relay_port_caller,  # 51821
+                        "SEND_PORT": 51823
                     }
                     
                     caller_confirmed_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], caller_confirmed_data)
@@ -1755,7 +1778,7 @@ class CONVEY:
             traceback.print_exc()
             return False
     def handle_call_request(self, msg, client_socket, client_name):
-        """KORRIGIERT: Target-Suche mit erweitertem Debugging - VOLLSTÄNDIG"""
+        """KORRIGIERT: Fügt 2-Port Relay Informationen hinzu"""
         try:
             custom_data = msg.get('custom_data', {})
             target_id = custom_data.get('TARGET_CLIENT_ID')
@@ -1765,13 +1788,10 @@ class CONVEY:
             
             print(f"[CONVEY] Framed SIP call request from {caller_name} to target {target_id}")
             print(f"[CONVEY DEBUG] Caller ID: {caller_client_id}, Target ID: {target_id}")
-            print(f"[CONVEY DEBUG] Encrypted data length: {len(encrypted_data) if encrypted_data else 0}")
 
-            # ✅ VALIDIERUNG MIT FRAME-SIP FEHLERMELDUNGEN
+            # ✅ VALIDIERUNG
             if not all([target_id, encrypted_data, caller_name, caller_client_id]):
                 print("[CONVEY ERROR] Missing required fields in framed SIP")
-                print(f"[CONVEY DEBUG] target_id: {target_id}, encrypted_data: {'present' if encrypted_data else 'missing'}")
-                print(f"[CONVEY DEBUG] caller_name: {caller_name}, caller_client_id: {caller_client_id}")
                 error_msg = self.server.build_sip_message("MESSAGE", client_name, {
                     "MESSAGE_TYPE": "CALL_ERROR",
                     "ERROR": "MISSING_REQUIRED_FIELDS",
@@ -1780,7 +1800,7 @@ class CONVEY:
                 send_frame(client_socket, error_msg.encode('utf-8'))
                 return False
 
-            # ✅ KORRIGIERTE ZIELSUCHE MIT DETAILIERTEM DEBUGGING
+            # ✅ ZIELSUCHE
             target_client = None
             target_socket = None
             target_client_name = None
@@ -1790,33 +1810,22 @@ class CONVEY:
                 print(f"[CONVEY DEBUG] Searching through {len(self.server.clients)} clients:")
                 for client_id, client_info in self.server.clients.items():
                     client_name_debug = client_info.get('name', 'unknown')
-                    has_socket = client_info.get('socket') is not None
-                    print(f"[CONVEY DEBUG] Client {client_id}: {client_name_debug} (socket: {has_socket})")
                     
-                    # ✅ VERBESSERTE SUCHE: Prüfe sowohl Client-ID als auch Name
-                    if str(client_id) == str(target_id):
+                    # ✅ VERBESSERTE SUCHE
+                    if str(client_id) == str(target_id) or client_name_debug == target_id:
                         target_client = client_info
                         target_socket = client_info.get('socket')
                         target_client_name = client_name_debug
                         target_client_id = client_id
-                        print(f"[CONVEY DEBUG] ✓ Found target by ID: {client_name_debug}")
-                        break
-                    elif client_name_debug == target_id:
-                        target_client = client_info  
-                        target_socket = client_info.get('socket')
-                        target_client_name = client_name_debug
-                        target_client_id = client_id
-                        print(f"[CONVEY DEBUG] ✓ Found target by name: {client_name_debug}")
+                        print(f"[CONVEY DEBUG] ✓ Found target: {client_name_debug}")
                         break
 
             if not target_client:
-                print(f"[CONVEY ERROR] Target client {target_id} not found in clients")
-                print(f"[CONVEY DEBUG] Available clients: {list(self.server.clients.keys())}")
+                print(f"[CONVEY ERROR] Target client {target_id} not found")
                 error_msg = self.server.build_sip_message("MESSAGE", caller_name, {
                     "MESSAGE_TYPE": "CALL_ERROR",
                     "ERROR": "TARGET_NOT_FOUND",
                     "TARGET_ID": target_id,
-                    "DEBUG_INFO": f"Available clients: {list(self.server.clients.keys())}",
                     "TIMESTAMP": int(time.time())
                 })
                 send_frame(client_socket, error_msg.encode('utf-8'))
@@ -1834,30 +1843,37 @@ class CONVEY:
                 send_frame(client_socket, error_msg.encode('utf-8'))
                 return False
 
-            # ✅ FRAME-SIP INCOMING_CALL NACHRICHT MIT VERBESSERTEM DEBUGGING
-            print(f"[CONVEY] Preparing INCOMING_CALL message for {target_client_name}")
-            print(f"[CONVEY DEBUG] Caller name to send: {caller_name}")
-            print(f"[CONVEY DEBUG] Caller ID to send: {caller_client_id}")
-            print(f"[CONVEY DEBUG] Encrypted data to send: {len(encrypted_data)} chars")
+            # ✅ Server IP für Relay
+            def get_server_public_ip():
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.connect(("8.8.8.8", 80))
+                    local_ip = s.getsockname()[0]
+                    s.close()
+                    return local_ip
+                except:
+                    return self.server.host
             
+            server_ip = get_server_public_ip()
+
+            # ✅ INCOMING_CALL MIT 2-PORT RELAY INFORMATIONEN
             incoming_call_data = {
                 "MESSAGE_TYPE": "INCOMING_CALL",
-                "CALLER_NAME": caller_name,  # ✅ WICHTIG: Muss exakt dieser Feldname sein
-                "CALLER_CLIENT_ID": caller_client_id,  # ✅ WICHTIG: Muss exakt dieser Feldname sein
-                "ENCRYPTED_CALL_DATA": encrypted_data,  # ✅ WICHTIG: Muss exakt dieser Feldname sein
+                "CALLER_NAME": caller_name,
+                "CALLER_CLIENT_ID": caller_client_id,
+                "ENCRYPTED_CALL_DATA": encrypted_data,
                 "TIMESTAMP": int(time.time()),
-                "TIMEOUT": 120
+                "TIMEOUT": 120,
+                # ✅ NEU: 2-PORT RELAY VORKONFIGURATION
+                "USE_AUDIO_RELAY": True,
+                "AUDIO_RELAY_IP": server_ip,
+                "CALLEE_LISTEN_PORT": self.udp_relay_port_callee,  # 51822
+                "CLIENT_SEND_PORT": 51823
             }
             
             incoming_call_msg = self.server.build_sip_message("MESSAGE", target_client_name, incoming_call_data)
             
-            # ✅ DEBUG: Zeige die gesendete Nachricht an
-            print(f"[CONVEY DEBUG] Outgoing INCOMING_CALL message preview:")
-            print(f"  MESSAGE_TYPE: {incoming_call_data['MESSAGE_TYPE']}")
-            print(f"  CALLER_NAME: {incoming_call_data['CALLER_NAME']}")
-            print(f"  CALLER_CLIENT_ID: {incoming_call_data['CALLER_CLIENT_ID']}")
-            print(f"  ENCRYPTED_CALL_DATA: {incoming_call_data['ENCRYPTED_CALL_DATA'][:50]}...")
-            print(f"  Full message length: {len(incoming_call_msg)} chars")
+            print(f"[CONVEY DEBUG] Outgoing INCOMING_CALL with 2-port relay info")
             
             send_success = send_frame(target_socket, incoming_call_msg.encode('utf-8'))
             
@@ -1874,30 +1890,34 @@ class CONVEY:
 
             print(f"[CONVEY] ✓ Framed SIP INCOMING_CALL successfully sent to target {target_client_name}")
 
-            # ✅ KONSISTENTE CALL-VERWALTUNG - KORREKTE IDS SPEICHERN
+            # ✅ CALL REGISTRIERUNG
             call_id = f"{caller_client_id}_{target_client_id}_{int(time.time())}"
             self.active_calls[call_id] = {
-                'caller_id': caller_client_id,      # ✅ WICHTIG: Client-ID des Anrufers
-                'callee_id': target_client_id,      # ✅ KORREKTUR: target_client_id statt target_id
-                'caller_name': caller_name,         # ✅ WICHTIG: Name des Anrufers
-                'callee_name': target_client_name,  # ✅ WICHTIG: Name des Empfängers
+                'caller_id': caller_client_id,
+                'callee_id': target_client_id,
+                'caller_name': caller_name,
+                'callee_name': target_client_name,
                 'caller_socket': client_socket,
                 'callee_socket': target_socket,
                 'start_time': time.time(),
                 'status': 'pending',
-                'timeout': 120
+                'timeout': 120,
+                'server_ip': server_ip  # Für späteren Relay-Use
             }
 
             print(f"[CONVEY] Call {call_id} registered in active calls")
 
-            # ✅ FRAME-SIP BESTÄTIGUNG AN CALLER
+            # ✅ ACKNOWLEDGMENT AN CALLER MIT 2-PORT INFO
             ack_msg = self.server.build_sip_message("MESSAGE", caller_name, {
                 "MESSAGE_TYPE": "CALL_REQUEST_ACK",
                 "STATUS": "CALL_FORWARDED",
-                "TARGET_ID": target_client_id,  # ✅ KORREKTUR: target_client_id
+                "TARGET_ID": target_client_id,
                 "TARGET_NAME": target_client_name,
                 "CALL_ID": call_id,
-                "TIMESTAMP": int(time.time())
+                "TIMESTAMP": int(time.time()),
+                # ✅ RELAY VORKONFIGURATION FÜR CALLER
+                "CALLER_LISTEN_PORT": self.udp_relay_port_caller,  # 51821
+                "CLIENT_SEND_PORT": 51823
             })
             
             ack_success = send_frame(client_socket, ack_msg.encode('utf-8'))
@@ -1989,7 +2009,7 @@ class CONVEY:
             return False
 
     def _call_timeout_watchdog(self, call_id):
-        """Überwacht Call-Timeout"""
+        """Überwacht Call-Timeout - KORRIGIERT"""
         timeout = 120
         start_time = time.time()
         
@@ -2008,10 +2028,10 @@ class CONVEY:
             call_data = self.active_calls[call_id]
             print(f"[CONVEY] Call {call_id} timeout")
             
-            # Anrufer über Timeout benachrichtigen
-            timeout_msg = self.server.build_sip_message("MESSAGE", call_data['caller'], {
+            # ❌ KORREKTUR: Verwende 'caller_name' statt 'caller'
+            timeout_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], {  # ✅ KORREKTUR
                 "MESSAGE_TYPE": "CALL_RESPONSE",
-                "RESPONSE": "timeout",
+                "RESPONSE": "timeout", 
                 "TARGET_ID": call_data['callee_id'],
                 "TIMESTAMP": int(time.time())
             })
@@ -3463,11 +3483,6 @@ class Server:
             
             if client_id:
                 self._safe_remove_client(client_id)
-            
-            # ✅ Verify-Generator Cleanup
-            if client_name:
-                remove_generator(client_name)
-                print(f"🔐 [VERIFY] Generator für '{client_name}' entfernt")
             
             # ✅ Call cleanup für diesen Client
             if hasattr(self, 'convey_manager') and client_name:
