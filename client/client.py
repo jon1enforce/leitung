@@ -2775,7 +2775,10 @@ class CALL:
         
         # ✅ Flexible Audio-Konfiguration
         self.audio_config = AudioConfig()
-        self.PORT = 51821
+        
+        # ✅ KORREKTUR: DYNAMISCHE PORTS statt feste Ports
+        self.listen_port = None  # Wird dynamisch gesetzt
+        self.send_to_port = None  # Wird dynamisch gesetzt
         
         # Audio-Streams
         self.input_stream = None
@@ -2783,7 +2786,7 @@ class CALL:
         # ✅ SIMPLIFIED: Nur UDP Relay, kein WireGuard
         self.use_udp_relay = False
         self.relay_server_ip = None
-        self.relay_server_port = 51822
+        self.relay_server_port = None  # Wird vom Server zugewiesen
         
         # ✅ KORREKTUR: Audio Device Management mit Fallback
         try:
@@ -2821,7 +2824,6 @@ class CALL:
         self.connection_state = "disconnected"
 
 
-
     def audio_stream_out(self, target_ip, target_port, iv, key, session_id):
         """Sendet Audio über UDP Relay MIT KORRIGIERTER SYNCHRONISATION"""
         if not self.audio_available:
@@ -2848,7 +2850,7 @@ class CALL:
                 print(f"[AUDIO OUT] Waiting for active_call... ({check_count} checks, {current_time - wait_start:.1f}s)")
                 print(f"[AUDIO OUT] Current active_call state: {self.active_call}")
             
-            if (current_time - wait_start) > 1.5:  # Nur 1.5 Sekunden warten
+            if (current_time - wait_start) > 3:  # Nur 1.5 Sekunden warten
                 print("❌ [AUDIO OUT] Timeout waiting for active_call")
                 print(f"[AUDIO OUT] Final state - active_call: {self.active_call}")
                 return False
@@ -3105,18 +3107,17 @@ class CALL:
                 print("[AUDIO] ❌ ERROR: No UDP relay configured!")
                 return
             
-            # ✅✅✅ KRITISCHE KORREKTUR: BESSERE SYNCHRONISATION
+            # ✅✅✅ KRITISCHE KORREKTUR: NUR EINE active_call VARIABLE!
             print("[AUDIO] Setting active_call to True...")
-            self.active_call = True
-            self.client.active_call = True
+            self.active_call = True  # ✅ NUR DIESE EINE!
+            # ❌ self.client.active_call = True  # ENTFERNT!
             
             # ✅ VERLÄNGERTE VERZÖGERUNG FÜR THREAD-SYNCHRONISATION
             import time
             time.sleep(0.2)  # 200ms für bessere Synchronisation
             print(f"[AUDIO] Active call confirmed after sync: {self.active_call}")
             
-            # Alte Audio-Threads stoppen
-            self._stop_audio_streams()
+
             
             # Starte Timer-Anzeige
             self._start_call_timer()
@@ -3150,8 +3151,7 @@ class CALL:
             
         except Exception as e:
             print(f"[AUDIO ERROR] Failed to start streams: {e}")
-            self.active_call = False
-            self.client.active_call = False
+            self.active_call = False  # ✅ HIER AUCH NUR EINE!
     def show_audio_devices_popup(self):
         """Audio-Geräte, Qualitätsauswahl und Rauschfilterung - KORRIGIERTE DPI-VERSION"""
         try:
@@ -4770,20 +4770,15 @@ class CALL:
 
 
     def handle_call_confirmed(self, msg):
-        """Verarbeitet Call-Bestätigung für Angerufene - JETZT MIT UDP RELAY"""
+        """Verarbeitet Call-Bestätigung für Angerufene - KORRIGIERTE REIHENFOLGE"""
         try:
             print(f"[CALL] CALL_CONFIRMED received, type: {type(msg)}")
-            print(f"[CALL] CALL_CONFIRMED keys: {list(msg.keys())}")
             
-            # ✅ FLEXIBLE DATENEXTRAKTION: custom_data ODER direkt aus msg
+            # ✅ DATENEXTRAKTION
             if isinstance(msg, dict) and 'custom_data' in msg:
-                # Nachricht hat custom_data Struktur
                 data = msg.get('custom_data', {})
-                print(f"[CALL] Using custom_data, keys: {list(data.keys())}")
             else:
-                # Nachricht ist bereits custom_data oder Haupt-Body
                 data = msg
-                print(f"[CALL] Using direct data, keys: {list(data.keys())}")
             
             # ✅ UDP Relay Konfiguration
             use_relay = data.get('USE_AUDIO_RELAY', False)
@@ -4798,25 +4793,26 @@ class CALL:
                 self.relay_server_ip = relay_ip
                 self.relay_server_port = relay_port
                 
-                # ✅ KRITISCH: active_call ZUERST setzen!
+                # ✅ KRITISCH: active_call ZUERST setzen - VOR Audio-Streams!
                 self.active_call = True
-                self.client.active_call = True
-                print(f"[CALL] Active call set to: {self.active_call}")
+                print(f"[CALL] ✅ Active call set to: {self.active_call}")
                 
-                # ✅ KORREKTUR: Audio streams MIT current_secret starten
+                # ✅ Kurze Verzögerung für Thread-Synchronisation
+                import time
+                time.sleep(0.05)  # 50ms für bessere Synchronisation
+                
+                # ✅ Audio streams MIT current_secret starten
                 if hasattr(self, 'current_secret') and self.current_secret:
                     print(f"[CALL] Starting audio streams with session secret ({len(self.current_secret)} bytes)")
                     self._start_audio_streams()
                     if hasattr(self, 'pending_call'):
                         self.pending_call['status'] = 'connected'
-                    print("[CALL] UDP Relay call established successfully")
+                    print("[CALL] ✅ UDP Relay call established successfully")
                 else:
                     print("[CALL ERROR] No session secret available for audio streams")
-                    print(f"[CALL DEBUG] current_secret available: {hasattr(self, 'current_secret')}")
                     
             else:
                 print("[CALL ERROR] No relay configuration in confirmation")
-                print(f"[CALL DEBUG] use_relay: {use_relay}, relay_ip: {relay_ip}")
                 
         except Exception as e:
             print(f"[CALL ERROR] Call confirmation handling failed: {str(e)}")
@@ -4962,6 +4958,9 @@ class CALL:
             if self.active_call or self.pending_call:
                 print("[CALL] Hanging up call")
                 
+                # ✅ ZUERST Audio-Streams stoppen
+                self._stop_audio_streams()
+                
                 # Hangup-Nachricht an Server
                 hangup_msg = self.client.build_sip_message("MESSAGE", "server", {
                     "MESSAGE_TYPE": "CALL_END",
@@ -5098,7 +5097,6 @@ class SecureVault:
 class PHONEBOOK(ctk.CTk):
     def __init__(self):
         super().__init__()
-        # Vorhandene Initialisierung...
         
         self.phonebook_entries = []  # Wichtig für UI
         self.phonebook_update_signal = None
@@ -5128,24 +5126,23 @@ class PHONEBOOK(ctk.CTk):
         self._last_minute_check = time.time()
         self._messages_this_minute = 0
         
-        # WireGuard Integration - ENTFERNEN da in CALL-Klasse integriert
-        # self.wg_manager = WireGuardManager()  # OBSOLETE
-        self.wg_interface_name = "wg-phonebook"
-        self.wg_config_path = f"/etc/wireguard/{self.wg_interface_name}.conf"
-        self.wg_peer_ip = None
-        self.wg_my_ip = None
+        # ✅ ENTFERNT: WireGuard Integration (nicht mehr benötigt)
+        # self.wg_interface_name = "wg-phonebook"
+        # self.wg_config_path = f"/etc/wireguard/{self.wg_interface_name}.conf"
+        # self.wg_peer_ip = None
+        # self.wg_my_ip = None
         
-        # Audio-Konstanten definieren
-        self.AUDIO_HOST = "10.8.0.0/24"  # WireGuard Netzwerk
-        self.AUDIO_FORMAT = pyaudio.paInt16
-        self.AUDIO_CHANNELS = 1
-        self.AUDIO_RATE = 44100
-        self.AUDIO_CHUNK = 1024
-        self.AUDIO_IV_LEN = 16
+        # ✅ ENTFERNT: Audio-Konstanten (werden in CALL-Klasse verwaltet)
+        # self.AUDIO_HOST = "10.8.0.0/24"  
+        # self.AUDIO_FORMAT = pyaudio.paInt16
+        # self.AUDIO_CHANNELS = 1
+        # self.AUDIO_RATE = 44100
+        # self.AUDIO_CHUNK = 1024
+        # self.AUDIO_IV_LEN = 16
         
-        # Thread-Management
-        self.audio_threads = []
-        self.active_call = False
+        # ✅ ENTFERNT: Thread-Management (wird in CALL-Klasse verwaltet)
+        # self.audio_threads = []
+        # self.active_call = False  # ❌ KRITISCH: Doppeltes active_call entfernen!
         
         # CALL Manager initialisieren
         self.call_manager = CALL(self)
@@ -6129,7 +6126,7 @@ class PHONEBOOK(ctk.CTk):
                 self.call_manager.cleanup_call_resources()
             else:
                 # Fallback Cleanup
-                self.active_call = False
+                self.call_manager.active_call
                 if hasattr(self, 'audio_threads'):
                     for thread in self.audio_threads:
                         try:
@@ -6752,7 +6749,7 @@ class PHONEBOOK(ctk.CTk):
     def on_hangup_click(self):
         """Beendet den aktuellen Anruf und bereinigt alle Ressourcen"""
         try:
-            if not self.active_call and not hasattr(self, 'pending_call'):
+            if not self.call_manager.active_call and not hasattr(self, 'pending_call'):
                 print("[HANGUP] No active call to hang up")
                 return
                 
