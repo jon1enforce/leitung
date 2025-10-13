@@ -2825,7 +2825,7 @@ class CALL:
 
 
     def audio_stream_out(self, target_ip, target_port, iv, key, session_id):
-        """Sendet Audio über UDP Relay MIT KORRIGIERTER SYNCHRONISATION"""
+        """Sendet Audio über UDP Relay MIT FESTEM QUELL-PORT"""
         if not self.audio_available:
             print("❌ [AUDIO OUT] Kein Audio-Backend verfügbar")
             return False
@@ -2850,7 +2850,7 @@ class CALL:
                 print(f"[AUDIO OUT] Waiting for active_call... ({check_count} checks, {current_time - wait_start:.1f}s)")
                 print(f"[AUDIO OUT] Current active_call state: {self.active_call}")
             
-            if (current_time - wait_start) > 3:  # Nur 1.5 Sekunden warten
+            if (current_time - wait_start) > 3:  # 3 Sekunden warten
                 print("❌ [AUDIO OUT] Timeout waiting for active_call")
                 print(f"[AUDIO OUT] Final state - active_call: {self.active_call}")
                 return False
@@ -2874,10 +2874,27 @@ class CALL:
             else:
                 return False
             
+            # ✅ ✅ ✅ MINIMALINVASIVE KORREKTUR: FESTEN QUELL-PORT BINDEN
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            
+            # Bestimme Quell-Port basierend auf Rolle
+            if hasattr(self, 'pending_call') and self.pending_call:
+                source_port = 51821  # Caller sendet VON Port 51821
+            else:
+                source_port = 51822  # Callee sendet VON Port 51822
+                
+            try:
+                audio_socket.bind(('0.0.0.0', source_port))  # ✅ NEUE ZEILE
+                print(f"✅ [AUDIO OUT] Bound to source port {source_port}")
+            except OSError as e:
+                print(f"❌ [AUDIO OUT] Failed to bind to source port {source_port}: {e}")
+                return False
+            
             audio_socket.settimeout(0.1)
             
             print(f"🎤 [AUDIO OUT] Transmission ACTIVE for session {session_id}")
+            print(f"   Source: port {source_port}, Target: {target_ip}:{target_port}")  # ✅ DEBUG INFO
+            
             packet_counter = 0
             
             while self.active_call and self.audio_available:
@@ -3117,8 +3134,6 @@ class CALL:
             time.sleep(0.2)  # 200ms für bessere Synchronisation
             print(f"[AUDIO] Active call confirmed after sync: {self.active_call}")
             
-
-            
             # Starte Timer-Anzeige
             self._start_call_timer()
             
@@ -3135,7 +3150,7 @@ class CALL:
             
             recv_thread = threading.Thread(
                 target=self.audio_stream_in,
-                args=(target_ip, listen_port, iv, key, session_id),
+                args=(target_ip, listen_port, iv, key, session_id),  # ✅ listen_port bleibt gleich
                 daemon=True,
                 name=f"AudioIn_{session_id}"
             )
