@@ -1301,22 +1301,16 @@ class CONVEY:
             print(f"[UDP RELAY ERROR] Failed to start: {e}")
 
     def _handle_udp_relay(self):
-        """KORRIGIERT: Beide Clients verwenden Port 51823 für Senden und Empfangen"""
+        """EINFACHES ROUTING: Unterscheidung anhand Server-Ports 51821/51822"""
         import select
         
-        print("[UDP RELAY] ✅ Starting relay: Both clients use :51823 for send/receive")
+        print("[UDP RELAY] ✅ Starting simple 2-port based routing")
         packet_count = 0
-        error_count = 0
-        last_log_time = time.time()
         
         while True:
             try:
                 sockets_to_check = [self.udp_socket_caller, self.udp_socket_callee]
                 ready, _, _ = select.select(sockets_to_check, [], [], 0.001)
-                
-                if not ready:
-                    time.sleep(0.001)
-                    continue
                 
                 for udp_socket in ready:
                     try:
@@ -1324,48 +1318,49 @@ class CONVEY:
                         packet_count += 1
                         src_ip, src_port = src_addr
                         
-                        # ✅ EINFACHE WEITERLEITUNG ZU CLIENT PORT 51823
+                        # ✅ EINFACHE LOGIK: Welcher Server-Port?
+                        server_port = udp_socket.getsockname()[1]
+                        
+                        if packet_count % 100 == 0:
+                            print(f"[RELAY] Packet #{packet_count} from {src_ip}:{src_port} on server port {server_port}")
+                        
+                        # ✅ ROUTING BASIEREND AUF SERVER-PORT
                         with self.relay_lock:
                             for call_id, relay_info in list(self.audio_relays.items()):
                                 client1_ip = relay_info['caller_ip']
                                 client2_ip = relay_info['callee_ip']
                                 
-                                if udp_socket == self.udp_socket_caller:
-                                    # Paket auf Port 51821 → von Client1, sende zu Client2:51823
-                                    if src_ip == client1_ip:
-                                        target_addr = (client2_ip, 51823)  # Client2 empfängt auf 51823
-                                        try:
-                                            self.udp_socket_callee.sendto(data, target_addr)
-                                            if packet_count % 100 == 0:
-                                                print(f"[RELAY] Client1→Client2: {src_ip}:51823→{client2_ip}:51823")
-                                        except Exception as e:
-                                            error_count += 1
-                                            
-                                else:  # self.udp_socket_callee
-                                    # Paket auf Port 51822 → von Client2, sende zu Client1:51823  
-                                    if src_ip == client2_ip:
-                                        target_addr = (client1_ip, 51823)  # Client1 empfängt auf 51823
-                                        try:
-                                            self.udp_socket_caller.sendto(data, target_addr)
-                                            if packet_count % 100 == 0:
-                                                print(f"[RELAY] Client2→Client1: {src_ip}:51823→{client1_ip}:51823")
-                                        except Exception as e:
-                                            error_count += 1
-                        
+                                if server_port == self.udp_relay_port_caller:  # 51821
+                                    # ❗Paket auf Port 51821 → MUSS von Caller sein (sendet zu 51821)
+                                    # → Weiterleiten zu Callee:51823
+                                    target_addr = (client2_ip, 51823)
+                                    try:
+                                        self.udp_socket_callee.sendto(data, target_addr)
+                                        if packet_count % 100 == 0:
+                                            print(f"[RELAY] Caller→Callee: {src_ip}:{src_port}→{target_addr}")
+                                    except Exception as e:
+                                        print(f"[RELAY ERROR] To callee: {e}")
+                                        
+                                elif server_port == self.udp_relay_port_callee:  # 51822  
+                                    # ❗Paket auf Port 51822 → MUSS von Callee sein (sendet zu 51822)
+                                    # → Weiterleiten zu Caller:51823
+                                    target_addr = (client1_ip, 51823)
+                                    try:
+                                        self.udp_socket_caller.sendto(data, target_addr)
+                                        if packet_count % 100 == 0:
+                                            print(f"[RELAY] Callee→Caller: {src_ip}:{src_port}→{target_addr}")
+                                    except Exception as e:
+                                        print(f"[RELAY ERROR] To caller: {e}")
+                            
                     except BlockingIOError:
                         continue
                     except Exception as e:
-                        error_count += 1
+                        print(f"[RELAY ERROR] Packet processing: {e}")
                         continue
-                
-                # Logging
-                current_time = time.time()
-                if current_time - last_log_time >= 5.0:
-                    print(f"[UDP RELAY] Stats: {packet_count} packets, {len(self.audio_relays)} calls")
-                    last_log_time = current_time
                     
             except Exception as e:
-                error_count += 1
+                print(f"[RELAY ERROR] Main loop: {e}")
+                time.sleep(0.1)
 
 
     def _register_audio_relay(self, call_id, caller_name, callee_name):
@@ -1387,7 +1382,7 @@ class CONVEY:
             print(f"    - Send: :51823 → Server:51822")
             print(f"    - Recv: :51823 ← Server:51821")
             
-            # ✅ CLIENT-IPs ERMITTELN (existierender Code)
+            # ✅ CLIENT-IPs ERMITTELN
             with self.server.clients_lock:
                 print(f"[RELAY DEBUG] Searching through {len(self.server.clients)} clients:")
                 
@@ -1406,7 +1401,7 @@ class CONVEY:
                         callee_ip = client_ip
                         print(f"[RELAY] Found callee: {callee_name} -> {callee_ip}")
                 
-                # ✅ FALLBACK: Socket-basierte IP-Extraktion (existierender Code)
+                # ✅ FALLBACK: Socket-basierte IP-Extraktion
                 if not caller_ip:
                     print(f"[RELAY WARNING] Caller IP not found for {caller_name}, trying socket...")
                     for client_id, client_data in self.server.clients.items():
@@ -1434,10 +1429,12 @@ class CONVEY:
             # ✅ VALIDIERUNG
             if not caller_ip:
                 print(f"[RELAY ERROR] ❌ Could not find caller IP for {caller_name}")
+                print(f"[RELAY DEBUG] Available clients: {list(self.server.clients.keys())}")
                 return False
                 
             if not callee_ip:
                 print(f"[RELAY ERROR] ❌ Could not find callee IP for {callee_name}")
+                print(f"[RELAY DEBUG] Available clients: {list(self.server.clients.keys())}")
                 return False
             
             # ✅ KORREKTE ADRESSEN FÜR DAS SCHEMA
@@ -1464,6 +1461,13 @@ class CONVEY:
             print(f"[RELAY] ✅ Successfully registered audio relay for call {call_id}")
             print(f"[RELAY] ✅ Both clients use port 51823 for send/receive")
             print(f"[RELAY] ✅ Server cross-relay: 51821↔51822")
+            
+            # ✅ DEBUG: Aktuelle Relay-Status anzeigen
+            with self.relay_lock:
+                print(f"[RELAY DEBUG] Current relays: {list(self.audio_relays.keys())}")
+                for relay_id, relay_data in self.audio_relays.items():
+                    print(f"  - {relay_id}: {relay_data['caller_name']} ↔ {relay_data['callee_name']}")
+            
             return True
             
         except Exception as e:
