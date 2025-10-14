@@ -1301,11 +1301,14 @@ class CONVEY:
             print(f"[UDP RELAY ERROR] Failed to start: {e}")
 
     def _handle_udp_relay(self):
-        """EINFACHES ROUTING: Unterscheidung anhand Server-Ports 51821/51822"""
+        """NAT-TRAVERSAL mit festen Ports - UNIVERSAL"""
         import select
         
-        print("[UDP RELAY] ✅ Starting simple 2-port based routing")
+        print("[UDP RELAY] ✅ Starting NAT-TRAVERSAL with fixed ports")
         packet_count = 0
+        
+        # ✅ TRACK CLIENT ADDRESSES: {client_name: (ip, port)}
+        client_addresses = {}
         
         while True:
             try:
@@ -1317,47 +1320,62 @@ class CONVEY:
                         data, src_addr = udp_socket.recvfrom(1400)
                         packet_count += 1
                         src_ip, src_port = src_addr
-                        
-                        # ✅ EINFACHE LOGIK: Welcher Server-Port?
                         server_port = udp_socket.getsockname()[1]
                         
                         if packet_count % 100 == 0:
                             print(f"[RELAY] Packet #{packet_count} from {src_ip}:{src_port} on server port {server_port}")
                         
-                        # ✅ ROUTING BASIEREND AUF SERVER-PORT
+                        # ✅ IDENTIFIZIERE CLIENT UND TRACK ADDRESS
                         with self.relay_lock:
                             for call_id, relay_info in list(self.audio_relays.items()):
-                                client1_ip = relay_info['caller_ip']
-                                client2_ip = relay_info['callee_ip']
+                                caller_name = relay_info['caller_name']
+                                callee_name = relay_info['callee_name']
                                 
+                                # ✅ UPDATE CLIENT ADDRESS FROM PACKET
                                 if server_port == self.udp_relay_port_caller:  # 51821
-                                    # ❗Paket auf Port 51821 → MUSS von Caller sein (sendet zu 51821)
-                                    # → Weiterleiten zu Callee:51823
-                                    target_addr = (client2_ip, 51823)
-                                    try:
-                                        self.udp_socket_callee.sendto(data, target_addr)
-                                        if packet_count % 100 == 0:
-                                            print(f"[RELAY] Caller→Callee: {src_ip}:{src_port}→{target_addr}")
-                                    except Exception as e:
-                                        print(f"[RELAY ERROR] To callee: {e}")
+                                    # Paket von Caller → track seine Adresse
+                                    client_addresses[caller_name] = (src_ip, src_port)
+                                    print(f"[RELAY] 📍 Caller {caller_name} at {src_ip}:{src_port}")
+                                    
+                                    # Sende zu Callee (falls Adresse bekannt)
+                                    if callee_name in client_addresses:
+                                        target_ip, target_port = client_addresses[callee_name]
+                                        # ✅ WICHTIG: Verwende den GESPEICHERTEN Port des Callee!
+                                        target_addr = (target_ip, target_port)
+                                        try:
+                                            self.udp_socket_callee.sendto(data, target_addr)
+                                            if packet_count % 100 == 0:
+                                                print(f"[RELAY] Caller→Callee: {src_ip}:{src_port}→{target_addr}")
+                                        except Exception as e:
+                                            print(f"[RELAY ERROR] To callee: {e}")
+                                    else:
+                                        print(f"[RELAY] ⚠️ Callee address not yet known")
                                         
                                 elif server_port == self.udp_relay_port_callee:  # 51822  
-                                    # ❗Paket auf Port 51822 → MUSS von Callee sein (sendet zu 51822)
-                                    # → Weiterleiten zu Caller:51823
-                                    target_addr = (client1_ip, 51823)
-                                    try:
-                                        self.udp_socket_caller.sendto(data, target_addr)
-                                        if packet_count % 100 == 0:
-                                            print(f"[RELAY] Callee→Caller: {src_ip}:{src_port}→{target_addr}")
-                                    except Exception as e:
-                                        print(f"[RELAY ERROR] To caller: {e}")
+                                    # Paket von Callee → track seine Adresse
+                                    client_addresses[callee_name] = (src_ip, src_port)
+                                    print(f"[RELAY] 📍 Callee {callee_name} at {src_ip}:{src_port}")
+                                    
+                                    # Sende zu Caller (falls Adresse bekannt)
+                                    if caller_name in client_addresses:
+                                        target_ip, target_port = client_addresses[caller_name]
+                                        # ✅ WICHTIG: Verwende den GESPEICHERTEN Port des Caller!
+                                        target_addr = (target_ip, target_port)
+                                        try:
+                                            self.udp_socket_caller.sendto(data, target_addr)
+                                            if packet_count % 100 == 0:
+                                                print(f"[RELAY] Callee→Caller: {src_ip}:{src_port}→{target_addr}")
+                                        except Exception as e:
+                                            print(f"[RELAY ERROR] To caller: {e}")
+                                    else:
+                                        print(f"[RELAY] ⚠️ Caller address not yet known")
                             
                     except BlockingIOError:
                         continue
                     except Exception as e:
                         print(f"[RELAY ERROR] Packet processing: {e}")
                         continue
-                    
+                        
             except Exception as e:
                 print(f"[RELAY ERROR] Main loop: {e}")
                 time.sleep(0.1)
