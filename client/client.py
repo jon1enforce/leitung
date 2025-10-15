@@ -2392,7 +2392,7 @@ class ClientRelayManager:
         except Exception as e:
             print(f"Debug failed: {e}")
     def discover_servers(self):
-        """Entdeckt verfügbare Server von Seed-Servern - verwendet framed SIP"""
+        """Entdeckt verfügbare Server von Seed-Servern - mit DNS-Fallback"""
         print("[CLIENT RELAY] Starting server discovery...")
         
         discovered_servers = {}
@@ -2407,31 +2407,46 @@ class ClientRelayManager:
             try:
                 print(f"[CLIENT RELAY] Trying {seed_host}:{seed_port}")
                 
-                # Framed SIP für Discovery
+                # ✅ DNS-AUFLÖSUNG MIT FALLBACK
+                target_ip = None
+                try:
+                    # Methode 1: getaddrinfo (modern)
+                    addr_info = socket.getaddrinfo(seed_host, seed_port, socket.AF_INET, socket.SOCK_STREAM)
+                    if addr_info:
+                        target_ip = addr_info[0][4][0]  # Erste IPv4 Adresse
+                        print(f"[DNS] getaddrinfo resolved {seed_host} -> {target_ip}")
+                except socket.gaierror:
+                    # Methode 2: gethostbyname (Fallback)
+                    try:
+                        target_ip = socket.gethostbyname(seed_host)
+                        print(f"[DNS] gethostbyname resolved {seed_host} -> {target_ip}")
+                    except socket.gaierror:
+                        print(f"[DNS] ❌ Both DNS methods failed for {seed_host}")
+                        continue
+                
+                if not target_ip:
+                    print(f"[CLIENT RELAY] ❌ Could not resolve {seed_host}, skipping")
+                    continue
+                
+                # ✅ VERBINDUNG MIT RESOLVED IP
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(10)
-                sock.connect((seed_host, seed_port))
+                sock.connect((target_ip, seed_port))
                 
-                # ✅ DIREKTE GENERATOR VERWENDUNG MIT FALLBACK
-                generator = init_verify_generator(client_name, client_name)  # ✅ DIREKT
+                # Framed SIP für Discovery
+                generator = init_verify_generator(client_name, client_name)
                 verify_code = generator.generate_verify_code()
                 print(f"[CLIENT RELAY] Generated verify-code for discovery: {verify_code}")
                 
-                # Baue SIP-Nachricht für Server-Liste Anfrage MIT VERIFY-CODE
+                # Baue SIP-Nachricht für Server-Liste Anfrage
                 request_data = {
                     'type': 'get_servers',
                     'requester_type': 'client',
                     'client_name': client_name,
                     'timestamp': time.time()
-                    # ✅ VERIFY-CODE WIRD IM HEADER GESENDET, NICHT IM BODY
                 }
                 
-                # Baue SIP-Nachricht OHNE additional_headers
-                sip_message = self.client.build_sip_message(
-                    "MESSAGE",
-                    seed_host, 
-                    request_data
-                )
+                sip_message = self.client.build_sip_message("MESSAGE", seed_host, request_data)
                 
                 # ✅ MANUELL VERIFY-HEADER HINZUFÜGEN
                 lines = sip_message.split('\r\n')
@@ -2457,15 +2472,15 @@ class ClientRelayManager:
                 
                 sip_message_with_verify = '\r\n'.join(lines)
                 
-                print(f"[CLIENT RELAY] Sending discovery request to {seed_host}:{seed_port} with verify-code: {verify_code}")
+                print(f"[CLIENT RELAY] Sending discovery request to {target_ip}:{seed_port} with verify-code: {verify_code}")
                 
                 if send_frame(sock, sip_message_with_verify.encode()):
                     # Empfange Response
-                    print(f"[CLIENT RELAY] Waiting for response from {seed_host}:{seed_port}")
+                    print(f"[CLIENT RELAY] Waiting for response from {target_ip}:{seed_port}")
                     response_data = recv_frame(sock)
                     
                     if response_data:
-                        print(f"[CLIENT RELAY] Received {len(response_data)} bytes from {seed_host}")
+                        print(f"[CLIENT RELAY] Received {len(response_data)} bytes from {target_ip}")
                         
                         try:
                             # Versuche zuerst als String zu decodieren
@@ -2479,13 +2494,13 @@ class ClientRelayManager:
                             # Parse die SIP Nachricht
                             sip_data = self.client.parse_sip_message(response_str)
                             if not sip_data:
-                                print(f"[CLIENT RELAY] Failed to parse SIP message from {seed_host}")
+                                print(f"[CLIENT RELAY] Failed to parse SIP message from {target_ip}")
                                 continue
                             
                             # Extrahiere den Body
                             body = sip_data.get('body', '')
                             if not body:
-                                print(f"[CLIENT RELAY] No body in response from {seed_host}")
+                                print(f"[CLIENT RELAY] No body in response from {target_ip}")
                                 continue
                             
                             print(f"[CLIENT RELAY] Response body: {body[:200]}...")
@@ -2493,11 +2508,11 @@ class ClientRelayManager:
                             # Parse JSON Body
                             try:
                                 response = json.loads(body)
-                                print(f"[CLIENT RELAY] JSON parsed successfully from {seed_host}")
+                                print(f"[CLIENT RELAY] JSON parsed successfully from {target_ip}")
                                 
                                 if response.get('status') == 'success':
                                     servers = response.get('servers', {})
-                                    print(f"[CLIENT RELAY] Found {len(servers)} servers from {seed_host}")
+                                    print(f"[CLIENT RELAY] Found {len(servers)} servers from {target_ip}")
                                     
                                     # Füge gefundene Server hinzu
                                     for server_ip, server_data in servers.items():
@@ -2509,18 +2524,18 @@ class ClientRelayManager:
                                     print(f"[CLIENT RELAY] Server returned error: {response.get('error', 'Unknown error')}")
                                     
                             except json.JSONDecodeError as e:
-                                print(f"[CLIENT RELAY] JSON decode error from {seed_host}: {e}")
+                                print(f"[CLIENT RELAY] JSON decode error from {target_ip}: {e}")
                                 print(f"[CLIENT RELAY] Body content that failed: {body}")
                                 continue
                                 
                         except Exception as e:
-                            print(f"[CLIENT RELAY] Response processing error from {seed_host}: {e}")
+                            print(f"[CLIENT RELAY] Response processing error from {target_ip}: {e}")
                             continue
                         
                     else:
-                        print(f"[CLIENT RELAY] No response data from {seed_host}")
+                        print(f"[CLIENT RELAY] No response data from {target_ip}")
                 else:
-                    print(f"[CLIENT RELAY] Failed to send request to {seed_host}")
+                    print(f"[CLIENT RELAY] Failed to send request to {target_ip}")
                     
                 sock.close()
                 
@@ -2665,8 +2680,89 @@ class ClientRelayManager:
             'servers': server_list
         }
 
+    def _select_best_server(self):
+        """Wählt besten Server aus - MIT DNS-FALLBACK"""
+        if not self.available_servers:
+            self.best_server = None
+            return
+        
+        print("[CLIENT RELAY] Testing server pings on all available ports...")
+        
+        server_pings = {}
+        local_ips = self._get_local_ips()
+        
+        # Ping alle Server
+        threads = []
+        for server_ip, server_data in self.available_servers.items():
+            # Überspringe Self-Ping
+            if server_ip in local_ips:
+                print(f"[RELAY] Skipping self-server: {server_ip}")
+                continue
+                
+            thread = threading.Thread(
+                target=self._ping_server,
+                args=(server_ip, server_data, server_pings),
+                daemon=True
+            )
+            threads.append(thread)
+            thread.start()
+        
+        # Warte auf Threads
+        for thread in threads:
+            thread.join(timeout=15.0)
+        
+        # ✅ FALLBACK: Wenn Ping fehlschlägt aber Server verfügbar ist
+        available_servers = []
+        for server_ip, server_data in self.available_servers.items():
+            current_load = server_data.get('current_load', 100)
+            ping_time = server_pings.get(server_ip, float('inf'))
+            
+            if current_load > self.server_load_threshold:
+                print(f"[RELAY] Skipping {server_ip} - load too high: {current_load}%")
+                continue
+            
+            # ✅ KORREKTUR: Auch Server ohne erfolgreichen Ping berücksichtigen
+            if ping_time == float('inf'):
+                print(f"[RELAY] {server_ip}: Ping failed, but server might still be reachable")
+                # Simuliere einen mittleren Ping-Wert für Fallback
+                simulated_ping = 100.0  # 100ms als Fallback
+                available_servers.append({
+                    'server_data': server_data,
+                    'ping_time': simulated_ping,
+                    'load': current_load,
+                    'fallback': True  # Markiere als Fallback
+                })
+                print(f"[RELAY] {server_ip}: Using fallback ping: {simulated_ping}ms")
+            else:
+                available_servers.append({
+                    'server_data': server_data,
+                    'ping_time': ping_time,
+                    'load': current_load,
+                    'fallback': False
+                })
+                print(f"[RELAY] {server_ip}: ping={ping_time:.2f}ms, load={current_load}%")
+        
+        if not available_servers:
+            print("[RELAY] No suitable servers found")
+            self.best_server = None
+            return
+        
+        # Sortiere: Zuerst Server mit echten Pings, dann Fallbacks
+        available_servers.sort(key=lambda x: (x.get('fallback', False), x['ping_time']))
+        
+        # Wähle besten Server
+        best_server_info = available_servers[0]
+        self.best_server = best_server_info['server_data']
+        
+        if best_server_info.get('fallback', False):
+            print(f"[RELAY] Best server (FALLBACK): {self.best_server.get('name', 'Unknown')} "
+                  f"(simulated ping: {best_server_info['ping_time']:.2f}ms, load: {best_server_info['load']}%)")
+        else:
+            print(f"[RELAY] Best server: {self.best_server.get('name', 'Unknown')} "
+                  f"(ping: {best_server_info['ping_time']:.2f}ms, load: {best_server_info['load']}%)")
+
     def _ping_server(self, server_ip, server_data, results_dict):
-        """VERBESSERTES Ping das beide Ports 5060 und 5061 testet MIT VERIFY-CODE"""
+        """VERBESSERTES Ping mit DNS-FALLBACK für beide Ports"""
         try:
             reported_port = server_data.get('port', 5060)
             
@@ -2684,18 +2780,38 @@ class ClientRelayManager:
                 try:
                     print(f"[PING] Testing {server_ip}:{port}")
                     
+                    # ✅ DNS-AUFLÖSUNG MIT FALLBACK
+                    target_ip = None
+                    try:
+                        # Methode 1: getaddrinfo
+                        addr_info = socket.getaddrinfo(server_ip, port, socket.AF_INET, socket.SOCK_STREAM)
+                        if addr_info:
+                            target_ip = addr_info[0][4][0]
+                            print(f"[PING DNS] Resolved {server_ip} -> {target_ip}")
+                    except socket.gaierror:
+                        # Methode 2: gethostbyname Fallback
+                        try:
+                            target_ip = socket.gethostbyname(server_ip)
+                            print(f"[PING DNS] Fallback resolved {server_ip} -> {target_ip}")
+                        except socket.gaierror:
+                            print(f"[PING DNS] ❌ DNS failed for {server_ip}:{port}")
+                            continue
+                    
+                    if not target_ip:
+                        continue
+                    
                     # Erstelle temporären Socket
                     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(3.0)  # Kürzeres Timeout für schnelleres Testen
+                    sock.settimeout(3.0)
                     
                     start_time = time.time()
-                    sock.connect((server_ip, port))
+                    sock.connect((target_ip, port))
                     
                     # ✅ VERIFY-CODE FÜR PING-NACHRICHT GENERIEREN
                     client_name = getattr(self, '_client_name', 'ping_tester')
                     generator = init_verify_generator(client_name, client_name)
                     verify_code = generator.generate_verify_code()
-                    print(f"🔐 [PING] Ping Verify-Code für {server_ip}:{port}: {verify_code}")
+                    print(f"🔐 [PING] Ping Verify-Code für {target_ip}:{port}: {verify_code}")
                     
                     # Baue Ping-Nachricht MIT VERIFY-CODE
                     ping_data = {
@@ -2746,15 +2862,15 @@ class ClientRelayManager:
                                         best_ping = ping_time
                                         successful_port = port
                                         
-                                    print(f"[PING] {server_ip}:{port}: {ping_time:.2f}ms - SUCCESS")
+                                    print(f"[PING] {target_ip}:{port}: {ping_time:.2f}ms - SUCCESS")
                                 else:
-                                    print(f"[PING] {server_ip}:{port}: Invalid response (not PONG)")
+                                    print(f"[PING] {target_ip}:{port}: Invalid response (not PONG)")
                             except:
-                                print(f"[PING] {server_ip}:{port}: Invalid response format")
+                                print(f"[PING] {target_ip}:{port}: Invalid response format")
                         else:
-                            print(f"[PING] {server_ip}:{port}: No response")
+                            print(f"[PING] {target_ip}:{port}: No response")
                     else:
-                        print(f"[PING] {server_ip}:{port}: Send failed")
+                        print(f"[PING] {target_ip}:{port}: Send failed")
                         
                     sock.close()
                     
@@ -6504,268 +6620,137 @@ class PHONEBOOK(ctk.CTk):
         self.connect_button.pack(side='left', fill="x", expand=True, padx=10)
 
     def on_connect_click(self):
-        # Sicherstellen, dass update_relay_status verfügbar ist
+        """Robuste Verbindungsmethode mit DNS-Fehlerbehandlung"""
+        # Fallback für update_relay_status
         if not hasattr(self, 'update_relay_status'):
-            # Fallback: Definiere eine einfache Version
-            def update_relay_status(message, color="white"):
-                print(f"[RELAY STATUS] {message}")
-                try:
-                    if hasattr(self, 'relay_status_label') and self.relay_status_label.winfo_exists():
-                        self.relay_status_label.configure(text=message, text_color=color)
-                except:
-                    pass
-            self.update_relay_status = update_relay_status
+            self.update_relay_status = lambda msg, color="white": print(f"[RELAY] {msg}")
 
+        # Prüfe ob bereits verbunden
         if hasattr(self, 'client_socket') and self.client_socket:
             messagebox.showerror("Fehler", "Bereits verbunden")
             return
 
-        # ✅ NEU: Server-Discovery vor manueller Eingabe
+        # Server-Discovery (optional)
         discovered_server = None
         try:
             if hasattr(self, 'relay_manager'):
-                self.update_relay_status("🔍 Suche beste Server...", "yellow")
+                self.update_relay_status("🔍 Suche Server...", "yellow")
                 discovered_server = self.relay_manager.discover_servers()
-                
                 if discovered_server:
                     server_ip = discovered_server['ip']
                     server_port = discovered_server['port']
-                    print(f"[RELAY] Gefundener Server: {server_ip}:{server_port}")
-                    
-                    # Auto-fill die Eingabefelder
-                    if hasattr(self, 'server_ip_input') and self.server_ip_input.winfo_exists():
+                    if hasattr(self, 'server_ip_input'):
                         self.server_ip_input.delete(0, tk.END)
                         self.server_ip_input.insert(0, server_ip)
-                    if hasattr(self, 'server_port_input') and self.server_port_input.winfo_exists():
+                    if hasattr(self, 'server_port_input'):
                         self.server_port_input.delete(0, tk.END)  
                         self.server_port_input.insert(0, str(server_port))
-                        
-                    self.update_relay_status(f"✅ Server gefunden: {server_ip}:{server_port}", "green")
-                else:
-                    self.update_relay_status("⚠️ Keine Server gefunden - verwende manuelle Eingabe", "orange")
-        except Exception as e:
-            print(f"[RELAY DISCOVERY ERROR] {e}")
+                    self.update_relay_status(f"✅ Server gefunden", "green")
+        except Exception:
             self.update_relay_status("⚠️ Server-Suche fehlgeschlagen", "orange")
 
-        # ✅ REST DER METHODE MIT getaddrinfo FIX
-        server_ip = self.server_ip_input.get()
-        server_port = self.server_port_input.get()
-
-        print(f"\n{'='*60}")
-        print("[DEBUG] === START CONNECTION ATTEMPT ===")
-        print(f"{'='*60}")
-        
+        # Haupt-Verbindungslogik
         try:
-            # Validate inputs
-            print(f"[DEBUG 1] Input validation - Server: '{server_ip}', Port: '{server_port}'")
-            if not server_ip or not server_port:
-                raise ValueError("Server-IP und Port müssen angegeben werden")
-            
-            port = int(server_port)
-            if not (0 < port <= 65535):
-                raise ValueError("Ungültiger Port")
-            print(f"[DEBUG 2] Port validation passed: {port}")
+            server_ip = self.server_ip_input.get().strip()
+            server_port_str = self.server_port_input.get().strip()
 
-            # ✅ FIX: Ersetze gethostbyname durch getaddrinfo
-            print(f"[DEBUG 3] Starting DNS resolution for: {server_ip}")
+            # ✅ VALIDIERUNG
+            if not server_ip or not server_port_str:
+                raise ValueError("Server-IP und Port benötigt")
+            
+            port = int(server_port_str)
+            if not (1 <= port <= 65535):
+                raise ValueError("Port muss zwischen 1-65535 sein")
+
+            # ✅ ROBUSTE DNS-AUFLÖSUNG
+            target_address = None
+            
             try:
-                # Get all address information - DIES IST DER FIX
+                # Versuche getaddrinfo für bessere IPv6/IPv4 Unterstützung
                 addr_info = socket.getaddrinfo(server_ip, port, socket.AF_UNSPEC, socket.SOCK_STREAM)
-                print(f"[DEBUG 4] getaddrinfo results: {len(addr_info)} entries")
                 
-                for i, (family, socktype, proto, canonname, sockaddr) in enumerate(addr_info):
-                    print(f"[DEBUG 4.{i}] Family: {family}, Type: {socktype}, Proto: {proto}")
-                    print(f"[DEBUG 4.{i}] Canonname: {canonname}, Addr: {sockaddr}")
-                
-                # ✅ NEU: Verwende getaddrinfo statt gethostbyname
-                # Extrahiere die erste IPv4-Adresse aus den getaddrinfo-Ergebnissen
-                resolved_ip = None
+                # Bevorzuge IPv4 für Kompatibilität
                 for family, socktype, proto, canonname, sockaddr in addr_info:
                     if family == socket.AF_INET:  # IPv4
-                        resolved_ip = sockaddr[0]  # IP-Adresse aus (ip, port) Tupel
+                        target_address = sockaddr
                         break
                 
-                if resolved_ip:
-                    print(f"[DEBUG 5] Resolved IP via getaddrinfo: {resolved_ip}")
-                else:
-                    print("[DEBUG 5] No IPv4 address found")
-                    # Fallback: Verwende die ursprüngliche Eingabe
-                    resolved_ip = server_ip
+                # Fallback: Nimm erste verfügbare Adresse
+                if not target_address and addr_info:
+                    target_address = addr_info[0][4]  # (address, port)
                     
-            except Exception as dns_error:
-                print(f"[DEBUG 6] DNS resolution failed: {dns_error}")
-                print(f"[DEBUG 6] DNS error type: {type(dns_error).__name__}")
-                import traceback
-                traceback.print_exc()
-                # Fallback auf ursprüngliche IP
-                resolved_ip = server_ip
+            except socket.gaierror as dns_error:
+                print(f"[DNS] Fehler bei {server_ip}: {dns_error}")
+                # Fallback: Direkte Verwendung als IP
+                try:
+                    socket.inet_pton(socket.AF_INET, server_ip)  # Validiert IP-Format
+                    target_address = (server_ip, port)
+                except socket.error:
+                    raise ConnectionError(f"Ungültige Server-Adresse: {server_ip}") from dns_error
 
-            # Socket creation with extensive debugging
-            print("[DEBUG 7] Creating socket...")
-            try:
-                # ✅ OPTIONAL: Verwende getaddrinfo auch für die Socket-Erstellung
-                # Dies ist besser für IPv6/IPv4 Dual-Stack
-                if addr_info:
-                    # Verwende die erste Adresse aus getaddrinfo
-                    family, socktype, proto, canonname, sockaddr = addr_info[0]
-                    self.client_socket = socket.socket(family, socktype, proto)
-                    print(f"[DEBUG 8] Socket created successfully using getaddrinfo: family={family}")
-                else:
-                    # Fallback auf traditionelle Methode
-                    self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    print("[DEBUG 8] Socket created successfully using AF_INET fallback")
-                
-                # Set various socket options for debugging
-                self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                print("[DEBUG 9] Socket options set")
-                
-                # Get socket details before connection
-                sock_fd = self.client_socket.fileno()
-                sock_family = self.client_socket.family
-                sock_type = self.client_socket.type
-                sock_proto = self.client_socket.proto
-                print(f"[DEBUG 10] Socket details - FD: {sock_fd}, Family: {sock_family}, Type: {sock_type}, Proto: {sock_proto}")
-                
-            except Exception as sock_error:
-                print(f"[DEBUG 11] Socket creation failed: {sock_error}")
-                print(f"[DEBUG 11] Socket error type: {type(sock_error).__name__}")
-                raise
+            # ✅ SOCKET ERSTELLUNG
+            self.client_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.client_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.client_socket.settimeout(10)  # 10 Sekunden Timeout
 
-            # Connection attempt with detailed timing
-            print(f"[DEBUG 12] Setting socket timeout to 15 seconds")
-            self.client_socket.settimeout(15)
-            
-            print(f"[DEBUG 13] Attempting connection to {server_ip}:{port}")
-            connection_start_time = time.time()
+            # ✅ VERBINDUNGSVERSUCH
+            print(f"Verbinde zu {server_ip}:{port}...")
+            self.update_relay_status(f"🔗 Verbinde zu {server_ip}...", "yellow")
             
             try:
-                # ✅ VERBESSERT: Verwende getaddrinfo für bessere Adressauflösung
-                if addr_info:
-                    # Verbinde mit der ersten gefundenen Adresse
-                    family, socktype, proto, canonname, sockaddr = addr_info[0]
-                    print(f"[DEBUG 13.5] Connecting using getaddrinfo result: {sockaddr}")
-                    self.client_socket.connect(sockaddr)
+                if target_address:
+                    self.client_socket.connect(target_address)
                 else:
-                    # Fallback
                     self.client_socket.connect((server_ip, port))
                     
-                connection_time = time.time() - connection_start_time
-                print(f"[DEBUG 14] Connection successful! Time: {connection_time:.3f} seconds")
-                
-                # Get connection details
-                try:
-                    local_addr = self.client_socket.getsockname()
-                    peer_addr = self.client_socket.getpeername()
-                    print(f"[DEBUG 15] Local address: {local_addr}")
-                    print(f"[DEBUG 16] Peer address: {peer_addr}")
-                except Exception as addr_error:
-                    print(f"[DEBUG 17] Address info error: {addr_error}")
-
-                # Test socket properties
-                try:
-                    sock_timeout = self.client_socket.gettimeout()
-                    sock_blocking = self.client_socket.getblocking()
-                    print(f"[DEBUG 18] Socket timeout: {sock_timeout}, Blocking: {sock_blocking}")
-                except Exception as prop_error:
-                    print(f"[DEBUG 19] Socket properties error: {prop_error}")
-
-                # Store connection info
-                self.server_ip = server_ip
-                self.server_port = port
-                
-                # Start connection thread
-                print("[DEBUG 20] Starting connection thread...")
-                threading.Thread(
-                    target=self.start_connection_wrapper,
-                    daemon=True,
-                    name=f"ConnectionThread-{server_ip}:{port}"
-                ).start()
-                
-                print("[DEBUG 21] Closing connection window")
-                if hasattr(self, 'connection_window') and self.connection_window:
-                    self.connection_window.destroy()
-                print("[DEBUG 22] Connection process completed successfully!")
-
             except socket.timeout:
-                connection_time = time.time() - connection_start_time
-                print(f"[DEBUG 23] Connection timeout after {connection_time:.3f} seconds")
-                print("[DEBUG 24] Socket timeout exception details:")
-                import traceback
-                traceback.print_exc()
-                
-                messagebox.showerror("Fehler", "Verbindungstimeout - Server nicht erreichbar")
-                self.cleanup_connection()
-                
-            except ConnectionRefusedError as cre:
-                connection_time = time.time() - connection_start_time
-                print(f"[DEBUG 25] Connection refused after {connection_time:.3f} seconds")
-                print(f"[DEBUG 26] ConnectionRefusedError: {cre}")
-                print(f"[DEBUG 27] Errno: {cre.errno}")
-                print(f"[DEBUG 28] Strerror: {cre.strerror}")
-                
-                # Additional diagnostic information
-                try:
-                    # Try connecting to a known working service to verify network
-                    test_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    test_socket.settimeout(5)
-                    test_socket.connect(("8.8.8.8", 53))  # Google DNS
-                    test_socket.close()
-                    print("[DEBUG 29] Network connectivity test passed")
-                except Exception as test_error:
-                    print(f"[DEBUG 30] Network test failed: {test_error}")
-                
-                messagebox.showerror("Fehler", "Verbindung abgelehnt - Server nicht erreichbar oder Port falsch")
-                self.cleanup_connection()
-                
-            except OSError as ose:
-                connection_time = time.time() - connection_start_time
-                print(f"[DEBUG 31] OSError after {connection_time:.3f} seconds")
-                print(f"[DEBUG 32] OSError: {ose}")
-                print(f"[DEBUG 33] Errno: {ose.errno}")
-                print(f"[DEBUG 34] Strerror: {ose.strerror}")
-                print("[DEBUG 35] Full traceback:")
-                import traceback
-                traceback.print_exc()
-                
-                # OS-specific debugging
-                import platform
-                print(f"[DEBUG 36] Platform: {platform.system()} {platform.release()}")
-                print(f"[DEBUG 37] Python version: {sys.version}")
-                
-                messagebox.showerror("Fehler", f"Netzwerkfehler: {str(ose)}")
-                self.cleanup_connection()
-                
-            except Exception as e:
-                connection_time = time.time() - connection_start_time
-                print(f"[DEBUG 38] Unexpected error after {connection_time:.3f} seconds")
-                print(f"[DEBUG 39] Error type: {type(e).__name__}")
-                print(f"[DEBUG 40] Error message: {e}")
-                print("[DEBUG 41] Full traceback:")
-                import traceback
-                traceback.print_exc()
-                
-                messagebox.showerror("Fehler", f"Unerwarteter Fehler: {str(e)}")
-                self.cleanup_connection()
+                raise ConnectionError(f"Timeout - Server {server_ip} nicht erreichbar")
+            except ConnectionRefusedError:
+                raise ConnectionError(f"Verbindung abgelehnt - Server läuft nicht auf Port {port}")
+            except OSError as e:
+                raise ConnectionError(f"Netzwerkfehler: {e}")
 
-        except ValueError as ve:
-            print(f"[DEBUG 42] ValueError: {ve}")
-            print(f"[DEBUG 43] ValueError type: {type(ve).__name__}")
-            messagebox.showerror("Fehler", f"Ungültige Eingabe: {str(ve)}")
+            # ✅ VERBINDUNG ERFOLGREICH
+            print(f"✅ Verbunden mit {server_ip}:{port}")
+            self.update_relay_status(f"✅ Verbunden mit {server_ip}", "green")
+            
+            self.server_ip = server_ip
+            self.server_port = port
+            self.connection_status = True
+
+            # Starte Hintergrund-Threads
+            threading.Thread(
+                target=self.start_connection_wrapper,
+                daemon=True,
+                name=f"Connection-{server_ip}:{port}"
+            ).start()
+
+            # Schließe Verbindungsfenster falls vorhanden
+            if hasattr(self, 'connection_window') and self.connection_window:
+                self.connection_window.destroy()
+
+            messagebox.showinfo("Erfolg", f"Verbunden mit {server_ip}:{port}")
+
+        except ValueError as e:
+            error_msg = str(e)
+            print(f"[VALIDATION] {error_msg}")
+            messagebox.showerror("Eingabefehler", error_msg)
+            self.cleanup_connection()
+            
+        except ConnectionError as e:
+            error_msg = str(e)
+            print(f"[CONNECTION] {error_msg}")
+            messagebox.showerror("Verbindungsfehler", error_msg)
             self.cleanup_connection()
             
         except Exception as e:
-            print(f"[DEBUG 44] General exception: {e}")
-            print(f"[DEBUG 45] Exception type: {type(e).__name__}")
-            print("[DEBUG 46] Full traceback:")
+            error_msg = f"Unerwarteter Fehler: {str(e)}"
+            print(f"[UNEXPECTED] {error_msg}")
             import traceback
             traceback.print_exc()
-            
-            messagebox.showerror("Fehler", f"Unerwarteter Fehler: {str(e)}")
+            messagebox.showerror("Fehler", error_msg)
             self.cleanup_connection()
-        
-        finally:
-            print(f"[DEBUG 47] === END CONNECTION ATTEMPT ===")
-            print(f"{'='*60}\n")
+
     def on_update_click(self):
         """KORRIGIERT: Update ohne Debug-Methoden die nicht existieren"""
         global connected
