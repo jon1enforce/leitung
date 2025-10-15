@@ -2167,6 +2167,136 @@ Rauschprofil Informationen (180s Clear Room):
             "output_device": self.output_device_index
         }
         return status
+class OdeToJoyGenerator:
+    """🎵 Generator für Beethoven's 'Ode an die Freude' (9. Sinfonie)"""
+    
+    def __init__(self, sample_rate=44100, chunk_size=1024):
+        self.sample_rate = sample_rate
+        self.chunk_size = chunk_size
+        self.position = 0
+        
+        # 🎵 "Ode an die Freude" Hauptthema - ORIGINAL MELODIE
+        # Berühmte Melodie aus der 9. Sinfonie
+        self.ode_to_joy_theme = [
+            # 🎵 Erste Phrase: "Freude schöner Götterfunken"
+            ('D4', 0.4), ('D4', 0.4), ('E4', 0.4), ('F4', 0.4),
+            ('F4', 0.4), ('E4', 0.4), ('D4', 0.4), ('C4', 0.4),
+            ('B3', 0.4), ('B3', 0.4), ('C4', 0.4), ('D4', 0.4),
+            ('D4', 0.6), ('C4', 0.2), ('C4', 0.8),
+            
+            # 🎵 Zweite Phrase: "Tochter aus Elysium"
+            ('D4', 0.4), ('D4', 0.4), ('E4', 0.4), ('F4', 0.4),
+            ('F4', 0.4), ('E4', 0.4), ('D4', 0.4), ('C4', 0.4),
+            ('B3', 0.4), ('B3', 0.4), ('C4', 0.4), ('D4', 0.4),
+            ('C4', 0.6), ('B3', 0.2), ('B3', 0.8),
+            
+            # 🎵 Dritte Phrase: "Wir betreten feuertrunken"
+            ('C4', 0.4), ('C4', 0.4), ('D4', 0.4), ('G4', 0.4),
+            ('G4', 0.4), ('F4', 0.4), ('E4', 0.4), ('D4', 0.4),
+            ('C4', 0.4), ('C4', 0.4), ('D4', 0.4), ('E4', 0.4),
+            ('E4', 0.6), ('D4', 0.2), ('D4', 0.8),
+            
+            # 🎵 Vierte Phrase: "Deine Zauber binden wieder"
+            ('D4', 0.4), ('G3', 0.4), ('B3', 0.4), ('D4', 0.4),
+            ('F4', 0.4), ('E4', 0.4), ('C4', 0.4), ('E4', 0.4),
+            ('D4', 0.6), ('G3', 0.2), ('D4', 0.8)
+        ]
+        
+        self.current_note_index = 0
+        self.note_position = 0
+        self.current_note_samples = None
+        
+        print("[ODE AN DIE FREUDE] 🎵 9. Sinfonie - Theme ready!")
+    
+    def note_to_frequency(self, note_name):
+        """Konvertiert Notennamen zu Frequenzen - ORIGINAL BEREICH"""
+        note_frequencies = {
+            # 🎵 MITTLERER BEREICH (Original-Melodie)
+            'G3': 196.00, 'G#3': 207.65, 'A3': 220.00, 'A#3': 233.08, 'B3': 246.94,
+            'C4': 261.63, 'C#4': 277.18, 'D4': 293.66, 'D#4': 311.13, 'E4': 329.63,
+            'F4': 349.23, 'F#4': 369.99, 'G4': 392.00, 'G#4': 415.30, 'A4': 440.00,
+            'A#4': 466.16, 'B4': 493.88, 'C5': 523.25
+        }
+        return note_frequencies.get(note_name, 293.66)  # Fallback: D4
+    
+    def generate_note_samples(self, note_name, duration_seconds):
+        """Generiert Samples für eine bestimmte Note - ORIGINAL KLANG"""
+        import numpy as np
+        
+        frequency = self.note_to_frequency(note_name)
+        num_samples = int(duration_seconds * self.sample_rate)
+        
+        # 🎵 ORCHESTER-ÄHNLICHER KLANG mit harmonischen Obertönen
+        t = np.linspace(0, duration_seconds, num_samples, endpoint=False)
+        
+        # Orchester-Sound mit natürlichen Obertönen
+        sample = (np.sin(2 * np.pi * frequency * t) * 0.6 +           # Grundton
+                 np.sin(2 * np.pi * frequency * 2 * t) * 0.3 +       # Oktave
+                 np.sin(2 * np.pi * frequency * 3 * t) * 0.15 +      # Quinte
+                 np.sin(2 * np.pi * frequency * 4 * t) * 0.08 +      # Doppeloktave
+                 np.sin(2 * np.pi * frequency * 5 * t) * 0.04)       # Terz
+        
+        # 🎚️ NATÜRLICHE ADSR HÜLLKURVE
+        attack = int(0.05 * num_samples)    # Schneller Einsatz
+        decay = int(0.1 * num_samples)      # Kurzer Decay
+        release = int(0.3 * num_samples)    # Mittlerer Release
+        sustain = num_samples - attack - decay - release
+        
+        if sustain < 0:
+            # Für kurze Noten anpassen
+            attack = max(5, num_samples // 5)
+            release = max(10, num_samples - attack)
+            sustain = 0
+            decay = 0
+        
+        # Hüllkurve anwenden
+        envelope = np.ones(num_samples)
+        if attack > 0:
+            envelope[:attack] = np.linspace(0, 1, attack)                    # Attack
+        if decay > 0:
+            envelope[attack:attack+decay] = np.linspace(1, 0.8, decay)       # Decay
+        if sustain > 0:
+            envelope[attack+decay:attack+decay+sustain] = 0.8                # Sustain
+        if release > 0:
+            envelope[attack+decay+sustain:] = np.linspace(0.8, 0, release)   # Release
+        
+        sample = sample * envelope
+        
+        # 🎛️ ANGENEHME LAUTSTÄRKE
+        return (sample * 0.3 * 32767).astype(np.int16)  # Moderate Lautstärke
+    
+    def generate_chunk(self):
+        """Generiert einen Audio-Chunk von 'Ode an die Freude'"""
+        import numpy as np
+        
+        samples = np.zeros(self.chunk_size, dtype=np.int16)
+        samples_generated = 0
+        
+        while samples_generated < self.chunk_size:
+            if self.current_note_samples is None or self.note_position >= len(self.current_note_samples):
+                # Nächste Note laden
+                if self.current_note_index >= len(self.ode_to_joy_theme):
+                    self.current_note_index = 0  # Zurück zum Anfang
+                    # Optional: kurze Pause zwischen Wiederholungen
+                    # time.sleep(0.5)
+                
+                note_name, duration = self.ode_to_joy_theme[self.current_note_index]
+                self.current_note_samples = self.generate_note_samples(note_name, duration)
+                self.note_position = 0
+                self.current_note_index += 1
+            
+            # Samples zur aktuellen Note kopieren
+            remaining_in_note = len(self.current_note_samples) - self.note_position
+            remaining_in_chunk = self.chunk_size - samples_generated
+            copy_length = min(remaining_in_note, remaining_in_chunk)
+            
+            samples[samples_generated:samples_generated + copy_length] = \
+                self.current_note_samples[self.note_position:self.note_position + copy_length]
+            
+            samples_generated += copy_length
+            self.note_position += copy_length
+        
+        return samples.tobytes()      
 class ClientRelayManager:
     def __init__(self, client_instance):
         self.client = client_instance
@@ -3101,7 +3231,7 @@ class CALL:
         return True
 
     def _start_audio_streams(self):
-        """Startet bidirektionale Audio-Streams - KORRIGIERTE PORT-LOGIK"""
+        """Startet bidirektionale Audio-Streams - MIT FÜR ELISE FALLBACK"""
         try:
             print(f"[AUDIO] Starting audio streams - Initial active_call: {self.active_call}")
             
@@ -3109,12 +3239,6 @@ class CALL:
                 print("[AUDIO] No session key available")
                 return
                 
-            if not self.audio_available:
-                print("[AUDIO] Kein Audio-Backend verfügbar - Call ohne Audio")
-                self._start_call_timer()
-                self.call_start_time = time.time()
-                return
-            
             # ✅ SICHERE SESSION-ID MIT SHA3
             import hashlib
             session_id = hashlib.sha3_256(self.current_secret).hexdigest()[:16]
@@ -3160,14 +3284,30 @@ class CALL:
             iv = self.current_secret[:16]
             key = self.current_secret[16:48]
             
-            # ✅ SESSION-ID AN AUDIO STREAMS ÜBERGEBEN
-            send_thread = threading.Thread(
-                target=self.audio_stream_out, 
-                args=(target_ip, send_to_port, iv, key, session_id),
-                daemon=True,
-                name=f"AudioOut_{session_id}"
-            )
+            # ✅ PRÜFE MIKROFON-VERFÜGBARKEIT
+            has_microphone = self._check_microphone_available()
             
+            # ✅ SESSION-ID AN AUDIO STREAMS ÜBERGEBEN
+            if has_microphone:
+                # NORMALE AUDIO-STREAMS
+                send_thread = threading.Thread(
+                    target=self.audio_stream_out, 
+                    args=(target_ip, send_to_port, iv, key, session_id),
+                    daemon=True,
+                    name=f"AudioOut_{session_id}"
+                )
+                print(f"[AUDIO] 🎤 Using microphone for audio transmission")
+            else:
+                # 🎹 BEETHOVEN'S "FÜR ELISE" FALLBACK
+                send_thread = threading.Thread(
+                    target=self.audio_stream_out_fur_elise, 
+                    args=(target_ip, send_to_port, iv, key, session_id),
+                    daemon=True,
+                    name=f"AudioOut_FurElise_{session_id}"
+                )
+                print(f"[AUDIO] 🎹 No microphone - using Beethoven's 'Für Elise' as fallback")
+            
+            # EMPFANGS-STREAM (immer starten)
             recv_thread = threading.Thread(
                 target=self.audio_stream_in,
                 args=(target_ip, listen_port, iv, key, session_id),
@@ -3184,10 +3324,118 @@ class CALL:
             
             print(f"[AUDIO] ✅ Session {session_id} started - {role}")
             print(f"[AUDIO] ✅ Listening on: {listen_port}, Sending to: {target_ip}:{send_to_port}")
+            print(f"[AUDIO] ✅ Audio Source: {'Microphone' if has_microphone else 'Für Elise'}")
             
         except Exception as e:
             print(f"[AUDIO ERROR] Failed to start streams: {e}")
             self.active_call = False  # ✅ HIER AUCH NUR EINE!
+
+    def _check_microphone_available(self):
+        """Prüft ob ein Mikrofon verfügbar ist"""
+        try:
+            if not self.audio_available:
+                return False
+                
+            input_devices = self.audio_config.get_input_devices()
+            has_devices = len(input_devices) > 0
+            
+            # Zusätzlich prüfen ob wir auf ein Mikrofon zugreifen können
+            if has_devices:
+                try:
+                    # Test: Versuche Stream zu öffnen
+                    test_stream = self.audio_config.audio.open(
+                        format=self.audio_config.FORMAT,
+                        channels=self.audio_config.CHANNELS,
+                        rate=self.audio_config.RATE,
+                        input=True,
+                        frames_per_buffer=self.audio_config.CHUNK,
+                        input_device_index=self.audio_config.input_device_index
+                    )
+                    test_stream.stop_stream()
+                    test_stream.close()
+                    return True
+                except:
+                    return False
+            return False
+            
+        except Exception as e:
+            print(f"[AUDIO WARNING] Microphone check failed: {e}")
+            return False
+
+    def audio_stream_out_fur_elise(self, target_ip, target_port, iv, key, session_id):
+        """🎹 Sendet Beethoven's 'Für Elise' als Audio-Fallback"""
+        audio_socket = None
+        
+        print(f"[AUDIO OUT FÜR ELISE] 🎹 Starting BEETHOVEN stream for session {session_id}")
+        print(f"[AUDIO OUT FÜR ELISE] Target: {target_ip}:{target_port}")
+        
+        # ✅ WARTE AUF active_call 
+        import time
+        wait_start = time.time()
+        
+        while not self.active_call:
+            if (time.time() - wait_start) > 3:
+                print("❌ [AUDIO OUT FÜR ELISE] Timeout waiting for active_call")
+                return False
+            time.sleep(0.01)
+        
+        print(f"✅ [AUDIO OUT FÜR ELISE] Active call confirmed: {self.active_call}")
+        
+        try:
+            # ✅ SOCKET SETUP
+            audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            audio_socket.bind(('0.0.0.0', 51823))
+            audio_socket.settimeout(0.1)
+            
+            print(f"🎹 [AUDIO OUT FÜR ELISE] BEETHOVEN transmission ACTIVE! 🎵")
+            
+            packet_counter = 0
+            
+            # 🎹 FÜR ELISE GENERATOR
+            fur_elise_generator = FurEliseGenerator(
+                sample_rate=self.audio_config.RATE,
+                chunk_size=self.audio_config.CHUNK
+            )
+            
+            while self.active_call:
+                try:
+                    # 🎵 GENERIERE FÜR ELISE AUDIO-CHUNK
+                    raw_data = fur_elise_generator.generate_chunk()
+                    
+                    packet_counter += 1
+                    if packet_counter % 50 == 0:  # Weniger logging für Performance
+                        print(f"[FÜR ELISE] 🎵 Packet {packet_counter} - 'E-D#-E-D#-E-B-D-C-A'")
+                    
+                    # ✅ VERSCHLÜSSELUNG
+                    cipher = EVP.Cipher("aes_256_cbc", key, iv, 1)
+                    encrypted_data = cipher.update(raw_data) + cipher.final()
+                    
+                    # ✅ SENDEN
+                    session_header = session_id.encode('utf-8')
+                    packet_with_session = session_header + encrypted_data
+                    audio_socket.sendto(packet_with_session, (target_ip, target_port))
+                    
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    if self.active_call:
+                        print(f"[FÜR ELISE ERROR] Session {session_id}: {str(e)}")
+                    break
+                        
+            print(f"[FÜR ELISE] 🎹 Composition ended. Total packets: {packet_counter}")
+            
+        except Exception as e:
+            print(f"[FÜR ELISE SETUP ERROR] Session {session_id}: {str(e)}")
+            return False
+        finally:
+            if audio_socket:
+                audio_socket.close()
+                print(f"✅ [AUDIO OUT FÜR ELISE] Session {session_id} - Socket closed")
+        
+        return True
+
+
     def show_audio_devices_popup(self):
         """Audio-Geräte, Qualitätsauswahl und Rauschfilterung - KORRIGIERTE DPI-VERSION"""
         try:
