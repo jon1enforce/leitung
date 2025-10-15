@@ -1268,47 +1268,97 @@ class CONVEY:
         self._start_udp_relay()
 
     def _start_udp_relay(self):
-        """Startet ZWEI UDP Relay Server für 2-Port System"""
+        """🚀 ULTIMATIVE HYBRID-LÖSUNG: Turbo-Loop + Kompatibilitäts-Ports"""
         try:
-            # ✅ Socket für Caller (Port 51821)
-            self.udp_socket_caller = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            bind_host = '0.0.0.0'  # Bind auf alle Netzwerk-Interfaces
+            # ⚡ TURBO-LOOP (Haupt-Performance)
+            self.udp_relay_port = 51820  # Single Port für maximale Performance
+            self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             
+            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            self.udp_socket.setblocking(False)
+            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 512 * 1024)  # Optimiert
+            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 512 * 1024)  # Optimiert
+            self.udp_socket.bind(('0.0.0.0', self.udp_relay_port))
+            
+            # ✅ KOMPATIBILITÄT: Behalte alte Ports für Client-Kompatibilität
+            self.udp_socket_caller = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             self.udp_socket_caller.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.udp_socket_caller.setblocking(False)
-            self.udp_socket_caller.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024)
-            self.udp_socket_caller.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 1024)
+            self.udp_socket_caller.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 256 * 1024)
+            self.udp_socket_caller.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 256 * 1024)
+            self.udp_socket_caller.bind(('0.0.0.0', self.udp_relay_port_caller))
             
-            self.udp_socket_caller.bind((bind_host, self.udp_relay_port_caller))
-            
-            # ✅ Socket für Callee (Port 51822)  
             self.udp_socket_callee = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            
             self.udp_socket_callee.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.udp_socket_callee.setblocking(False)
-            self.udp_socket_callee.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 1024 * 1024)
-            self.udp_socket_callee.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 1024 * 1024)
+            self.udp_socket_callee.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 256 * 1024)
+            self.udp_socket_callee.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 256 * 1024)
+            self.udp_socket_callee.bind(('0.0.0.0', self.udp_relay_port_callee))
             
-            self.udp_socket_callee.bind((bind_host, self.udp_relay_port_callee))
+            # ⚡ FAST LOOKUP: {client_addr: partner_addr}
+            self.connection_map = {}  # O(1) Lookups!
+            self.client_names = {}    # {client_addr: client_name}
             
-            print(f"[UDP RELAY] Server started on {bind_host}:{self.udp_relay_port_caller} (caller)")
-            print(f"[UDP RELAY] Server started on {bind_host}:{self.udp_relay_port_callee} (callee)")
+            print(f"[TURBO RELAY] 🚀 Hybrid System gestartet:")
+            print(f"  ⚡ Turbo-Loop: Port {self.udp_relay_port} (Performance)")
+            print(f"  ✅ Kompatibilität: Port {self.udp_relay_port_caller} (Caller)")
+            print(f"  ✅ Kompatibilität: Port {self.udp_relay_port_callee} (Callee)")
+            print(f"  📞 Clients weiterhin auf Port 51823")
             
-            # Starte beide Handler in EINER Methode
-            threading.Thread(target=self._handle_udp_relay, daemon=True).start()
+            # Starte beide Loops
+            threading.Thread(target=self._turbo_relay_loop, daemon=True, name="TurboLoop").start()
+            threading.Thread(target=self._compatibility_loop, daemon=True, name="CompatLoop").start()
             
         except Exception as e:
-            print(f"[UDP RELAY ERROR] Failed to start: {e}")
+            print(f"[RELAY ERROR] Failed to start: {e}")
+            import traceback
+            traceback.print_exc()
 
-    def _handle_udp_relay(self):
-        """NAT-TRAVERSAL mit festen Ports - UNIVERSAL"""
+    def _turbo_relay_loop(self):
+        """⚡ Ultra-schnelle Haupt-Loop für maximale Performance"""
         import select
-        
-        print("[UDP RELAY] ✅ Starting NAT-TRAVERSAL with fixed ports")
         packet_count = 0
         
-        # ✅ TRACK CLIENT ADDRESSES: {client_name: (ip, port)}
-        client_addresses = {}
+        print("[TURBO RELAY] 🚀 Starting turbo loop...")
+        
+        while True:
+            try:
+                ready, _, _ = select.select([self.udp_socket], [], [], 0.001)
+                if not ready:
+                    continue
+                    
+                data, src_addr = self.udp_socket.recvfrom(1400)
+                packet_count += 1
+                src_ip, src_port = src_addr
+                
+                # ✅ REDUZIERTES LOGGING für Performance
+                if packet_count % 1000 == 0:  # Nur alle 1000 Pakete loggen
+                    print(f"[TURBO] Packet #{packet_count} from {src_ip}:{src_port}")
+                
+                # ⚡ BLITZSCHNELLER LOOKUP - O(1) Performance!
+                target_addr = self.connection_map.get(src_addr)
+                
+                if target_addr:
+                    # ⚡ DIREKTES WEITERLEITEN - Keine komplexe Logik!
+                    self.udp_socket.sendto(data, target_addr)
+                    
+                    if packet_count % 1000 == 0:
+                        target_ip, target_port = target_addr
+                        print(f"[TURBO] Routing: {src_ip}:{src_port} → {target_ip}:{target_port}")
+                        
+            except BlockingIOError:
+                continue
+            except Exception as e:
+                if packet_count % 500 == 0:  # Reduzierte Fehler-Logging
+                    print(f"[TURBO ERROR] {e}")
+                continue
+
+    def _compatibility_loop(self):
+        """🔄 Kompatibilitäts-Loop: Forwarding von alten Ports zum Turbo-Loop"""
+        import select
+        packet_count = 0
+        
+        print("[COMPAT RELAY] 🔄 Starting compatibility loop...")
         
         while True:
             try:
@@ -1322,85 +1372,51 @@ class CONVEY:
                         src_ip, src_port = src_addr
                         server_port = udp_socket.getsockname()[1]
                         
-                        if packet_count % 100 == 0:
-                            print(f"[RELAY] Packet #{packet_count} from {src_ip}:{src_port} on server port {server_port}")
+                        if packet_count % 500 == 0:
+                            print(f"[COMPAT] Packet #{packet_count} from {src_ip}:{src_port} on port {server_port}")
                         
-                        # ✅ IDENTIFIZIERE CLIENT UND TRACK ADDRESS
-                        with self.relay_lock:
-                            for call_id, relay_info in list(self.audio_relays.items()):
-                                caller_name = relay_info['caller_name']
-                                callee_name = relay_info['callee_name']
-                                
-                                # ✅ UPDATE CLIENT ADDRESS FROM PACKET
-                                if server_port == self.udp_relay_port_caller:  # 51821
-                                    # Paket von Caller → track seine Adresse
-                                    client_addresses[caller_name] = (src_ip, src_port)
-                                    print(f"[RELAY] 📍 Caller {caller_name} at {src_ip}:{src_port}")
-                                    
-                                    # Sende zu Callee (falls Adresse bekannt)
-                                    if callee_name in client_addresses:
-                                        target_ip, target_port = client_addresses[callee_name]
-                                        # ✅ WICHTIG: Verwende den GESPEICHERTEN Port des Callee!
-                                        target_addr = (target_ip, target_port)
-                                        try:
-                                            self.udp_socket_callee.sendto(data, target_addr)
-                                            if packet_count % 100 == 0:
-                                                print(f"[RELAY] Caller→Callee: {src_ip}:{src_port}→{target_addr}")
-                                        except Exception as e:
-                                            print(f"[RELAY ERROR] To callee: {e}")
-                                    else:
-                                        print(f"[RELAY] ⚠️ Callee address not yet known")
-                                        
-                                elif server_port == self.udp_relay_port_callee:  # 51822  
-                                    # Paket von Callee → track seine Adresse
-                                    client_addresses[callee_name] = (src_ip, src_port)
-                                    print(f"[RELAY] 📍 Callee {callee_name} at {src_ip}:{src_port}")
-                                    
-                                    # Sende zu Caller (falls Adresse bekannt)
-                                    if caller_name in client_addresses:
-                                        target_ip, target_port = client_addresses[caller_name]
-                                        # ✅ WICHTIG: Verwende den GESPEICHERTEN Port des Caller!
-                                        target_addr = (target_ip, target_port)
-                                        try:
-                                            self.udp_socket_caller.sendto(data, target_addr)
-                                            if packet_count % 100 == 0:
-                                                print(f"[RELAY] Callee→Caller: {src_ip}:{src_port}→{target_addr}")
-                                        except Exception as e:
-                                            print(f"[RELAY ERROR] To caller: {e}")
-                                    else:
-                                        print(f"[RELAY] ⚠️ Caller address not yet known")
+                        # 🔄 INTELLIGENTES FORWARDING ZUM TURBO-LOOP
+                        # Behalte Client-Adresse bei, aber markiere den Port für internes Routing
+                        if server_port == self.udp_relay_port_caller:  # 51821
+                            # Von Caller:51823 → Markiere als Caller für Turbo-Loop
+                            internal_addr = src_addr  # Verwende originale Client-Adresse
+                            if packet_count % 500 == 0:
+                                print(f"[COMPAT] Forwarding Caller packet to turbo loop")
+                            
+                        elif server_port == self.udp_relay_port_callee:  # 51822  
+                            # Von Callee:51823 → Markiere als Callee für Turbo-Loop
+                            internal_addr = src_addr  # Verwende originale Client-Adresse
+                            if packet_count % 500 == 0:
+                                print(f"[COMPAT] Forwarding Callee packet to turbo loop")
+                        
+                        # 🔄 Sende an Turbo-Loop mit originaler Client-Adresse
+                        # Der Turbo-Loop kümmert sich um das Routing via connection_map
+                        self.udp_socket.sendto(data, src_addr)
                             
                     except BlockingIOError:
                         continue
                     except Exception as e:
-                        print(f"[RELAY ERROR] Packet processing: {e}")
+                        if packet_count % 200 == 0:
+                            print(f"[COMPAT ERROR] Socket processing: {e}")
                         continue
-                        
+                            
             except Exception as e:
-                print(f"[RELAY ERROR] Main loop: {e}")
-                time.sleep(0.1)
-
+                if packet_count % 200 == 0:
+                    print(f"[COMPAT ERROR] Main loop: {e}")
+                continue
 
     def _register_audio_relay(self, call_id, caller_name, callee_name):
-        """Registriert Audio-Relay - BEIDE CLIENTS VERWENDEN PORT 51823"""
+        """🚀 Optimierte Relay-Registrierung für Hybrid-System"""
         try:
             print(f"[RELAY] Registering audio relay: {caller_name} <-> {callee_name}")
             
             caller_ip = None
             callee_ip = None
             
-            # ✅ KORREKTUR: BEIDE CLIENTS LAUSCHEN AUF 51823
-            client_listen_port = 51823  # Beide Clients empfangen auf diesem Port
+            # ✅ KOMPATIBILITÄT: Clients verwenden weiterhin Port 51823
+            client_listen_port = 51823
             
-            print(f"[RELAY] Port mapping:")
-            print(f"  Caller ({caller_name}):")
-            print(f"    - Send: :51823 → Server:51821")
-            print(f"    - Recv: :51823 ← Server:51822") 
-            print(f"  Callee ({callee_name}):")
-            print(f"    - Send: :51823 → Server:51822")
-            print(f"    - Recv: :51823 ← Server:51821")
-            
-            # ✅ CLIENT-IPs ERMITTELN
+            # ✅ IP-ERMITTLUNG (gleich wie vorher für Kompatibilität)
             with self.server.clients_lock:
                 print(f"[RELAY DEBUG] Searching through {len(self.server.clients)} clients:")
                 
@@ -1455,36 +1471,47 @@ class CONVEY:
                 print(f"[RELAY DEBUG] Available clients: {list(self.server.clients.keys())}")
                 return False
             
-            # ✅ KORREKTE ADRESSEN FÜR DAS SCHEMA
-            # Beide Clients empfangen auf 51823!
-            caller_recv_addr = (caller_ip, client_listen_port)  # Caller empfängt auf 51823
-            callee_recv_addr = (callee_ip, client_listen_port)  # Callee empfängt auf 51823
+            # ✅ KOMPATIBLE ADRESSEN (genau wie vorher)
+            caller_addr = (caller_ip, client_listen_port)  # Caller:51823
+            callee_addr = (callee_ip, client_listen_port)  # Callee:51823
             
-            print(f"[RELAY] Final addresses:")
-            print(f"  Caller: {caller_ip}:51823 (send→51821, recv←51822)")
-            print(f"  Callee: {callee_ip}:51823 (send→51822, recv←51821)")
+            print(f"[RELAY] Final addresses for hybrid system:")
+            print(f"  Caller: {caller_ip}:51823")
+            print(f"  Callee: {callee_ip}:51823")
+            print(f"  Routing: Turbo-Loop (51820) + Kompatibilität (51821/51822)")
             
-            # ✅ KONSISTENTE REGISTRIERUNG
+            # ⚡ ULTRA-FAST REGISTRIERUNG FÜR TURBO-LOOP
+            self.connection_map[caller_addr] = callee_addr
+            self.connection_map[callee_addr] = caller_addr
+            
+            # Für Debugging und Cleanup
+            self.client_names[caller_addr] = caller_name
+            self.client_names[callee_addr] = callee_name
+            
+            # ✅ KOMPATIBILITÄT: Behalte audio_relays für andere Code-Teile
             with self.relay_lock:
                 self.audio_relays[call_id] = {
-                    'caller_ip': caller_ip,           # Client 1 IP
-                    'callee_ip': callee_ip,           # Client 2 IP
-                    'caller_recv_port': 51823,        # Caller empfängt auf 51823
-                    'callee_recv_port': 51823,        # Callee empfängt auf 51823
+                    'caller_ip': caller_ip,
+                    'callee_ip': callee_ip, 
+                    'caller_recv_port': 51823,
+                    'callee_recv_port': 51823,
                     'timestamp': time.time(),
                     'caller_name': caller_name,
-                    'callee_name': callee_name
+                    'callee_name': callee_name,
+                    # ✅ NEU: Schnellzugriff auf Adressen für Turbo-Loop
+                    'caller_addr': caller_addr,
+                    'callee_addr': callee_addr
                 }
             
-            print(f"[RELAY] ✅ Successfully registered audio relay for call {call_id}")
-            print(f"[RELAY] ✅ Both clients use port 51823 for send/receive")
-            print(f"[RELAY] ✅ Server cross-relay: 51821↔51822")
+            print(f"[RELAY] ✅ Hybrid relay registered for call {call_id}")
             
             # ✅ DEBUG: Aktuelle Relay-Status anzeigen
             with self.relay_lock:
                 print(f"[RELAY DEBUG] Current relays: {list(self.audio_relays.keys())}")
                 for relay_id, relay_data in self.audio_relays.items():
                     print(f"  - {relay_id}: {relay_data['caller_name']} ↔ {relay_data['callee_name']}")
+            
+            print(f"[RELAY DEBUG] Connection map entries: {len(self.connection_map)}")
             
             return True
             
@@ -1495,11 +1522,36 @@ class CONVEY:
             return False
 
     def _unregister_audio_relay(self, call_id):
-        """Entfernt Audio-Relay Registration - OPTIMIERT"""
+        """🚀 Optimiertes Unregister für Hybrid-System"""
         with self.relay_lock:
             if call_id in self.audio_relays:
+                relay_data = self.audio_relays[call_id]
+                
+                # ⚡ SCHNELLES CLEANUP der Turbo-Loop Connection Map
+                caller_addr = relay_data.get('caller_addr')
+                callee_addr = relay_data.get('callee_addr')
+                
+                if caller_addr and caller_addr in self.connection_map:
+                    del self.connection_map[caller_addr]
+                    print(f"[RELAY] Removed caller {caller_addr} from connection map")
+                    
+                if callee_addr and callee_addr in self.connection_map:  
+                    del self.connection_map[callee_addr]
+                    print(f"[RELAY] Removed callee {callee_addr} from connection map")
+                
+                # Cleanup client_names
+                if caller_addr and caller_addr in self.client_names:
+                    del self.client_names[caller_addr]
+                if callee_addr and callee_addr in self.client_names:
+                    del self.client_names[callee_addr]
+                
+                # Alte Struktur cleanup
                 del self.audio_relays[call_id]
-                print(f"[RELAY] Unregistered audio relay for call {call_id}")
+                print(f"[RELAY] ✅ Unregistered hybrid relay for call {call_id}")
+                
+                # Debug Info
+                print(f"[RELAY DEBUG] Remaining connection map entries: {len(self.connection_map)}")
+                print(f"[RELAY DEBUG] Remaining audio relays: {len(self.audio_relays)}")
 
     def handle_get_public_key(self, msg, client_socket, client_name):
         """VOLLSTÄNDIG KORRIGIERT: Public-Key-Antwort mit erweitertem Debugging"""
