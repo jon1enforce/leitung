@@ -938,6 +938,9 @@ class AudioConfig:
         self.input_device_index = None
         self.output_device_index = None
         self.using_pyaudio_fallback = False
+        self.using_ode_to_joy_microphone = False  # ✅ NEU: Ode-to-Joy als Mikrofon
+        self.ode_generator = None  # ✅ NEU: Ode-to-Joy Generator
+        self.input_stream = None  # ✅ WICHTIG: Fehlendes Attribut
         
         # ✅ QUALITÄTSSTUFEN
         self.QUALITY_PROFILES = {
@@ -969,6 +972,13 @@ class AudioConfig:
                 "name": "16-bit @ 48kHz Mono (Low Quality)",
                 "actual_format": "16-bit"
             },
+            "ode_to_joy": {  # ✅ NEU: Spezielles Profil für Ode-to-Joy
+                "format": pyaudio.paInt16, 
+                "rate": 44100, 
+                "channels": 1,
+                "name": "16-bit @ 44.1kHz Mono (Ode to Joy Test)",
+                "actual_format": "16-bit"
+            },
             "openbsd_fallback": {
                 "format": pyaudio.paInt16, 
                 "rate": 44100, 
@@ -980,9 +990,7 @@ class AudioConfig:
         
         # Standard-Qualität
         self.quality_profile = "middle"
-        
         self.CHUNK = 128
-
         
         # Output Format-Check
         self.output_supports_24bit = True
@@ -1366,26 +1374,30 @@ class AudioConfig:
             return False
 
     def get_input_devices(self):
-        """ZENTRALE Methode für Eingabegeräte - MIT ROBUSTEM OPENBSD SUPPORT"""
-        # OpenBSD-spezifische Erkennung zuerst
-        if sys.platform.startswith("openbsd"):
-            return self.get_openbsd_device_info()
-        
-        # Normale PyAudio-Erkennung für andere Plattformen
+        """ZENTRALE Methode für Eingabegeräte - MIT ODE-TO-JOY SUPPORT"""
         devices = []
-        try:
-            if self.audio:
-                for i in range(self.audio.get_device_count()):
-                    device_info = self.audio.get_device_info_by_index(i)
-                    if device_info.get('maxInputChannels', 0) > 0:
-                        device_name = device_info.get('name', f'Device {i}')
-                        devices.append(f"{i}: {device_name} (Input)")
-        except Exception as e:
-            print(f"[INPUT DEVICES ERROR] {str(e)}")
-            devices = ["0: Standard-Mikrofon (Input)"]
         
-        if not devices:
-            devices = ["0: Default Input Device"]
+        # ✅ ODE-TO-JOY ALS ERSTE OPTION FÜR TESTS
+        devices.append("ode_to_joy: Ode an die Freude (Test Signal)")
+        
+        # OpenBSD-spezifische Erkennung
+        if sys.platform.startswith("openbsd"):
+            devices.extend(self.get_openbsd_device_info())
+        else:
+            # Normale PyAudio-Erkennung
+            try:
+                if self.audio:
+                    for i in range(self.audio.get_device_count()):
+                        device_info = self.audio.get_device_info_by_index(i)
+                        if device_info.get('maxInputChannels', 0) > 0:
+                            device_name = device_info.get('name', f'Device {i}')
+                            devices.append(f"{i}: {device_name} (Input)")
+            except Exception as e:
+                print(f"[INPUT DEVICES ERROR] {str(e)}")
+                devices.append("0: Standard-Mikrofon (Input)")
+        
+        if len(devices) <= 1:  # Nur Ode-to-Joy vorhanden
+            devices.append("0: Default Input Device")
             
         return devices
 
@@ -1426,6 +1438,120 @@ class AudioConfig:
             devices = ["0: Default Output Device"]
             
         return devices
+
+    def set_input_device(self, device_selection):
+        """Setzt das Eingabegerät - UNTERSTÜTZT ODE-TO-JOY"""
+        print(f"[AUDIO] Setting input device: {device_selection}")
+        
+        # ✅ ODE-TO-JOY ERKENNUNG
+        if "ode_to_joy" in device_selection.lower():
+            self.using_ode_to_joy_microphone = True
+            self.input_device_index = None  # Kein physisches Device
+            
+            # Ode-to-Joy Generator initialisieren
+            self.ode_generator = OdeToJoyGenerator(
+                sample_rate=44100, 
+                chunk_size=self.CHUNK
+            )
+            
+            # Ode-to-Joy Qualitätsprofil anwenden
+            self.quality_profile = "ode_to_joy"
+            self._apply_quality_profile()
+            
+            print("🎵 [AUDIO] Ode an die Freude als Mikrofon aktiviert!")
+            return True
+        
+        # Normales Mikrofon
+        self.using_ode_to_joy_microphone = False
+        self.ode_generator = None
+        
+        try:
+            # Extrahiere Device-Index aus String
+            if ":" in device_selection:
+                device_index_str = device_selection.split(":")[0].strip()
+                if device_index_str.isdigit():
+                    self.input_device_index = int(device_index_str)
+                else:
+                    self.input_device_index = 0
+            else:
+                self.input_device_index = 0
+                
+            print(f"[AUDIO] Using physical input device: {self.input_device_index}")
+            return True
+            
+        except Exception as e:
+            print(f"[AUDIO] Error setting input device: {e}")
+            self.input_device_index = 0
+            return False
+
+    def read_audio_data(self):
+        """Liest Audio-Daten - UNTERSTÜTZT ODE-TO-JOY"""
+        if self.using_ode_to_joy_microphone and self.ode_generator:
+            # ✅ ODE-TO-JOY AUDIO GENERIEREN
+            try:
+                return self.ode_generator.generate_chunk()
+            except Exception as e:
+                print(f"[ODE-TO-JOY ERROR] {e}")
+                # Fallback: Stille
+                return b"\x00" * (self.CHUNK * self.sample_width * self.CHANNELS)
+        
+        # Normales Mikrofon lesen
+        try:
+            if hasattr(self, 'input_stream') and self.input_stream:
+                return self.input_stream.read(self.CHUNK, exception_on_overflow=False)
+            else:
+                # Fallback für fehlenden Stream
+                return b"\x00" * (self.CHUNK * self.sample_width * self.CHANNELS)
+        except Exception as e:
+            print(f"[AUDIO READ ERROR] {e}")
+            return b"\x00" * (self.CHUNK * self.sample_width * self.CHANNELS)
+
+    def start_input_stream(self):
+        """Startet den Input-Stream - UNTERSTÜTZT ODE-TO-JOY"""
+        if self.using_ode_to_joy_microphone:
+            # ✅ KEIN PHYSICAL STREAM FÜR ODE-TO-JOY
+            print("🎵 [AUDIO] Ode-to-Joy input stream activated (virtual)")
+            return True
+        
+        # Normales Mikrofon starten
+        try:
+            if self.audio and self.input_device_index is not None:
+                self.input_stream = self.audio.open(
+                    format=self.FORMAT,
+                    channels=self.CHANNELS,
+                    rate=self.RATE,
+                    input=True,
+                    frames_per_buffer=self.CHUNK,
+                    input_device_index=self.input_device_index
+                )
+                print(f"[AUDIO] Physical input stream started: {self.input_device_index}")
+                return True
+            else:
+                print("[AUDIO] Cannot start input stream - no audio instance or device")
+                return False
+        except Exception as e:
+            print(f"[AUDIO STREAM ERROR] {e}")
+            return False
+
+    def stop_input_stream(self):
+        """Stoppt den Input-Stream - UNTERSTÜTZT ODE-TO-JOY"""
+        if self.using_ode_to_joy_microphone:
+            # ✅ NICHTS ZU STOPPEN FÜR ODE-TO-JOY
+            print("🎵 [AUDIO] Ode-to-Joy input stream stopped")
+            return True
+        
+        # Normales Mikrofon stoppen
+        try:
+            if hasattr(self, 'input_stream') and self.input_stream:
+                self.input_stream.stop_stream()
+                self.input_stream.close()
+                self.input_stream = None
+                print("[AUDIO] Physical input stream stopped")
+                return True
+        except Exception as e:
+            print(f"[AUDIO STOP ERROR] {e}")
+        
+        return False
 
     def verify_audio_configuration(self):
         """Überprüft Audio-Konfiguration OHNE Qualitätseinstellungen zu überschreiben"""
@@ -1569,7 +1695,8 @@ class AudioConfig:
                     "highest": "high",
                     "high": "middle", 
                     "middle": "low",
-                    "low": "openbsd_fallback",
+                    "low": "ode_to_joy",  # Fallback zu Ode-to-Joy statt openbsd_fallback
+                    "ode_to_joy": "openbsd_fallback",
                     "openbsd_fallback": "openbsd_fallback"  # Letzter Fallback
                 }
                 
@@ -1587,8 +1714,6 @@ class AudioConfig:
     def set_quality(self, quality_level):
         """Setzt die Audio-Qualitätsstufe MIT DEBUG"""
         print(f"[DEBUG] set_quality called: {self.quality_profile} -> {quality_level}")
-        import traceback
-        traceback.print_stack()
         
         if quality_level in self.QUALITY_PROFILES:
             self.quality_profile = quality_level
@@ -2159,12 +2284,14 @@ Rauschprofil Informationen (180s Clear Room):
             "platform": sys.platform,
             "initialized": self.audio is not None,
             "using_fallback": self.using_pyaudio_fallback,
+            "using_ode_to_joy": self.using_ode_to_joy_microphone,  # ✅ NEU
             "quality_profile": self.quality_profile,
             "sample_rate": self.RATE,
             "channels": self.CHANNELS,
             "format": self.actual_format,
-            "input_device": self.input_device_index,
-            "output_device": self.output_device_index
+            "input_device": "Ode to Joy" if self.using_ode_to_joy_microphone else self.input_device_index,
+            "output_device": self.output_device_index,
+            "chunk_size": self.CHUNK
         }
         return status
 class OdeToJoyGenerator:
