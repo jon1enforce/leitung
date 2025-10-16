@@ -1256,19 +1256,21 @@ class CONVEY:
         self.active_calls = {}
         self.call_lock = threading.RLock()
         
-        # ✅ KORREKTUR: ZWEI UDP Relay Ports für 2-Port System
-        self.udp_relay_port_caller = 51821  # Für Caller-Kommunikation
-        self.udp_relay_port_callee = 51822  # Für Callee-Kommunikation
+        # ✅ VEREINFACHT: NUR EIN SERVER-PORT
+        self.udp_relay_port = 51820  # Einziger Server-Port
         self.audio_relays = {}  # {call_id: {caller_addr: (ip, port), callee_addr: (ip, port)}}
         self.relay_lock = threading.Lock()
-        self.udp_socket_caller = None  # Socket für Port 51821
-        self.udp_socket_callee = None  # Socket für Port 51822
+        self.udp_socket = None  # Nur ein Socket
+        
+        # ⚡ FAST LOOKUP: {client_addr: partner_addr}
+        self.connection_map = {}  # O(1) Lookups!
+        self.client_names = {}    # {client_addr: client_name}
         
         # Starte UDP Relay Server
         self._start_udp_relay()
 
     def _start_udp_relay(self):
-        """🚀 ULTIMATIVE HYBRID-LÖSUNG: Turbo-Loop + Kompatibilitäts-Ports"""
+        """🚀 STARTET UDP RELAY MIT FESTEM PORT 51820"""
         try:
             # ⚡ TURBO-LOOP (Haupt-Performance)
             self.udp_relay_port = 51820  # Single Port für maximale Performance
@@ -1280,34 +1282,16 @@ class CONVEY:
             self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 512 * 1024)  # Optimiert
             self.udp_socket.bind(('0.0.0.0', self.udp_relay_port))
             
-            # ✅ KOMPATIBILITÄT: Behalte alte Ports für Client-Kompatibilität
-            self.udp_socket_caller = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.udp_socket_caller.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.udp_socket_caller.setblocking(False)
-            self.udp_socket_caller.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 256 * 1024)
-            self.udp_socket_caller.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 256 * 1024)
-            self.udp_socket_caller.bind(('0.0.0.0', self.udp_relay_port_caller))
-            
-            self.udp_socket_callee = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            self.udp_socket_callee.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            self.udp_socket_callee.setblocking(False)
-            self.udp_socket_callee.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 256 * 1024)
-            self.udp_socket_callee.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 256 * 1024)
-            self.udp_socket_callee.bind(('0.0.0.0', self.udp_relay_port_callee))
-            
             # ⚡ FAST LOOKUP: {client_addr: partner_addr}
             self.connection_map = {}  # O(1) Lookups!
             self.client_names = {}    # {client_addr: client_name}
             
             print(f"[TURBO RELAY] 🚀 Hybrid System gestartet:")
             print(f"  ⚡ Turbo-Loop: Port {self.udp_relay_port} (Performance)")
-            print(f"  ✅ Kompatibilität: Port {self.udp_relay_port_caller} (Caller)")
-            print(f"  ✅ Kompatibilität: Port {self.udp_relay_port_callee} (Callee)")
-            print(f"  📞 Clients weiterhin auf Port 51823")
+            print(f"  📞 Clients auf Port 51821")
             
-            # Starte beide Loops
+            # Starte Turbo Loop
             threading.Thread(target=self._turbo_relay_loop, daemon=True, name="TurboLoop").start()
-            threading.Thread(target=self._compatibility_loop, daemon=True, name="CompatLoop").start()
             
         except Exception as e:
             print(f"[RELAY ERROR] Failed to start: {e}")
@@ -1315,211 +1299,305 @@ class CONVEY:
             traceback.print_exc()
 
     def _turbo_relay_loop(self):
-        """⚡ Ultra-schnelle Haupt-Loop für maximale Performance"""
+        """⚡ NAT-COMPATIBLE UDP Relay Loop"""
         import select
         packet_count = 0
         
-        print("[TURBO RELAY] 🚀 Starting turbo loop...")
+        print("[TURBO RELAY] 🚀 Starting NAT-compatible turbo loop...")
         
         while True:
             try:
-                ready, _, _ = select.select([self.udp_socket], [], [], 0.001)
-                if not ready:
-                    continue
+                # ✅ OPTIMIERT: Besseres Timeout für NAT-Umgebungen
+                ready, _, _ = select.select([self.udp_socket], [], [], 0.05)
+                
+                if ready:
+                    data, src_addr = self.udp_socket.recvfrom(1400)
+                    packet_count += 1
+                    src_ip, src_port = src_addr
                     
-                data, src_addr = self.udp_socket.recvfrom(1400)
-                packet_count += 1
-                src_ip, src_port = src_addr
-                
-                # ✅ REDUZIERTES LOGGING für Performance
-                if packet_count % 1000 == 0:  # Nur alle 1000 Pakete loggen
-                    print(f"[TURBO] Packet #{packet_count} from {src_ip}:{src_port}")
-                
-                # ⚡ BLITZSCHNELLER LOOKUP - O(1) Performance!
-                target_addr = self.connection_map.get(src_addr)
-                
-                if target_addr:
-                    # ⚡ DIREKTES WEITERLEITEN - Keine komplexe Logik!
-                    self.udp_socket.sendto(data, target_addr)
-                    
+                    # ✅ REDUZIERTES LOGGING für Performance
                     if packet_count % 1000 == 0:
-                        target_ip, target_port = target_addr
-                        print(f"[TURBO] Routing: {src_ip}:{src_port} → {target_ip}:{target_port}")
-                        
+                        print(f"[TURBO] Packet #{packet_count} from {src_ip}:{src_port}")
+                    
+                    # ⚡ SCHNELLER LOOKUP MIT NAT-ADDRESSEN
+                    with self.relay_lock:
+                        target_addr = self.connection_map.get(src_addr)
+                    
+                    if target_addr:
+                        try:
+                            # ⚡ DIREKTES WEITERLEITEN AN NAT-ADDRESSE
+                            sent_bytes = self.udp_socket.sendto(data, target_addr)
+                            
+                            if packet_count % 1000 == 0:
+                                target_ip, target_port = target_addr
+                                src_name = self.client_names.get(src_addr, 'unknown')
+                                target_name = self.client_names.get(target_addr, 'unknown')
+                                print(f"[TURBO] NAT Routing: {src_name} {src_addr} → {target_name} {target_addr} ({len(data)} bytes)")
+                                
+                        except Exception as send_error:
+                            print(f"[TURBO SEND ERROR] Failed to send to {target_addr}: {send_error}")
+                            # ✅ VERBESSERTES ERROR HANDLING: Entferne defekte Verbindungen
+                            if "Connection refused" in str(send_error) or "Host is down" in str(send_error):
+                                print(f"[TURBO CLEANUP] Removing broken connection: {src_addr} -> {target_addr}")
+                                with self.relay_lock:
+                                    if src_addr in self.connection_map:
+                                        del self.connection_map[src_addr]
+                                    if target_addr in self.connection_map:
+                                        del self.connection_map[target_addr]
+                    else:
+                        # ❌ Keine Route gefunden - möglicherweise nicht registrierter Client oder NAT-Problem
+                        if packet_count % 500 == 0:
+                            print(f"[TURBO WARNING] No NAT route for {src_addr}")
+                            print(f"[TURBO DEBUG] Available routes: {list(self.connection_map.keys())}")
+                            
             except BlockingIOError:
                 continue
             except Exception as e:
-                if packet_count % 500 == 0:  # Reduzierte Fehler-Logging
+                if "10054" not in str(e):  # Unterdrücke normale Connection Reset Fehler
                     print(f"[TURBO ERROR] {e}")
-                continue
-
-    def _compatibility_loop(self):
-        """🔄 Kompatibilitäts-Loop: Forwarding von alten Ports zum Turbo-Loop"""
-        import select
-        packet_count = 0
-        
-        print("[COMPAT RELAY] 🔄 Starting compatibility loop...")
-        
-        while True:
-            try:
-                sockets_to_check = [self.udp_socket_caller, self.udp_socket_callee]
-                ready, _, _ = select.select(sockets_to_check, [], [], 0.001)
-                
-                for udp_socket in ready:
-                    try:
-                        data, src_addr = udp_socket.recvfrom(1400)
-                        packet_count += 1
-                        src_ip, src_port = src_addr
-                        server_port = udp_socket.getsockname()[1]
-                        
-                        if packet_count % 500 == 0:
-                            print(f"[COMPAT] Packet #{packet_count} from {src_ip}:{src_port} on port {server_port}")
-                        
-                        # 🔄 INTELLIGENTES FORWARDING ZUM TURBO-LOOP
-                        # Behalte Client-Adresse bei, aber markiere den Port für internes Routing
-                        if server_port == self.udp_relay_port_caller:  # 51821
-                            # Von Caller:51823 → Markiere als Caller für Turbo-Loop
-                            internal_addr = src_addr  # Verwende originale Client-Adresse
-                            if packet_count % 500 == 0:
-                                print(f"[COMPAT] Forwarding Caller packet to turbo loop")
-                            
-                        elif server_port == self.udp_relay_port_callee:  # 51822  
-                            # Von Callee:51823 → Markiere als Callee für Turbo-Loop
-                            internal_addr = src_addr  # Verwende originale Client-Adresse
-                            if packet_count % 500 == 0:
-                                print(f"[COMPAT] Forwarding Callee packet to turbo loop")
-                        
-                        # 🔄 Sende an Turbo-Loop mit originaler Client-Adresse
-                        # Der Turbo-Loop kümmert sich um das Routing via connection_map
-                        self.udp_socket.sendto(data, src_addr)
-                            
-                    except BlockingIOError:
-                        continue
-                    except Exception as e:
-                        if packet_count % 200 == 0:
-                            print(f"[COMPAT ERROR] Socket processing: {e}")
-                        continue
-                            
-            except Exception as e:
-                if packet_count % 200 == 0:
-                    print(f"[COMPAT ERROR] Main loop: {e}")
+                time.sleep(0.1)
                 continue
 
     def _register_audio_relay(self, call_id, caller_name, callee_name):
-        """🚀 Optimierte Relay-Registrierung für Hybrid-System"""
+        """🚀 INTELLIGENTES NAT-TRAVERSAL: Berücksichtigt Server-Position"""
         try:
-            print(f"[RELAY] Registering audio relay: {caller_name} <-> {callee_name}")
+            print(f"🎯 [RELAY] Intelligent NAT Detection: {caller_name} <-> {callee_name}")
             
-            caller_ip = None
-            callee_ip = None
+            caller_data = None
+            callee_data = None
             
-            # ✅ KOMPATIBILITÄT: Clients verwenden weiterhin Port 51823
-            client_listen_port = 51823
-            
-            # ✅ IP-ERMITTLUNG (gleich wie vorher für Kompatibilität)
+            # ✅ CLIENT-DATEN SAMMELN
             with self.server.clients_lock:
-                print(f"[RELAY DEBUG] Searching through {len(self.server.clients)} clients:")
-                
                 for client_id, client_data in self.server.clients.items():
                     client_name = client_data.get('name', 'unknown')
-                    client_ip = client_data.get('ip', 'unknown')
-                    has_socket = client_data.get('socket') is not None
                     
-                    print(f"[RELAY DEBUG] Client: {client_name} -> IP: {client_ip}, Socket: {has_socket}")
-                    
-                    if client_name == caller_name:
-                        caller_ip = client_ip
-                        print(f"[RELAY] Found caller: {caller_name} -> {caller_ip}")
-                        
-                    elif client_name == callee_name:
-                        callee_ip = client_ip
-                        print(f"[RELAY] Found callee: {callee_name} -> {callee_ip}")
+                    if client_name.lower() == caller_name.lower():
+                        caller_data = client_data
+                    elif client_name.lower() == callee_name.lower():
+                        callee_data = client_data
+            
+            if not caller_data or not callee_data:
+                print(f"[RELAY ERROR] Client data not found")
+                return False
+            
+            # ✅ IP-DATEN EXTRAHIEREN
+            caller_local_ip = caller_data.get('ip')
+            callee_local_ip = callee_data.get('ip')
+            caller_nat_ip = caller_data.get('nat_ip')
+            callee_nat_ip = callee_data.get('nat_ip')
+            
+            print(f"[RELAY] IP Analysis:")
+            print(f"  {caller_name} -> Local IP: {caller_local_ip}, NAT IP: {caller_nat_ip}")
+            print(f"  {callee_name} -> Local IP: {callee_local_ip}, NAT IP: {callee_nat_ip}")
+            
+            # ✅ KRITISCHE KORREKTUR: SERVER-POSITION BERÜCKSICHTIGEN
+            server_in_same_nat = self._is_server_in_same_nat(caller_nat_ip, callee_nat_ip)
+            clients_in_same_nat = (caller_nat_ip == callee_nat_ip)
+            
+            print(f"[RELAY] Network Analysis:")
+            print(f"  Clients in same NAT: {clients_in_same_nat}")
+            print(f"  Server in same NAT: {server_in_same_nat}")
+            
+            # ✅ INTELLIGENTES ROUTING BASIEREND AUF SERVER-POSITION
+            if clients_in_same_nat and server_in_same_nat:
+                # Fall 1: Alle im gleichen NAT (Server + Clients) → Lokale IPs
+                print(f"[RELAY] ✅ ALL IN SAME NAT - using local IPs")
+                caller_audio_addr = (caller_local_ip, 51821)
+                callee_audio_addr = (callee_local_ip, 51821)
+                routing_type = "LOCAL"
                 
-                # ✅ FALLBACK: Socket-basierte IP-Extraktion
-                if not caller_ip:
-                    print(f"[RELAY WARNING] Caller IP not found for {caller_name}, trying socket...")
-                    for client_id, client_data in self.server.clients.items():
-                        if client_data.get('name') == caller_name and client_data.get('socket'):
-                            try:
-                                caller_ip = client_data['socket'].getpeername()[0]
-                                print(f"[RELAY] Extracted caller IP from socket: {caller_ip}")
-                                break
-                            except Exception as e:
-                                print(f"[RELAY SOCKET ERROR] Could not get caller IP: {e}")
-                                continue
+            elif clients_in_same_nat and not server_in_same_nat:
+                # Fall 2: Clients im gleichen NAT, Server extern → NAT-IPs + Port-Forwarding nötig
+                print(f"[RELAY] ⚠️ CLIENTS IN SAME NAT, SERVER EXTERNAL - using NAT IPs (requires port forwarding)")
+                caller_audio_addr = (caller_nat_ip, 51821)
+                callee_audio_addr = (callee_nat_ip, 51821)
+                routing_type = "NAT_PORT_FORWARDING"
                 
-                if not callee_ip:
-                    print(f"[RELAY WARNING] Callee IP not found for {callee_name}, trying socket...")
-                    for client_id, client_data in self.server.clients.items():
-                        if client_data.get('name') == callee_name and client_data.get('socket'):
-                            try:
-                                callee_ip = client_data['socket'].getpeername()[0]
-                                print(f"[RELAY] Extracted callee IP from socket: {callee_ip}")
-                                break
-                            except Exception as e:
-                                print(f"[RELAY SOCKET ERROR] Could not get callee IP: {e}")
-                                continue
+            else:
+                # Fall 3: Unterschiedliche NATs → NAT-IPs
+                print(f"[RELAY] ✅ DIFFERENT NATs - using NAT IPs")
+                caller_audio_addr = (caller_nat_ip, 51821)
+                callee_audio_addr = (callee_nat_ip, 51821)
+                routing_type = "NAT"
             
             # ✅ VALIDIERUNG
-            if not caller_ip:
-                print(f"[RELAY ERROR] ❌ Could not find caller IP for {caller_name}")
-                print(f"[RELAY DEBUG] Available clients: {list(self.server.clients.keys())}")
+            if not caller_audio_addr[0] or not callee_audio_addr[0]:
+                print(f"[RELAY ERROR] Could not determine audio addresses")
                 return False
+            
+            print(f"[RELAY] 🎯 Final Audio Routing [{routing_type}]:")
+            print(f"  Caller: {caller_audio_addr}")
+            print(f"  Callee: {callee_audio_addr}")
+            
+            # ⚡ BIDIREKTIONALE VERBINDUNG EINRICHTEN
+            with self.relay_lock:
+                self.connection_map[caller_audio_addr] = callee_audio_addr
+                self.connection_map[callee_audio_addr] = caller_audio_addr
                 
-            if not callee_ip:
-                print(f"[RELAY ERROR] ❌ Could not find callee IP for {callee_name}")
-                print(f"[RELAY DEBUG] Available clients: {list(self.server.clients.keys())}")
-                return False
+                self.client_names[caller_audio_addr] = caller_name
+                self.client_names[callee_audio_addr] = callee_name
             
-            # ✅ KOMPATIBLE ADRESSEN (genau wie vorher)
-            caller_addr = (caller_ip, client_listen_port)  # Caller:51823
-            callee_addr = (callee_ip, client_listen_port)  # Callee:51823
-            
-            print(f"[RELAY] Final addresses for hybrid system:")
-            print(f"  Caller: {caller_ip}:51823")
-            print(f"  Callee: {callee_ip}:51823")
-            print(f"  Routing: Turbo-Loop (51820) + Kompatibilität (51821/51822)")
-            
-            # ⚡ ULTRA-FAST REGISTRIERUNG FÜR TURBO-LOOP
-            self.connection_map[caller_addr] = callee_addr
-            self.connection_map[callee_addr] = caller_addr
-            
-            # Für Debugging und Cleanup
-            self.client_names[caller_addr] = caller_name
-            self.client_names[callee_addr] = callee_name
-            
-            # ✅ KOMPATIBILITÄT: Behalte audio_relays für andere Code-Teile
+            # ✅ Relay-Info speichern
             with self.relay_lock:
                 self.audio_relays[call_id] = {
-                    'caller_ip': caller_ip,
-                    'callee_ip': callee_ip, 
-                    'caller_recv_port': 51823,
-                    'callee_recv_port': 51823,
-                    'timestamp': time.time(),
                     'caller_name': caller_name,
                     'callee_name': callee_name,
-                    # ✅ NEU: Schnellzugriff auf Adressen für Turbo-Loop
-                    'caller_addr': caller_addr,
-                    'callee_addr': callee_addr
+                    'caller_addr': caller_audio_addr,
+                    'callee_addr': callee_audio_addr,
+                    'routing_type': routing_type,  # ✅ NEU: Routing-Typ für Debugging
+                    'same_nat': clients_in_same_nat,
+                    'server_in_same_nat': server_in_same_nat,
+                    'timestamp': time.time()
                 }
             
-            print(f"[RELAY] ✅ Hybrid relay registered for call {call_id}")
-            
-            # ✅ DEBUG: Aktuelle Relay-Status anzeigen
-            with self.relay_lock:
-                print(f"[RELAY DEBUG] Current relays: {list(self.audio_relays.keys())}")
-                for relay_id, relay_data in self.audio_relays.items():
-                    print(f"  - {relay_id}: {relay_data['caller_name']} ↔ {relay_data['callee_name']}")
-            
-            print(f"[RELAY DEBUG] Connection map entries: {len(self.connection_map)}")
-            
+            self._debug_connection_map()
+            print(f"[RELAY] 🎉 Intelligent Audio relay SUCCESS for call {call_id}")
             return True
             
         except Exception as e:
-            print(f"[RELAY ERROR] Registration failed: {e}")
+            print(f"[RELAY ERROR] Intelligent Registration failed: {e}")
             import traceback
             traceback.print_exc()
             return False
+
+    def _is_server_in_same_nat(self, caller_nat_ip, callee_nat_ip):
+        """Ermittelt ob der Server im gleichen NAT wie die Clients ist - KORRIGIERT"""
+        try:
+            # Server-IP ermitteln
+            server_ip = self._get_server_public_ip()
+            
+            # ✅ KORREKTUR: Bessere Logik für die Entscheidung
+            if server_ip == "UNKNOWN":
+                print(f"[RELAY DEBUG] Server IP unknown - assuming different NAT")
+                return False
+                
+            # Wenn Server-IP eine lokale IP ist (192.168.x.x, 10.x.x.x)
+            # UND die Client NAT-IPs auch lokal sind, dann sind alle im gleichen NAT
+            server_is_local = server_ip.startswith('192.168.') or server_ip.startswith('10.')
+            caller_is_local = caller_nat_ip.startswith('192.168.') or caller_nat_ip.startswith('10.')
+            callee_is_local = callee_nat_ip.startswith('192.168.') or callee_nat_ip.startswith('10.')
+            
+            # Alle haben lokale IPs → gleiches NAT
+            if server_is_local and caller_is_local and callee_is_local:
+                print(f"[RELAY DEBUG] All have local IPs - same NAT")
+                return True
+                
+            # Server hat öffentliche IP, Clients haben gleiche öffentliche IP → Server könnte im gleichen NAT sein
+            if not server_is_local and server_ip == caller_nat_ip and server_ip == callee_nat_ip:
+                print(f"[RELAY DEBUG] Server and clients have same public IP - likely same NAT")
+                return True
+                
+            # Unterschiedliche IPs → unterschiedliche NATs
+            print(f"[RELAY DEBUG] Different IPs - different NATs")
+            return False
+            
+        except Exception as e:
+            print(f"[RELAY WARNING] Could not determine server position: {e}")
+            return False  # Im Zweifel: Server ist extern
+
+    def _get_server_public_ip(self):
+        """Ermittelt die ÖFFENTLICHE IP des Servers - KORRIGIERT"""
+        try:
+            try:
+                # Methode 1: Über externen Service
+                import urllib.request
+                import json
+                with urllib.request.urlopen('https://httpbin.org/ip', timeout=5) as response:
+                    data = json.loads(response.read())
+                    public_ip = data['origin']
+                    print(f"[RELAY] Server public IP from external service: {public_ip}")
+                    return public_ip
+            except:
+                # Methode 2: Socket Peer-IP (wenn Server hinter NAT)
+                s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                s.connect(("8.8.8.8", 80))
+                local_ip = s.getsockname()[0]  # Lokale IP
+                s.close()
+                
+                # ✅ KORREKTUR: Wenn Server lokale IP hat, können wir keine öffentliche IP ermitteln
+                # In diesem Fall geben wir die lokale IP zurück und die Entscheidung wird anders getroffen
+                if local_ip.startswith('192.168.') or local_ip.startswith('10.'):
+                    print(f"[RELAY] Server has local IP {local_ip} - cannot determine public IP")
+                    return local_ip  # ✅ KORREKTUR: Lokale IP zurückgeben
+                
+                print(f"[RELAY] Server has non-local IP {local_ip} - using as public IP")
+                return local_ip
+                
+        except Exception as e:
+            print(f"[RELAY WARNING] Could not get server public IP: {e}")
+            return "UNKNOWN"
+
+    def _get_local_audio_address(self, client_data, client_name):
+        """Ermittelt lokale Audio-Adresse aus Registration-Daten (nur bei gleichem NAT) - KORRIGIERT"""
+        local_ip = client_data.get('ip')  # Lokale IP aus Registration
+        if local_ip:
+            audio_addr = (local_ip, 51821)
+            print(f"[RELAY DEBUG] {client_name} local audio address: {audio_addr}")
+            return audio_addr
+        
+        print(f"[RELAY ERROR] No local IP found for {client_name} in registration data")
+        return None
+
+    def _get_nat_audio_address(self, client_data, client_name):
+        """Ermittelt NAT Audio-Adresse (für verschiedene NATs) - KORRIGIERT"""
+        nat_ip = self._get_nat_ip(client_data, client_name)
+        if nat_ip:
+            audio_addr = (nat_ip, 51821)
+            print(f"[RELAY DEBUG] {client_name} NAT audio address: {audio_addr}")
+            return audio_addr
+        
+        print(f"[RELAY ERROR] No NAT IP found for {client_name}")
+        return None
+    def _get_nat_ip(self, client_data, client_name):
+        """Ermittelt die NAT-IP eines Clients - Fallback Methode"""
+        try:
+            # Primär: Verwende das nat_ip Feld
+            nat_ip = client_data.get('nat_ip')
+            if nat_ip:
+                return nat_ip
+            
+            # Fallback: Versuche Socket-Peer-IP
+            client_socket = client_data.get('socket')
+            if client_socket:
+                try:
+                    peer_ip, peer_port = client_socket.getpeername()
+                    return peer_ip
+                except Exception as e:
+                    print(f"[RELAY WARNING] Could not get NAT IP from socket for {client_name}: {e}")
+            
+            # Letzter Fallback: Verwende lokale IP
+            return client_data.get('ip')
+            
+        except Exception as e:
+            print(f"[RELAY ERROR] Failed to get NAT IP for {client_name}: {e}")
+            return None
+    def _debug_connection_map(self):
+        """Debug-Ausgabe der Connection Map"""
+        with self.relay_lock:
+            print("\n=== CONNECTION MAP DEBUG ===")
+            print(f"Total connections: {len(self.connection_map)}")
+            print(f"Active relays: {len(self.audio_relays)}")
+            
+            if not self.connection_map:
+                print("  ❌ NO CONNECTIONS")
+            else:
+                for src, target in self.connection_map.items():
+                    src_name = self.client_names.get(src, 'unknown')
+                    target_name = self.client_names.get(target, 'unknown')
+                    
+                    # Erkenne ob lokale oder NAT-Verbindung
+                    src_type = "LOCAL" if src[0].startswith('192.168.') or src[0].startswith('10.') else "NAT"
+                    target_type = "LOCAL" if target[0].startswith('192.168.') or target[0].startswith('10.') else "NAT"
+                    
+                    print(f"  {src_name} {src} [{src_type}] <-> {target_name} {target} [{target_type}]")
+            
+            print("=== ACTIVE CALLS ===")
+            for call_id, relay_data in self.audio_relays.items():
+                same_nat = relay_data.get('same_nat', False)
+                nat_status = "SAME_NAT" if same_nat else "DIFFERENT_NAT"
+                print(f"  Call {call_id}: {relay_data['caller_name']} <-> {relay_data['callee_name']} [{nat_status}]")
+            
+            print("=" * 50)
 
     def _unregister_audio_relay(self, call_id):
         """🚀 Optimiertes Unregister für Hybrid-System"""
@@ -1552,6 +1630,7 @@ class CONVEY:
                 # Debug Info
                 print(f"[RELAY DEBUG] Remaining connection map entries: {len(self.connection_map)}")
                 print(f"[RELAY DEBUG] Remaining audio relays: {len(self.audio_relays)}")
+
 
     def handle_get_public_key(self, msg, client_socket, client_name):
         """VOLLSTÄNDIG KORRIGIERT: Public-Key-Antwort mit erweitertem Debugging"""
@@ -1686,7 +1765,7 @@ class CONVEY:
                 
             return False
     def handle_call_response(self, msg, client_socket, client_name):
-        """KORRIGIERT: Verwendet korrekte 2-Port Relay Ports"""
+        """KORRIGIERT: Single-Port System (51820 Server, 51821 Clients)"""
         try:
             custom_data = msg.get('custom_data', {})
             response = custom_data.get('RESPONSE')
@@ -1746,7 +1825,7 @@ class CONVEY:
                 # UDP Relay registrieren
                 relay_success = self._register_audio_relay(call_id, call_data['caller_name'], call_data['callee_name'])
                 
-                # ✅ KORREKTUR: VERWENDE KORREKTE 2-PORT RELAY PORTS
+                # ✅ VEREINFACHT: SINGLE-PORT SYSTEM
                 response_data = {
                     "MESSAGE_TYPE": "CALL_RESPONSE",
                     "RESPONSE": "accepted",
@@ -1754,10 +1833,9 @@ class CONVEY:
                     "TIMESTAMP": int(time.time()),
                     "USE_AUDIO_RELAY": True,
                     "AUDIO_RELAY_IP": server_ip,
-                    # ✅ 2-PORT SYSTEM INFORMATIONEN
-                    "CALLER_LISTEN_PORT": self.udp_relay_port_caller,  # 51821
-                    "CALLEE_LISTEN_PORT": self.udp_relay_port_callee,  # 51822
-                    "CLIENT_SEND_PORT": 51823  # Beide Clients senden von 51823
+                    # ✅ SINGLE-PORT SYSTEM INFORMATIONEN
+                    "SERVER_RELAY_PORT": self.udp_relay_port,  # 51820
+                    "CLIENT_PORT": 51821  # Fester Client-Port
                 }
                 
                 response_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], response_data)
@@ -1775,9 +1853,8 @@ class CONVEY:
                         "TIMESTAMP": int(time.time()),
                         "USE_AUDIO_RELAY": True,
                         "AUDIO_RELAY_IP": server_ip,
-                        # ✅ KORREKTE PORTS FÜR CALLEE
-                        "LISTEN_PORT": self.udp_relay_port_callee,  # 51822
-                        "SEND_PORT": 51823
+                        "SERVER_RELAY_PORT": self.udp_relay_port,  # 51820
+                        "CLIENT_PORT": 51821
                     }
                     
                     callee_msg = self.server.build_sip_message("MESSAGE", client_name, callee_msg_data)
@@ -1790,9 +1867,8 @@ class CONVEY:
                         "TIMESTAMP": int(time.time()),
                         "USE_AUDIO_RELAY": True,
                         "AUDIO_RELAY_IP": server_ip,
-                        # ✅ KORREKTE PORTS FÜR CALLER
-                        "LISTEN_PORT": self.udp_relay_port_caller,  # 51821
-                        "SEND_PORT": 51823
+                        "SERVER_RELAY_PORT": self.udp_relay_port,  # 51820
+                        "CLIENT_PORT": 51821
                     }
                     
                     caller_confirmed_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], caller_confirmed_data)
@@ -1852,7 +1928,7 @@ class CONVEY:
             traceback.print_exc()
             return False
     def handle_call_request(self, msg, client_socket, client_name):
-        """KORRIGIERT: Fügt 2-Port Relay Informationen hinzu"""
+        """KORRIGIERT: Single-Port System"""
         try:
             custom_data = msg.get('custom_data', {})
             target_id = custom_data.get('TARGET_CLIENT_ID')
@@ -1861,7 +1937,6 @@ class CONVEY:
             caller_client_id = custom_data.get('CALLER_CLIENT_ID')
             
             print(f"[CONVEY] Framed SIP call request from {caller_name} to target {target_id}")
-            print(f"[CONVEY DEBUG] Caller ID: {caller_client_id}, Target ID: {target_id}")
 
             # ✅ VALIDIERUNG
             if not all([target_id, encrypted_data, caller_name, caller_client_id]):
@@ -1930,7 +2005,7 @@ class CONVEY:
             
             server_ip = get_server_public_ip()
 
-            # ✅ INCOMING_CALL MIT 2-PORT RELAY INFORMATIONEN
+            # ✅ INCOMING_CALL MIT SINGLE-PORT INFORMATIONEN
             incoming_call_data = {
                 "MESSAGE_TYPE": "INCOMING_CALL",
                 "CALLER_NAME": caller_name,
@@ -1938,16 +2013,16 @@ class CONVEY:
                 "ENCRYPTED_CALL_DATA": encrypted_data,
                 "TIMESTAMP": int(time.time()),
                 "TIMEOUT": 120,
-                # ✅ NEU: 2-PORT RELAY VORKONFIGURATION
+                # ✅ VEREINFACHT: SINGLE-PORT SYSTEM
                 "USE_AUDIO_RELAY": True,
                 "AUDIO_RELAY_IP": server_ip,
-                "CALLEE_LISTEN_PORT": self.udp_relay_port_callee,  # 51822
-                "CLIENT_SEND_PORT": 51823
+                "SERVER_RELAY_PORT": self.udp_relay_port,  # 51820
+                "CLIENT_PORT": 51821  # Fester Client-Port
             }
             
             incoming_call_msg = self.server.build_sip_message("MESSAGE", target_client_name, incoming_call_data)
             
-            print(f"[CONVEY DEBUG] Outgoing INCOMING_CALL with 2-port relay info")
+            print(f"[CONVEY DEBUG] Outgoing INCOMING_CALL with single-port relay info")
             
             send_success = send_frame(target_socket, incoming_call_msg.encode('utf-8'))
             
@@ -1976,12 +2051,12 @@ class CONVEY:
                 'start_time': time.time(),
                 'status': 'pending',
                 'timeout': 120,
-                'server_ip': server_ip  # Für späteren Relay-Use
+                'server_ip': server_ip
             }
 
             print(f"[CONVEY] Call {call_id} registered in active calls")
 
-            # ✅ ACKNOWLEDGMENT AN CALLER MIT 2-PORT INFO
+            # ✅ ACKNOWLEDGMENT AN CALLER
             ack_msg = self.server.build_sip_message("MESSAGE", caller_name, {
                 "MESSAGE_TYPE": "CALL_REQUEST_ACK",
                 "STATUS": "CALL_FORWARDED",
@@ -1989,9 +2064,9 @@ class CONVEY:
                 "TARGET_NAME": target_client_name,
                 "CALL_ID": call_id,
                 "TIMESTAMP": int(time.time()),
-                # ✅ RELAY VORKONFIGURATION FÜR CALLER
-                "CALLER_LISTEN_PORT": self.udp_relay_port_caller,  # 51821
-                "CLIENT_SEND_PORT": 51823
+                # ✅ VEREINFACHT: SINGLE-PORT INFO
+                "SERVER_RELAY_PORT": self.udp_relay_port,  # 51820
+                "CLIENT_PORT": 51821
             })
             
             ack_success = send_frame(client_socket, ack_msg.encode('utf-8'))
@@ -3227,6 +3302,7 @@ class Server:
         client_id = None
         client_name = None
         client_generator = None  # ✅ NEU: Verify-Generator für diesen Client
+        client_local_ip = None   # ✅ NEU: Lokale IP aus Registration
 
         try:
             # 1. Registration empfangen (mit Timeout)
@@ -3269,6 +3345,18 @@ class Server:
                 
             client_name = client_name_match.group(1)
             print(f"[SERVER] Client-Name: {client_name}")
+
+            # ✅ LOKALE IP AUS REGISTRATION EXTRAHIEREN (MINIMALINVASIVE KORREKTUR)
+            custom_data = sip_msg.get('custom_data', {})
+            client_local_ip = custom_data.get('CLIENT_IP')
+            
+            if client_local_ip:
+                print(f"[SERVER] Client lokale IP aus Registration: {client_local_ip}")
+            else:
+                print(f"[SERVER WARNING] Keine CLIENT_IP in Registration von {client_name}")
+                # Fallback: Verwende NAT-IP vom Socket
+                client_local_ip = client_address[0]
+                print(f"[SERVER] Verwende NAT-IP als Fallback: {client_local_ip}")
 
             # ✅ VERIFY-GENERATOR INSTANZ ERSTELLEN (MIT DEBUG-AUSGABE)
             print("SEED+++")
@@ -3384,12 +3472,13 @@ class Server:
                 print(f"[SERVER] Body length: {len(sip_msg.get('body', ''))}")
                 return
 
-            # 7. ✅ Client ATOMIC registrieren (THREAD-SAFE)
+            # 7. ✅ Client ATOMIC registrieren MIT LOKALER IP (MINIMALINVASIVE KORREKTUR)
             client_data = {
                 'name': client_name,
                 'public_key': client_pubkey,
                 'socket': client_socket,
-                'ip': client_address[0],
+                'ip': client_local_ip,  # ✅ KORREKTUR: Lokale IP aus Registration verwenden!
+                'nat_ip': client_address[0],  # ✅ NEU: NAT-IP auch speichern für Debugging
                 'port': client_address[1],
                 'login_time': time.time(),
                 'last_update': time.time(),
@@ -3402,6 +3491,7 @@ class Server:
                 client_id = self._generate_client_id_locked()
                 self.clients[client_id] = client_data
                 print(f"[SERVER] Client {client_name} registriert mit ID: {client_id}")
+                print(f"[SERVER DEBUG] Lokale IP: {client_local_ip}, NAT-IP: {client_address[0]}")
             
             # ✅ Gespeicherte Clients aktualisieren (mit Error Handling)
             try:
