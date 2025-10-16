@@ -6047,6 +6047,10 @@ class PHONEBOOK(ctk.CTk):
         try:
             print(f"[CONNECTION] Starting stabilized connection to {server_ip}:{server_port}")
             
+            # ✅ LOKALE IP ERMITTELN FÜR NAT-ROUTING (EINZIGE ÄNDERUNG)
+            local_ip = self.get_local_ip()
+            print(f"[CONNECTION] Local IP detected: {local_ip}")
+            
             # ✅ VERIFY-GENERATOR INSTANZ ERSTELLEN (NEUE KLASSE)
             print("SEED+++")
             print(client_name)
@@ -6096,17 +6100,19 @@ class PHONEBOOK(ctk.CTk):
             print(f"[CONNECTION] Client public key prepared (length: {len(client_pubkey)})")
             print(f"[CONNECTION DEBUG] Key preview: {client_pubkey[:100]}...")
 
-            # 3. VOLLSTÄNDIGE REGISTRATION NACHRICHT
+            # 3. VOLLSTÄNDIGE REGISTRATION NACHRICHT MIT LOKALER IP
             register_data = {
                 "MESSAGE_TYPE": "REGISTER",
                 "CLIENT_NAME": client_name,
                 "PUBLIC_KEY": client_pubkey,  # ✅ IMMER MIT PUBLIC KEY
+                "CLIENT_IP": local_ip,  # ✅ KRITISCH: Lokale IP für NAT-Routing (EINZIGE ÄNDERUNG)
                 "TIMESTAMP": int(time.time()),
                 "VERSION": "2.0"
             }
             
             print(f"[CONNECTION DEBUG] Registration data keys: {list(register_data.keys())}")
             print(f"[CONNECTION DEBUG] Public key in data: {'PUBLIC_KEY' in register_data}")
+            print(f"[CONNECTION DEBUG] Client IP in data: {'CLIENT_IP' in register_data} - {local_ip}")
             
             # ✅ build_sip_message WIRD AUTOMATISCH DEN VERIFY-CODE GENERIEREN (MIT GENERATOR INSTANZ)
             register_msg = self.build_sip_message(
@@ -6271,6 +6277,131 @@ class PHONEBOOK(ctk.CTk):
             import traceback
             traceback.print_exc()
             return False
+
+    def get_local_ip(self):
+        """Ermittelt die lokale IP des Clients für NAT-Routing - Cross-Platform (OpenBSD/Linux)"""
+        try:
+            # Methode 1: Verbindung zu externem Server (am zuverlässigsten)
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+            s.close()
+            print(f"[NETWORK] Local IP detected via external: {local_ip}")
+            return local_ip
+        except Exception as e:
+            print(f"[NETWORK WARNING] External IP detection failed: {e}")
+            
+            # Methode 2: getaddrinfo für Cross-Platform Kompatibilität
+            try:
+                # Verwende getaddrinfo statt gethostbyname für bessere IPv4/IPv6 Unterstützung
+                hostname = socket.gethostname()
+                
+                # IPv4 Adressen abrufen
+                addr_info = socket.getaddrinfo(hostname, None, socket.AF_INET, socket.SOCK_DGRAM)
+                
+                # Filtere loopback und nicht-routbare Adressen
+                valid_ips = []
+                for family, type, proto, canonname, sockaddr in addr_info:
+                    ip = sockaddr[0]
+                    
+                    # Ignoriere Loopback
+                    if ip.startswith('127.'):
+                        continue
+                        
+                    # Ignoriere Link-Local
+                    if ip.startswith('169.254.'):
+                        continue
+                        
+                    # Ignoriere Private Networks (falls gewünscht)
+                    # if ip.startswith('10.') or ip.startswith('192.168.') or (ip.startswith('172.') and 16 <= int(ip.split('.')[1]) <= 31):
+                    #     continue
+                        
+                    valid_ips.append(ip)
+                
+                if valid_ips:
+                    local_ip = valid_ips[0]  # Nimm die erste gültige IP
+                    print(f"[NETWORK] Local IP via getaddrinfo: {local_ip} (from {len(valid_ips)} options)")
+                    return local_ip
+                else:
+                    print("[NETWORK WARNING] No valid non-loopback IPv4 addresses found via getaddrinfo")
+                    raise ValueError("No valid IP found")
+                    
+            except Exception as e2:
+                print(f"[NETWORK WARNING] getaddrinfo method failed: {e2}")
+                
+                # Methode 3: Netzwerk-Interfaces abfragen (platform-spezifisch)
+                try:
+                    import platform
+                    system = platform.system().lower()
+                    
+                    if system == 'linux':
+                        # Linux: /proc/net/route auslesen
+                        try:
+                            with open('/proc/net/route', 'r') as f:
+                                for line in f.readlines()[1:]:  # Header überspringen
+                                    parts = line.strip().split()
+                                    if len(parts) >= 3 and parts[1] != '00000000':  # Nicht default route
+                                        interface = parts[0]
+                                        # IP der Schnittstelle ermitteln
+                                        with open(f'/sys/class/net/{interface}/address', 'r') as mac_file:
+                                            mac = mac_file.read().strip()
+                                        # Vereinfachte Methode: hostname -I
+                                        import subprocess
+                                        result = subprocess.run(['hostname', '-I'], capture_output=True, text=True)
+                                        if result.returncode == 0:
+                                            ips = result.stdout.strip().split()
+                                            if ips:
+                                                local_ip = ips[0]
+                                                print(f"[NETWORK] Local IP via hostname -I: {local_ip}")
+                                                return local_ip
+                        except Exception as e3:
+                            print(f"[NETWORK WARNING] Linux specific method failed: {e3}")
+                    
+                    elif system == 'openbsd':
+                        # OpenBSD: ifconfig auslesen
+                        try:
+                            import subprocess
+                            result = subprocess.run(['ifconfig'], capture_output=True, text=True)
+                            if result.returncode == 0:
+                                lines = result.stdout.split('\n')
+                                for i, line in enumerate(lines):
+                                    if 'inet ' in line and '127.0.0.1' not in line:
+                                        parts = line.split()
+                                        for j, part in enumerate(parts):
+                                            if part == 'inet':
+                                                ip = parts[j+1]
+                                                # Entferne Netzmaske falls vorhanden
+                                                if '/' in ip:
+                                                    ip = ip.split('/')[0]
+                                                if not ip.startswith('127.'):
+                                                    print(f"[NETWORK] Local IP via ifconfig: {ip}")
+                                                    return ip
+                        except Exception as e3:
+                            print(f"[NETWORK WARNING] OpenBSD specific method failed: {e3}")
+                
+                except Exception as e3:
+                    print(f"[NETWORK WARNING] Platform-specific methods failed: {e3}")
+                
+                # Methode 4: Fallback - alle Netzwerk-Interfaces durchsuchen
+                try:
+                    import netifaces
+                    interfaces = netifaces.interfaces()
+                    for interface in interfaces:
+                        addrs = netifaces.ifaddresses(interface)
+                        if netifaces.AF_INET in addrs:
+                            for addr_info in addrs[netifaces.AF_INET]:
+                                ip = addr_info['addr']
+                                if ip != '127.0.0.1' and not ip.startswith('169.254.'):
+                                    print(f"[NETWORK] Local IP via netifaces: {ip} (interface: {interface})")
+                                    return ip
+                except ImportError:
+                    print("[NETWORK] netifaces not available, skipping interface scan")
+                except Exception as e4:
+                    print(f"[NETWORK WARNING] netifaces method failed: {e4}")
+        
+        # Endgültiger Fallback
+        print("[NETWORK] Using fallback IP: 127.0.0.1")
+        return "127.0.0.1"
 
     def _send_message(self, message):
         """Sendet Nachricht an Server - Thread-sichere Version"""
