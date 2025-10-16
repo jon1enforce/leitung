@@ -3069,9 +3069,153 @@ class CALL:
         self.connection_lock = threading.Lock()
         self.connection_state = "disconnected"
 
+    def audio_stream_in(self, target_ip, listen_port, iv, key, expected_session_id):
+        """Empfängt Audio MIT REUSEADDR/REUSEPORT auf Port 51821"""
+        audio_socket = None
+        
+        if not self.audio_available:
+            print("❌ [AUDIO IN] Kein Audio-Backend verfügbar")
+            return False
+                
+        print(f"[AUDIO IN] Starting listener for session {expected_session_id}")
 
+        # Warte auf active_call
+        import time
+        wait_start = time.time()
+        while not self.active_call and (time.time() - wait_start) < 2.0:
+            time.sleep(0.01)
+        
+        if not self.active_call:
+            print("❌ [AUDIO IN] Timeout waiting for active_call")
+            return False
+            
+        print(f"✅ [AUDIO IN] Active call confirmed: {self.active_call}")
+        
+        try:
+            # Output Stream öffnen
+            if self.audio_available and self.audio:
+                print(f"[AUDIO IN] Opening output stream...")
+                
+                self.output_stream = self.audio_config.audio.open(
+                    format=self.audio_config.FORMAT,
+                    channels=self.audio_config.CHANNELS,
+                    rate=self.audio_config.RATE,
+                    output=True,
+                    frames_per_buffer=self.audio_config.CHUNK,
+                    output_device_index=self.audio_config.output_device_index
+                )
+                print(f"✅ [AUDIO IN] Output stream opened successfully")
+            else:
+                return False
+            
+            # ✅ KORREKTUR: RICHTIGER EMPFANGS-PORT (51821) mit REUSE
+            audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            
+            # ✅ REUSEADDR + REUSEPORT für maximale Kompatibilität
+            try:
+                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
+                print("✅ [AUDIO IN] SO_REUSEPORT enabled")
+            except AttributeError:
+                print("✅ [AUDIO IN] SO_REUSEPORT not available (Windows)")
+            
+            try:
+                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                print("✅ [AUDIO IN] SO_REUSEADDR enabled")
+            except Exception as e:
+                print(f"✅ [AUDIO IN] SO_REUSEADDR failed: {e}")
+            
+            audio_socket.bind(('0.0.0.0', 51821))  # ✅ Client empfängt auf 51821
+            audio_socket.settimeout(0.1)
+            
+            print(f"🎧 [AUDIO IN] Listener ACTIVE on port 51821 for session {expected_session_id}")
+            packet_counter = 0
+            wrong_session_counter = 0
+            valid_packets = 0
+            
+            while self.active_call and self.audio_available:
+                try:
+                    data, addr = audio_socket.recvfrom(4096)
+                    
+                    # ✅ VERBESSERTES DEBUGGING: Erste Pakete analysieren
+                    if packet_counter < 10:
+                        print(f"[AUDIO IN DEBUG] Packet #{packet_counter}: {len(data)} bytes from {addr}")
+                    
+                    packet_counter += 1
+                    
+                    # ✅ KRITISCHE KORREKTUR: Session-ID Verarbeitung
+                    if len(data) >= 16:
+                        try:
+                            received_session_id = data[:16].decode('utf-8', errors='ignore')
+                            encrypted_data = data[16:]
+                            
+                            if packet_counter < 5:
+                                print(f"[AUDIO IN DEBUG] Session ID check: '{received_session_id}' vs expected: '{expected_session_id}'")
+                                print(f"[AUDIO IN DEBUG] Encrypted data: {len(encrypted_data)} bytes")
+                            
+                            # ✅ FLEXIBLERE SESSION-ID PRÜFUNG
+                            if received_session_id.strip() == expected_session_id.strip():
+                                valid_packets += 1
+                                
+                                # Entschlüsseln
+                                try:
+                                    cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
+                                    received_data = cipher.update(encrypted_data) + cipher.final()
+                                    
+                                    # ✅ DIREKTES ABSPIELEN OHNE GRÖSSENPRÜFUNG
+                                    self.output_stream.write(received_data)
+                                    
+                                    if valid_packets % 100 == 0:
+                                        print(f"[AUDIO IN] Received {valid_packets} valid packets - Data: {len(received_data)} bytes")
+                                        
+                                except Exception as e:
+                                    if valid_packets < 10:
+                                        print(f"[AUDIO IN DECRYPT ERROR] {str(e)}")
+                                    continue
+                                    
+                            else:
+                                wrong_session_counter += 1
+                                if wrong_session_counter % 100 == 0:
+                                    print(f"[AUDIO IN] Filtered {wrong_session_counter} wrong session packets")
+                                continue
+                                
+                        except Exception as e:
+                            if packet_counter < 10:
+                                print(f"[AUDIO IN SESSION ERROR] {str(e)}")
+                            continue
+                    else:
+                        if packet_counter % 100 == 0:
+                            print(f"[AUDIO IN] Short packet: {len(data)} bytes")
+                            
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    if self.active_call:
+                        print(f"[AUDIO IN ERROR] {str(e)}")
+                    break
+                            
+            print(f"[AUDIO IN] Session ended. Total: {packet_counter} packets, Valid: {valid_packets}")
+                                
+        except Exception as e:
+            print(f"[AUDIO IN SETUP ERROR] {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
+        finally:
+            if hasattr(self, 'output_stream') and self.output_stream:
+                try:
+                    self.output_stream.stop_stream()
+                    self.output_stream.close()
+                    self.output_stream = None
+                    print("✅ [AUDIO IN] Output stream closed")
+                except Exception as e:
+                    print(f"[AUDIO IN CLOSE ERROR] {e}")
+            if audio_socket:
+                audio_socket.close()
+                print("✅ [AUDIO IN] Socket closed")
+        
+        return True
     def audio_stream_out(self, target_ip, target_port, iv, key, session_id):
-        """Sendet Audio über UDP Relay MIT FESTEM QUELL-PORT 51821"""
+        """Sendet Audio MIT FESTEM PORT 51821 und REUSEADDR/REUSEPORT"""
         if not self.audio_available:
             print("❌ [AUDIO OUT] Kein Audio-Backend verfügbar")
             return False
@@ -3082,7 +3226,7 @@ class CALL:
         print(f"[AUDIO OUT] Target: {target_ip}:{target_port}")
         print(f"[AUDIO OUT] Initial active_call: {self.active_call}")
         
-        # ✅ KORREKTUR: VERKÜRZTER TIMEOUT + BESSERE SYNCHRONISATION
+        # Warte auf active_call
         import time
         wait_start = time.time()
         check_count = 0
@@ -3091,17 +3235,14 @@ class CALL:
             check_count += 1
             current_time = time.time()
             
-            # ✅ DETAILIERTES DEBUGGING
-            if check_count % 10 == 0:  # Alle 100ms loggen
+            if check_count % 10 == 0:
                 print(f"[AUDIO OUT] Waiting for active_call... ({check_count} checks, {current_time - wait_start:.1f}s)")
-                print(f"[AUDIO OUT] Current active_call state: {self.active_call}")
-            
-            if (current_time - wait_start) > 3:  # 3 Sekunden warten
+                
+            if (current_time - wait_start) > 3:
                 print("❌ [AUDIO OUT] Timeout waiting for active_call")
-                print(f"[AUDIO OUT] Final state - active_call: {self.active_call}")
                 return False
                 
-            time.sleep(0.01)  # 10ms warten
+            time.sleep(0.01)
             
         print(f"✅ [AUDIO OUT] Active call confirmed: {self.active_call}")
         
@@ -3122,29 +3263,31 @@ class CALL:
             
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-            # ✅ KORREKTUR: SO_REUSEPORT FÜR ECHTES PORT-SHARING
+            # ✅ REUSEADDR + REUSEPORT für maximale Kompatibilität
             try:
                 audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
                 print("✅ [AUDIO OUT] SO_REUSEPORT enabled")
-            except:
-                # Fallback: SO_REUSEADDR
-                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                print("✅ [AUDIO OUT] SO_REUSEADDR enabled (fallback)")
-
-            # ✅ KORREKTUR: BEIDE CLIENTS SENDEN VON PORT 51821
-            source_port = 51821  # ✅ FESTER PORT FÜR BEIDE CLIENTS
-
+            except AttributeError:
+                print("✅ [AUDIO OUT] SO_REUSEPORT not available (Windows)")
+            
             try:
-                audio_socket.bind(('0.0.0.0', source_port))
-                print(f"✅ [AUDIO OUT] Bound to source port {source_port}")
+                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                print("✅ [AUDIO OUT] SO_REUSEADDR enabled")
+            except Exception as e:
+                print(f"✅ [AUDIO OUT] SO_REUSEADDR failed: {e}")
+
+            # ✅ BEIDE binden an Port 51821 (mit REUSEADDR/REUSEPORT möglich)
+            try:
+                audio_socket.bind(('0.0.0.0', 51821))
+                print(f"✅ [AUDIO OUT] Bound to source port 51821")
             except OSError as e:
-                print(f"❌ [AUDIO OUT] Failed to bind to source port {source_port}: {e}")
+                print(f"❌ [AUDIO OUT] Failed to bind to port 51821: {e}")
                 return False
             
             audio_socket.settimeout(0.1)
             
             print(f"🎤 [AUDIO OUT] Transmission ACTIVE for session {session_id}")
-            print(f"   Source: port {source_port}, Target: {target_ip}:{target_port}")
+            print(f"   Source: port 51821, Target: {target_ip}:{target_port}")
             
             packet_counter = 0
             
@@ -3170,7 +3313,7 @@ class CALL:
                     cipher = EVP.Cipher("aes_256_cbc", key, iv, 1)
                     encrypted_data = cipher.update(filtered_data) + cipher.final()
                     
-                    # ✅ SESSION-MARKIERUNG MIT 16 BYTES SHA3
+                    # ✅ SESSION-MARKIERUNG
                     session_header = session_id.encode('utf-8')
                     packet_with_session = session_header + encrypted_data
                     
@@ -3202,131 +3345,6 @@ class CALL:
                 print(f"✅ [AUDIO OUT] Session {session_id} - Socket closed")
         
         return True
-
-    def audio_stream_in(self, target_ip, listen_port, iv, key, expected_session_id):
-        """Empfängt Audio mit KORRIGIERTEM AUDIO-FORMAT HANDLING"""
-        audio_socket = None
-        
-        if not self.audio_available:
-            print("❌ [AUDIO IN] Kein Audio-Backend verfügbar")
-            return False
-                
-        print(f"[AUDIO IN] Starting listener for session {expected_session_id} on port {listen_port}")
-        
-        # Warte auf active_call
-        import time
-        wait_start = time.time()
-        while not self.active_call and (time.time() - wait_start) < 1.5:
-            time.sleep(0.01)
-        
-        if not self.active_call:
-            print("❌ [AUDIO IN] Timeout waiting for active_call")
-            return False
-            
-        print(f"✅ [AUDIO IN] Active call confirmed: {self.active_call}")
-        
-        try:
-            # Output Stream öffnen MIT DEBUGGING
-            if self.audio_available and self.audio:
-                print(f"[AUDIO IN] Opening output stream - Format: {self.audio_config.FORMAT}, Rate: {self.audio_config.RATE}, Channels: {self.audio_config.CHANNELS}, Chunk: {self.audio_config.CHUNK}")
-                
-                self.output_stream = self.audio_config.audio.open(
-                    format=self.audio_config.FORMAT,
-                    channels=self.audio_config.CHANNELS,
-                    rate=self.audio_config.RATE,
-                    output=True,
-                    frames_per_buffer=self.audio_config.CHUNK,
-                    output_device_index=self.audio_config.output_device_index
-                )
-                print(f"✅ [AUDIO IN] Output stream opened successfully")
-            else:
-                return False
-            
-            audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            audio_socket.bind(('0.0.0.0', 51821))  # ✅ Fester Port 51821
-            audio_socket.settimeout(0.1)
-            
-            print(f"🎧 [AUDIO IN] Listener ACTIVE for session {expected_session_id}")
-            packet_counter = 0
-            wrong_session_counter = 0
-            
-            while self.active_call and self.audio_available:
-                try:
-                    data, addr = audio_socket.recvfrom(4096)
-                    
-                    # ✅ VERBESSERTES DEBUGGING: Erste Pakete analysieren
-                    if packet_counter < 5:  # Nur erste 5 Pakete debuggen
-                        print(f"[AUDIO IN DEBUG] First packet #{packet_counter}: {len(data)} bytes from {addr}")
-                        if len(data) >= 16:
-                            received_session_id = data[:16].decode('utf-8', errors='ignore')
-                            encrypted_data = data[16:]
-                            print(f"[AUDIO IN DEBUG] Session ID: {received_session_id}, Encrypted: {len(encrypted_data)} bytes")
-                    
-                    # Session-Filterung
-                    if len(data) >= 16:
-                        received_session_id = data[:16].decode('utf-8', errors='ignore')
-                        encrypted_data = data[16:]
-                        
-                        if received_session_id == expected_session_id:
-                            packet_counter += 1
-                            
-                            # Entschlüsseln
-                            try:
-                                cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
-                                received_data = cipher.update(encrypted_data) + cipher.final()
-                                
-                                # ✅ KRITISCHE KORREKTUR: AUDIO-DATEN VALIDIEREN
-                                expected_data_size = self.audio_config.CHUNK * self.audio_config.audio.get_sample_size(self.audio_config.FORMAT)
-                                
-                                if len(received_data) == expected_data_size:
-                                    # ✅ Daten sind korrekte Größe - direkt abspielen
-                                    self.output_stream.write(received_data)
-                                    
-                                    if packet_counter % 50 == 0:
-                                        print(f"[AUDIO IN] Received {packet_counter} packets - Data size: {len(received_data)} bytes")
-                                else:
-                                    # ❌ Falsche Datengröße - Debugging
-                                    if packet_counter % 10 == 0:
-                                        print(f"[AUDIO IN WARNING] Wrong data size: {len(received_data)} (expected: {expected_data_size})")
-                                    # Trotzdem versuchen abzuspielen
-                                    self.output_stream.write(received_data)
-                                    
-                            except Exception as e:
-                                print(f"[AUDIO IN DECRYPT ERROR] {str(e)}")
-                                continue
-                                
-                        else:
-                            wrong_session_counter += 1
-                            if wrong_session_counter % 100 == 0:
-                                print(f"[AUDIO IN] Filtered {wrong_session_counter} wrong session packets")
-                            continue
-                            
-                except socket.timeout:
-                    continue
-                except Exception as e:
-                    if self.active_call:
-                        print(f"[AUDIO IN ERROR] {str(e)}")
-                    break
-                            
-            print(f"[AUDIO IN] Session ended. Total packets: {packet_counter}")
-                                
-        except Exception as e:
-            print(f"[AUDIO IN SETUP ERROR] {str(e)}")
-            return False
-        finally:
-            if hasattr(self, 'output_stream') and self.output_stream:
-                try:
-                    self.output_stream.stop_stream()
-                    self.output_stream.close()
-                    self.output_stream = None
-                except Exception as e:
-                    print(f"[AUDIO IN CLOSE ERROR] {e}")
-            if audio_socket:
-                audio_socket.close()
-        
-        return True
-
     def _start_audio_streams(self):
         """Startet bidirektionale Audio-Streams - MIT FESTEM PORT 51821"""
         try:
@@ -5081,7 +5099,7 @@ class CALL:
                 # Extrahiere Relay-Informationen falls vorhanden
                 use_relay = custom_data.get('USE_AUDIO_RELAY', True)
                 relay_ip = custom_data.get('AUDIO_RELAY_IP')
-                relay_port = custom_data.get('AUDIO_RELAY_PORT', 51822)
+                relay_port = custom_data.get('AUDIO_RELAY_PORT', 51820)
                 
                 if use_relay and relay_ip:
                     print(f"[CALL] Using UDP Relay: {relay_ip}:{relay_port}")
