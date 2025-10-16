@@ -3197,7 +3197,7 @@ class CALL:
         self.connection_state = "disconnected"
 
     def audio_stream_in(self, target_ip, listen_port, iv, key, expected_session_id):
-        """Empfängt Audio MIT REUSEADDR/REUSEPORT auf Port 51821"""
+        """Empfängt Audio MIT REUSEADDR/REUSEPORT - KORRIGIERTE VERSION"""
         audio_socket = None
         
         if not self.audio_available:
@@ -3259,6 +3259,9 @@ class CALL:
             wrong_session_counter = 0
             valid_packets = 0
             
+            # ✅ KORREKTUR: Session-ID als Bytes für Vergleich vorbereiten
+            expected_session_bytes = expected_session_id.encode('utf-8')[:16].ljust(16, b'\0')
+            
             while self.active_call and self.audio_available:
                 try:
                     data, addr = audio_socket.recvfrom(4096)
@@ -3269,30 +3272,34 @@ class CALL:
                     
                     packet_counter += 1
                     
-                    # ✅ KRITISCHE KORREKTUR: Session-ID Verarbeitung
+                    # ✅ KRITISCHE KORREKTUR: Session-ID als Bytes vergleichen
                     if len(data) >= 16:
                         try:
-                            received_session_id = data[:16].decode('utf-8', errors='ignore')
+                            received_session_bytes = data[:16]
                             encrypted_data = data[16:]
                             
                             if packet_counter < 5:
-                                print(f"[AUDIO IN DEBUG] Session ID check: '{received_session_id}' vs expected: '{expected_session_id}'")
+                                print(f"[AUDIO IN DEBUG] Session ID check (bytes): {received_session_bytes.hex()} vs expected: {expected_session_bytes.hex()}")
                                 print(f"[AUDIO IN DEBUG] Encrypted data: {len(encrypted_data)} bytes")
                             
-                            # ✅ FLEXIBLERE SESSION-ID PRÜFUNG
-                            if received_session_id.strip() == expected_session_id.strip():
+                            # ✅ FLEXIBLERE SESSION-ID PRÜFUNG als Bytes
+                            if received_session_bytes == expected_session_bytes:
                                 valid_packets += 1
                                 
                                 # Entschlüsseln
                                 try:
                                     cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
-                                    received_data = cipher.update(encrypted_data) + cipher.final()
+                                    decrypted_data = cipher.update(encrypted_data) + cipher.final()
                                     
-                                    # ✅ DIREKTES ABSPIELEN OHNE GRÖSSENPRÜFUNG
-                                    self.output_stream.write(received_data)
+                                    # ✅ GRÖSSENPRÜFUNG für stabile Wiedergabe
+                                    expected_size = self.audio_config.CHUNK * self.audio_config.get_sample_size(self.audio_config.FORMAT)
+                                    if len(decrypted_data) == expected_size:
+                                        self.output_stream.write(decrypted_data)
+                                    else:
+                                        print(f"[AUDIO IN WARNING] Wrong decrypted size: {len(decrypted_data)} vs {expected_size}")
                                     
                                     if valid_packets % 100 == 0:
-                                        print(f"[AUDIO IN] Received {valid_packets} valid packets - Data: {len(received_data)} bytes")
+                                        print(f"[AUDIO IN] Received {valid_packets} valid packets - Data: {len(decrypted_data)} bytes")
                                         
                                 except Exception as e:
                                     if valid_packets < 10:
@@ -3301,7 +3308,9 @@ class CALL:
                                     
                             else:
                                 wrong_session_counter += 1
-                                if wrong_session_counter % 100 == 0:
+                                if wrong_session_counter <= 5:  # Nur erste paar anzeigen
+                                    print(f"[AUDIO IN] Wrong session ID: {received_session_bytes.hex()} vs {expected_session_bytes.hex()}")
+                                elif wrong_session_counter % 100 == 0:
                                     print(f"[AUDIO IN] Filtered {wrong_session_counter} wrong session packets")
                                 continue
                                 
