@@ -1359,7 +1359,7 @@ class CONVEY:
                 continue
 
     def _register_audio_relay(self, call_id, caller_name, callee_name):
-        """🚀 INTELLIGENTES NAT-TRAVERSAL: Berücksichtigt Server-Position"""
+        """🚀 INTELLIGENTES NAT-TRAVERSAL: Korrigierte Version die lokale IPs verwendet"""
         try:
             print(f"🎯 [RELAY] Intelligent NAT Detection: {caller_name} <-> {callee_name}")
             
@@ -1380,45 +1380,35 @@ class CONVEY:
                 print(f"[RELAY ERROR] Client data not found")
                 return False
             
-            # ✅ IP-DATEN EXTRAHIEREN
-            caller_local_ip = caller_data.get('ip')
-            callee_local_ip = callee_data.get('ip')
-            caller_nat_ip = caller_data.get('nat_ip')
-            callee_nat_ip = callee_data.get('nat_ip')
+            # ✅ IP-DATEN EXTRAHIEREN - LOKALE IP VERWENDEN!
+            caller_local_ip = caller_data.get('ip')  # Das ist 192.168.8.161
+            callee_local_ip = callee_data.get('ip')  # Das ist 192.168.8.166
+            caller_nat_ip = caller_data.get('nat_ip', caller_data.get('ip'))
+            callee_nat_ip = callee_data.get('nat_ip', callee_data.get('ip'))
             
             print(f"[RELAY] IP Analysis:")
             print(f"  {caller_name} -> Local IP: {caller_local_ip}, NAT IP: {caller_nat_ip}")
             print(f"  {callee_name} -> Local IP: {callee_local_ip}, NAT IP: {callee_nat_ip}")
             
-            # ✅ KRITISCHE KORREKTUR: SERVER-POSITION BERÜCKSICHTIGEN
-            server_in_same_nat = self._is_server_in_same_nat(caller_nat_ip, callee_nat_ip)
+            # ✅ VEREINFACHTE LOGIK: Wenn Clients im gleichen NAT sind, IMMER lokale IPs verwenden
             clients_in_same_nat = (caller_nat_ip == callee_nat_ip)
             
             print(f"[RELAY] Network Analysis:")
             print(f"  Clients in same NAT: {clients_in_same_nat}")
-            print(f"  Server in same NAT: {server_in_same_nat}")
             
-            # ✅ INTELLIGENTES ROUTING BASIEREND AUF SERVER-POSITION
-            if clients_in_same_nat and server_in_same_nat:
-                # Fall 1: Alle im gleichen NAT (Server + Clients) → Lokale IPs
-                print(f"[RELAY] ✅ ALL IN SAME NAT - using local IPs")
-                caller_audio_addr = (caller_local_ip, 51821)
-                callee_audio_addr = (callee_local_ip, 51821)
-                routing_type = "LOCAL"
-                
-            elif clients_in_same_nat and not server_in_same_nat:
-                # Fall 2: Clients im gleichen NAT, Server extern → NAT-IPs + Port-Forwarding nötig
-                print(f"[RELAY] ⚠️ CLIENTS IN SAME NAT, SERVER EXTERNAL - using NAT IPs (requires port forwarding)")
-                caller_audio_addr = (caller_nat_ip, 51821)
-                callee_audio_addr = (callee_nat_ip, 51821)
-                routing_type = "NAT_PORT_FORWARDING"
-                
+            # ✅ KORRIGIERTE ENTSCHEIDUNGSLOGIK
+            if clients_in_same_nat:
+                # ✅ FALL 1: Clients im gleichen NAT → LOKALE IPs VERWENDEN
+                print(f"[RELAY] ✅ CLIENTS IN SAME NAT - using LOCAL IPs")
+                caller_audio_addr = (caller_local_ip, 51821)  # 192.168.8.161
+                callee_audio_addr = (callee_local_ip, 51821)  # 192.168.8.166
+                routing_type = "LOCAL_SAME_NAT"
             else:
-                # Fall 3: Unterschiedliche NATs → NAT-IPs
+                # ✅ FALL 2: Clients in verschiedenen NATs → NAT IPs verwenden
                 print(f"[RELAY] ✅ DIFFERENT NATs - using NAT IPs")
                 caller_audio_addr = (caller_nat_ip, 51821)
                 callee_audio_addr = (callee_nat_ip, 51821)
-                routing_type = "NAT"
+                routing_type = "NAT_DIFFERENT"
             
             # ✅ VALIDIERUNG
             if not caller_audio_addr[0] or not callee_audio_addr[0]:
@@ -1444,9 +1434,8 @@ class CONVEY:
                     'callee_name': callee_name,
                     'caller_addr': caller_audio_addr,
                     'callee_addr': callee_audio_addr,
-                    'routing_type': routing_type,  # ✅ NEU: Routing-Typ für Debugging
+                    'routing_type': routing_type,
                     'same_nat': clients_in_same_nat,
-                    'server_in_same_nat': server_in_same_nat,
                     'timestamp': time.time()
                 }
             
@@ -1461,35 +1450,31 @@ class CONVEY:
             return False
 
     def _is_server_in_same_nat(self, caller_nat_ip, callee_nat_ip):
-        """Ermittelt ob der Server im gleichen NAT wie die Clients ist - KORRIGIERT"""
+        """Ermittelt ob der Server im gleichen NAT wie die Clients ist - VOLLSTÄNDIG KORRIGIERT"""
         try:
             # Server-IP ermitteln
             server_ip = self._get_server_public_ip()
             
-            # ✅ KORREKTUR: Bessere Logik für die Entscheidung
-            if server_ip == "UNKNOWN":
-                print(f"[RELAY DEBUG] Server IP unknown - assuming different NAT")
-                return False
-                
-            # Wenn Server-IP eine lokale IP ist (192.168.x.x, 10.x.x.x)
-            # UND die Client NAT-IPs auch lokal sind, dann sind alle im gleichen NAT
-            server_is_local = server_ip.startswith('192.168.') or server_ip.startswith('10.')
-            caller_is_local = caller_nat_ip.startswith('192.168.') or caller_nat_ip.startswith('10.')
-            callee_is_local = callee_nat_ip.startswith('192.168.') or callee_nat_ip.startswith('10.')
+            print(f"[RELAY DEBUG] Server IP: {server_ip}")
+            print(f"[RELAY DEBUG] Caller NAT IP: {caller_nat_ip}")
+            print(f"[RELAY DEBUG] Callee NAT IP: {callee_nat_ip}")
             
-            # Alle haben lokale IPs → gleiches NAT
-            if server_is_local and caller_is_local and callee_is_local:
-                print(f"[RELAY DEBUG] All have local IPs - same NAT")
-                return True
-                
-            # Server hat öffentliche IP, Clients haben gleiche öffentliche IP → Server könnte im gleichen NAT sein
-            if not server_is_local and server_ip == caller_nat_ip and server_ip == callee_nat_ip:
-                print(f"[RELAY DEBUG] Server and clients have same public IP - likely same NAT")
-                return True
-                
-            # Unterschiedliche IPs → unterschiedliche NATs
-            print(f"[RELAY DEBUG] Different IPs - different NATs")
-            return False
+            # ✅ KRITISCHE KORREKTUR: Server ist IMMER im gleichen NAT wie sich selbst
+            # Wenn einer der Clients die gleiche IP wie der Server hat → gleiches NAT
+            
+            # ✅ NEUE LOGIK: 
+            # - Wenn Server lokale IP hat UND einer der Clients die gleiche lokale IP → gleiches NAT
+            # - Wenn Server öffentliche IP hat UND einer der Clients die gleiche öffentliche IP → gleiches NAT
+            
+            caller_same_as_server = (caller_nat_ip == server_ip)
+            callee_same_as_server = (callee_nat_ip == server_ip)
+            
+            # ✅ Server ist im gleichen NAT wenn mindestens ein Client die gleiche IP hat
+            server_in_same_nat = caller_same_as_server or callee_same_as_server
+            
+            print(f"[RELAY DEBUG] Server in same NAT: {server_in_same_nat} (caller_same={caller_same_as_server}, callee_same={callee_same_as_server})")
+            
+            return server_in_same_nat
             
         except Exception as e:
             print(f"[RELAY WARNING] Could not determine server position: {e}")
@@ -1528,8 +1513,8 @@ class CONVEY:
             return "UNKNOWN"
 
     def _get_local_audio_address(self, client_data, client_name):
-        """Ermittelt lokale Audio-Adresse aus Registration-Daten (nur bei gleichem NAT) - KORRIGIERT"""
-        local_ip = client_data.get('ip')  # Lokale IP aus Registration
+        """Ermittelt lokale Audio-Adresse - KORRIGIERT"""
+        local_ip = client_data.get('ip')  # Das ist die wichtige lokale IP
         if local_ip:
             audio_addr = (local_ip, 51821)
             print(f"[RELAY DEBUG] {client_name} local audio address: {audio_addr}")
@@ -1539,8 +1524,8 @@ class CONVEY:
         return None
 
     def _get_nat_audio_address(self, client_data, client_name):
-        """Ermittelt NAT Audio-Adresse (für verschiedene NATs) - KORRIGIERT"""
-        nat_ip = self._get_nat_ip(client_data, client_name)
+        """Ermittelt NAT Audio-Adresse - KORRIGIERT"""
+        nat_ip = client_data.get('nat_ip', client_data.get('ip'))  # Fallback auf lokale IP
         if nat_ip:
             audio_addr = (nat_ip, 51821)
             print(f"[RELAY DEBUG] {client_name} NAT audio address: {audio_addr}")
@@ -3349,7 +3334,9 @@ class Server:
             # ✅ LOKALE IP AUS REGISTRATION EXTRAHIEREN (MINIMALINVASIVE KORREKTUR)
             custom_data = sip_msg.get('custom_data', {})
             client_local_ip = custom_data.get('CLIENT_IP')
-            
+            print("++++++++++++")
+            print(client_local_ip)
+            print("++++++++++++")
             if client_local_ip:
                 print(f"[SERVER] Client lokale IP aus Registration: {client_local_ip}")
             else:
@@ -3663,29 +3650,7 @@ class Server:
         """Hilfsmethode für Client-ID Suche (Kompatibilität)"""
         # Diese Methode wird vom Client erwartet, kann aber einfach sein
         return "server"
-    def _receive_registration(self, client_socket):
-        """Empfängt Registrierungsdaten mit mehreren Fallbacks"""
-        try:
-            # Versuche framed Nachricht
-            try:
-                return recv_frame(client_socket)
-            except (ValueError, ConnectionError):
-                pass
-            
-            # Fallback: Direkter Empfang
-            data = client_socket.recv(4096)
-            if data:
-                print(f"[SERVER] Unframed Daten empfangen: {len(data)} bytes")
-                return data.decode('utf-8') if isinstance(data, bytes) else data
-            
-            return None
-            
-        except socket.timeout:
-            print("[SERVER] Timeout beim Empfang der Registration")
-            raise
-        except Exception as e:
-            print(f"[SERVER] Fehler beim Empfang: {e}")
-            raise
+
 
     def _extract_client_name(self, sip_data):
         """Extrahiert Client-Namen aus SIP Daten"""
