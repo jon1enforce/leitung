@@ -3194,8 +3194,9 @@ class CALL:
         # Lock für Thread-Safety
         self.connection_lock = threading.Lock()
         self.connection_state = "disconnected"
+    
     def audio_stream_in(self, target_ip, listen_port, iv, key, expected_session_id):
-        """Empfängt Audio MIT DETAILLIERTEM DEBUGGING"""
+        """Empfängt Audio MIT VOLLSTÄNDIGEM NETZWERK-DEBUGGING"""
         audio_socket = None
         
         if not self.audio_available:
@@ -3207,7 +3208,7 @@ class CALL:
         # ✅ DETAILLIERTES DEBUGGING FÜR KEY/IV
         print(f"🎯 [AUDIO IN DEBUG] Expected Session ID: {expected_session_id}")
         print(f"🎯 [AUDIO IN DEBUG] IV ({len(iv)} bytes): {iv.hex()}")
-        print(f"🎯 [AUDIO IN DEBUG] Key ({len(key)} bytes): {key.hex()[:64]}...")  # Erste 32 Bytes des Keys
+        print(f"🎯 [AUDIO IN DEBUG] Key ({len(key)} bytes): {key.hex()[:64]}...")
         
         # Warte auf active_call
         import time
@@ -3252,35 +3253,80 @@ class CALL:
             except Exception as e:
                 print(f"✅ [AUDIO IN] SO_REUSEADDR failed: {e}")
             
+            # ✅ VOLLSTÄNDIGES NETZWERK-DEBUGGING
+            print(f"🌐 [AUDIO IN NETWORK] ===== NETWORK CONFIGURATION =====")
+            print(f"🌐 [AUDIO IN NETWORK] Binding to: 0.0.0.0:51821")
+            print(f"🌐 [AUDIO IN NETWORK] Target IP parameter: {target_ip}")
+            print(f"🌐 [AUDIO IN NETWORK] Listen port parameter: {listen_port}")
+            print(f"🌐 [AUDIO IN NETWORK] Expected from: Server Relay (Port 51820)")
+            print(f"🌐 [AUDIO IN NETWORK] Listening on: Client Port 51821")
+            print(f"🌐 [AUDIO IN NETWORK] =================================")
+            
             audio_socket.bind(('0.0.0.0', 51821))
             audio_socket.settimeout(0.1)
+            
+            # ✅ ERWEITERTER NETZWERK-TEST
+            print(f"🔍 [AUDIO IN NETWORK] Running network tests...")
+            
+            # Test 1: Lokaler Loopback Test
+            try:
+                test_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                test_socket.sendto(b"LOCAL_TEST_PACKET", ('127.0.0.1', 51821))
+                test_socket.close()
+                print("✅ [AUDIO IN NETWORK] Local loopback test: SUCCESS")
+            except Exception as e:
+                print(f"❌ [AUDIO IN NETWORK] Local loopback test failed: {e}")
+            
+            # Test 2: Externer Test (vom Server)
+            try:
+                # Versuche vom Server zu empfangen (wenn Server lokal ist)
+                test_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                test_socket.sendto(b"SERVER_TEST_PACKET", (target_ip, 51821))
+                test_socket.close()
+                print(f"✅ [AUDIO IN NETWORK] Server test packet sent to {target_ip}:51821")
+            except Exception as e:
+                print(f"⚠️ [AUDIO IN NETWORK] Server test might fail (expected): {e}")
             
             print(f"🎧 [AUDIO IN] Listener ACTIVE on port 51821 for session {expected_session_id}")
             packet_counter = 0
             valid_packets = 0
+            total_bytes_received = 0
             
             # Session-ID als Bytes für Vergleich
             expected_session_bytes = expected_session_id.encode('utf-8')[:16].ljust(16, b'\0')
+            
+            print(f"🔍 [AUDIO IN] Waiting for packets with session: {expected_session_bytes.hex()}")
+            print(f"🔍 [AUDIO IN] Expecting relayed packets from Server:51820 -> Client:51821")
+            
+            last_status_time = time.time()
             
             while self.active_call and self.audio_available:
                 try:
                     data, addr = audio_socket.recvfrom(4096)
                     
                     packet_counter += 1
+                    total_bytes_received += len(data)
+                    
+                    # ✅ JEDES Paket loggen um zu sehen ob überhaupt was ankommt
+                    current_time = time.time()
+                    if packet_counter <= 10 or current_time - last_status_time > 5.0:
+                        print(f"📨 [AUDIO IN NETWORK] Received packet #{packet_counter} from {addr[0]}:{addr[1]} - {len(data)} bytes")
+                        print(f"📨 [AUDIO IN NETWORK] Total bytes received: {total_bytes_received}")
+                        last_status_time = current_time
                     
                     if len(data) >= 16:
                         try:
                             received_session_bytes = data[:16]
                             encrypted_data = data[16:]
                             
+                            # ✅ IMMER Session-ID vergleichen (nicht nur erste 10 Pakete)
                             if packet_counter <= 10:
-                                print(f"📨 [AUDIO IN RECV #{packet_counter}]")
-                                print(f"   From: {addr}")
-                                print(f"   Total data: {len(data)} bytes")
-                                print(f"   Session header: {received_session_bytes.hex()}")
+                                print(f"🔍 [AUDIO IN SESSION CHECK #{packet_counter}]")
+                                print(f"   Expected: {expected_session_bytes.hex()}")
+                                print(f"   Received: {received_session_bytes.hex()}")
+                                print(f"   Match: {received_session_bytes == expected_session_bytes}")
                                 print(f"   Encrypted data: {len(encrypted_data)} bytes")
-                                print(f"   Encrypted divisible by 16: {len(encrypted_data) % 16 == 0}")
-                                print(f"   First 32 bytes (hex): {encrypted_data[:32].hex()}")
+                                print(f"   From: {addr[0]}:{addr[1]}")
                             
                             # Session-ID Vergleich
                             if received_session_bytes == expected_session_bytes:
@@ -3294,7 +3340,7 @@ class CALL:
                                     
                                     print(f"✅ [AUDIO IN DECRYPT #{packet_counter}] SUCCESS!")
                                     print(f"   Decrypted: {len(decrypted_data)} bytes")
-                                    print(f"   First 32 bytes (hex): {decrypted_data[:32].hex()}")
+                                    print(f"   First 16 bytes (hex): {decrypted_data[:16].hex()}")
                                     
                                     # ✅ PKCS7 PADDING ENTFERNUNG
                                     def remove_pkcs7_padding(data):
@@ -3320,37 +3366,45 @@ class CALL:
                                     
                                     self.output_stream.write(unpadded_data)
                                     
+                                    # ✅ Erfolgsmeldung alle 20 Pakete
+                                    if valid_packets % 20 == 0:
+                                        print(f"🎉 [AUDIO IN] Successfully processed {valid_packets} packets")
+                                    
                                 except Exception as e1:
                                     print(f"🔴 [AUDIO IN DECRYPT #{packet_counter}] FAILED: {str(e1)}")
                                     print(f"   Encrypted data length: {len(encrypted_data)}")
-                                    print(f"   Encrypted hex: {encrypted_data[:64].hex()}...")
+                                    print(f"   Encrypted divisible by 16: {len(encrypted_data) % 16 == 0}")
+                                    print(f"   First 32 bytes (hex): {encrypted_data[:32].hex()}")
                                     continue
                                 
-                                if valid_packets % 20 == 0:
-                                    print(f"[AUDIO IN] Received {valid_packets} valid packets")
-                                
                             else:
-                                if packet_counter <= 5:
-                                    print(f"🔴 [AUDIO IN SESSION #{packet_counter}] WRONG SESSION")
+                                if packet_counter <= 10:  # Mehr falsche Sessions loggen
+                                    print(f"🔴 [AUDIO IN SESSION #{packet_counter}] WRONG SESSION - IGNORING")
                                     print(f"   Expected: {expected_session_bytes.hex()}")
                                     print(f"   Received: {received_session_bytes.hex()}")
+                                    print(f"   From: {addr[0]}:{addr[1]}")
                                 
                         except Exception as e:
-                            if packet_counter <= 5:
+                            if packet_counter <= 10:
                                 print(f"🔴 [AUDIO IN PROCESS #{packet_counter}] ERROR: {str(e)}")
                     else:
-                        if packet_counter % 50 == 0:
-                            print(f"[AUDIO IN] Short packet #{packet_counter}: {len(data)} bytes")
+                        print(f"[AUDIO IN] Short packet #{packet_counter}: {len(data)} bytes from {addr[0]}:{addr[1]}")
                             
                 except socket.timeout:
+                    # Timeout ist normal - Status alle 10 Sekunden
+                    current_time = time.time()
+                    if current_time - last_status_time > 10.0:
+                        print(f"⏰ [AUDIO IN] Still waiting... {packet_counter} packets received so far")
+                        print(f"⏰ [AUDIO IN] Total bytes: {total_bytes_received}")
+                        last_status_time = current_time
                     continue
                 except Exception as e:
                     if self.active_call:
                         print(f"[AUDIO IN ERROR] {str(e)}")
                     break
                             
-            print(f"[AUDIO IN] Session ended. Total: {packet_counter} packets, Valid: {valid_packets}")
-                                    
+            print(f"[AUDIO IN] Session ended. Total packets: {packet_counter}, Valid: {valid_packets}, Total bytes: {total_bytes_received}")
+                                        
         except Exception as e:
             print(f"[AUDIO IN SETUP ERROR] {str(e)}")
             import traceback
@@ -3369,8 +3423,7 @@ class CALL:
                 audio_socket.close()
                 print("✅ [AUDIO IN] Socket closed")
         
-        return True        
-
+        return True
 
     def audio_stream_out(self, target_ip, target_port, iv, key, session_id):
         """Sendet Audio MIT KORREKTEM PADDING"""
