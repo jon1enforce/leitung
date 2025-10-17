@@ -998,7 +998,7 @@ class AudioConfig:
         
         # Standard-Qualität
         self.quality_profile = "middle"
-        self.CHUNK = 128
+        self.CHUNK = 1024
         
         # Output Format-Check
         self.output_supports_24bit = True
@@ -1208,7 +1208,7 @@ class AudioConfig:
             self.FORMAT = pyaudio.paInt16
             self.RATE = 44100
             self.CHANNELS = 1
-            self.CHUNK = 512
+            self.CHUNK = 1024
             self.sample_width = 2
             self.actual_format = "16-bit"
             self.sample_format_name = "16-bit @ 44.1kHz (OpenBSD PyAudio)"
@@ -1232,7 +1232,7 @@ class AudioConfig:
             self.FORMAT = pyaudio.paInt16
             self.RATE = 44100
             self.CHANNELS = 1
-            self.CHUNK = 512
+            self.CHUNK = 1024
             self.sample_width = 2
             self.actual_format = "16-bit"
             self.sample_format_name = "16-bit @ 44.1kHz (Basic Fallback)"
@@ -1262,7 +1262,7 @@ class AudioConfig:
         self.FORMAT = pyaudio.paInt16
         self.RATE = 22050  # Noch niedrigere Rate für Stabilität
         self.CHANNELS = 1
-        self.CHUNK = 256
+        self.CHUNK = 1024
         self.sample_width = 2
         self.actual_format = "16-bit"
         self.sample_format_name = "16-bit @ 22.05kHz (EMERGENCY FALLBACK)"
@@ -1650,9 +1650,9 @@ class AudioConfig:
             
             # 6. Chunk-Größe anpassen (ohne Qualität zu ändern)
             if self.RATE >= 96000:
-                self.CHUNK = 256
+                self.CHUNK = 1024
             else:
-                self.CHUNK = 128
+                self.CHUNK = 2048
             
             print(f"[AUDIO] Final configuration (QUALITY PRESERVED):")
             print(f"  Format: {self.FORMAT} ({self.actual_format})")
@@ -1694,9 +1694,9 @@ class AudioConfig:
                 
                 # Chunk-Größe anpassen
                 if self.RATE >= 96000:
-                    self.CHUNK = 256
+                    self.CHUNK = 2048
                 else:
-                    self.CHUNK = 128
+                    self.CHUNK = 1024
                 
                 # ✅ TESTE OB DIE KONFIGURATION FUNKTIONIERT
                 if self._test_audio_configuration():
@@ -1808,9 +1808,9 @@ class AudioConfig:
         
         # Passe Chunk-Größe basierend auf Sample-Rate an
         if self.RATE >= 96000:
-            self.CHUNK = 256    
+            self.CHUNK = 1024
         else:
-            self.CHUNK = 128
+            self.CHUNK = 2048
             
         self._print_config("Input")
     
@@ -3366,25 +3366,42 @@ class CALL:
                                     
                                     print(f"[AUDIO IN DEBUG] Decryption successful! Decrypted data: {len(decrypted_data)} bytes")
                                     
-                                    # ✅ GRÖSSENPRÜFUNG für stabile Wiedergabe
+                                    # ✅ ✅ ✅ KRITISCHE KORREKTUR: 768 BYTES AKZEPTIEREN
                                     try:
                                         expected_size = self.audio_config.CHUNK * self.audio_config.get_sample_size(self.audio_config.FORMAT)
                                         print(f"[AUDIO IN DEBUG] Expected size: {expected_size}, Actual size: {len(decrypted_data)}")
                                         
-                                        if len(decrypted_data) == expected_size:
+                                        # ✅ FESTE GRÖSSE 768 BYTES AKZEPTIEREN
+                                        if len(decrypted_data) == 768:  # ✅ NEUE ZEILE
+                                            print(f"✅ [AUDIO IN] Perfect 768-byte frame received")
+                                            self.output_stream.write(decrypted_data)
+                                        elif len(decrypted_data) == expected_size:
                                             self.output_stream.write(decrypted_data)
                                             print(f"[AUDIO IN DEBUG] Audio written to output stream successfully")
                                         else:
                                             print(f"[AUDIO IN WARNING] Wrong decrypted size: {len(decrypted_data)} vs {expected_size}")
-                                            # TROTZDEM versuchen abzuspielen
-                                            self.output_stream.write(decrypted_data)
+                                            # ✅ 768 BYTES TROTZDEM AKZEPTIEREN
+                                            if len(decrypted_data) == 768:
+                                                print(f"✅ [AUDIO IN] Using 768-byte frame despite size mismatch")
+                                                self.output_stream.write(decrypted_data)
+                                            else:
+                                                # Andere Größen anpassen
+                                                if len(decrypted_data) > expected_size:
+                                                    decrypted_data = decrypted_data[:expected_size]
+                                                else:
+                                                    decrypted_data += b"\x00" * (expected_size - len(decrypted_data))
+                                                self.output_stream.write(decrypted_data)
                                             print(f"[AUDIO IN DEBUG] Audio written despite size mismatch")
                                             
                                     except Exception as size_error:
                                         print(f"[AUDIO IN SIZE ERROR] {str(size_error)}")
-                                        # Fallback: Direkt abspielen
-                                        self.output_stream.write(decrypted_data)
-                                        print(f"[AUDIO IN DEBUG] Audio written as fallback")
+                                        # Fallback: Direkt abspielen wenn 768 Bytes
+                                        if len(decrypted_data) == 768:
+                                            self.output_stream.write(decrypted_data)
+                                            print(f"✅ [AUDIO IN] 768-byte frame written as fallback")
+                                        else:
+                                            self.output_stream.write(decrypted_data)
+                                            print(f"[AUDIO IN DEBUG] Audio written as fallback")
                                     
                                     if valid_packets % 100 == 0:
                                         print(f"[AUDIO IN] Received {valid_packets} valid packets - Data: {len(decrypted_data)} bytes")
