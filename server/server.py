@@ -356,80 +356,67 @@ def log_invalid_message(client_info, message_content, error_type):
     except Exception as e:
         print(f"❌ [LOG] Failed to write to log file: {e}")
 def recv_frame(sock, timeout=30):
-    """NICHT-AGGRESSIVER Frame-Empfänger MIT VERIFY-CODE-VALIDIERUNG & ANGRIFFSERKENNUNG"""
+    """EINHEITLICHER Frame-Empfänger für ALLE Nachrichten - IDENTISCH AUF CLIENT UND SERVER"""
     original_timeout = sock.gettimeout()
     sock.settimeout(timeout)
     
     try:
-        # Client IP für besseres Logging
+        # Peer Info für Logging
         try:
-            client_ip, client_port = sock.getpeername()
-            client_info = f"{client_ip}:{client_port}"
+            peer_info = f"{sock.getpeername()[0]}:{sock.getpeername()[1]}"
         except:
-            client_info = "unknown client"
+            peer_info = "unknown"
         
-        print(f"📡 [FRAME] Waiting for frame from {client_info}")
+        print(f"📡 [FRAME] Waiting for frame from {peer_info}")
         
-        # Frame empfangen (existierender Code bleibt gleich)
+        # 1. Header lesen (4 Bytes Network Byte Order)
         header = b''
         start_time = time.time()
         
         while len(header) < 4:
             remaining_time = timeout - (time.time() - start_time)
             if remaining_time <= 0:
-                print(f"⏰ [FRAME] Header timeout from {client_info}")
+                print(f"⏰ [FRAME] Header timeout from {peer_info}")
                 raise TimeoutError("Header receive timeout")
                 
             sock.settimeout(min(5, remaining_time))
             chunk = sock.recv(4 - len(header))
             if not chunk:
-                print(f"🔌 [FRAME] Connection closed by {client_info} during header")
+                print(f"🔌 [FRAME] Connection closed by {peer_info} during header")
                 return None
             header += chunk
         
+        # 2. Länge decodieren
         try:
             length = struct.unpack('!I', header)[0]
-            print(f"📏 [FRAME] {client_info} announced {length} bytes")
+            print(f"📏 [FRAME] {peer_info} announced {length} bytes")
         except struct.error as e:
-            print(f"❌ [FRAME] INVALID HEADER from {client_info}: {header.hex()} - {e}")
-            try:
-                error_msg = b"INVALID_FRAME_HEADER"
-                sock.send(struct.pack('!I', len(error_msg)) + error_msg)
-            except:
-                pass
+            print(f"❌ [FRAME] INVALID HEADER from {peer_info}: {header.hex()} - {e}")
             return None
         
-        # Konformitäts-Checks (existierender Code bleibt gleich)
-        if length > 50 * 1024 * 1024:
-            print(f"📏 [FRAME] OVERSIZE from {client_info}: {length} bytes > 50MB")
-            try:
-                error_msg = b"FRAME_TOO_LARGE"
-                sock.send(struct.pack('!I', len(error_msg)) + error_msg)
-            except:
-                pass
-            return None
+        # 3. EINHEITLICHE SICHERHEITSCHECKS
+        MAX_FRAME_SIZE = 10 * 1024 * 1024  # 10MB Maximum (KONSISTENT)
+        
+        if length > MAX_FRAME_SIZE:
+            print(f"❌ [FRAME] OVERSIZE from {peer_info}: {length} bytes > {MAX_FRAME_SIZE} bytes")
+            raise ValueError(f"Frame too large: {length} bytes (max: {MAX_FRAME_SIZE} bytes)")
         
         if length < 0:
-            print(f"❌ [FRAME] NEGATIVE LENGTH from {client_info}: {length}")
-            try:
-                error_msg = b"INVALID_FRAME_LENGTH"
-                sock.send(struct.pack('!I', len(error_msg)) + error_msg)
-            except:
-                pass
-            return None
+            print(f"❌ [FRAME] NEGATIVE LENGTH from {peer_info}: {length}")
+            raise ValueError(f"Invalid frame length: {length} bytes")
         
         if length == 0:
-            print(f"📭 [FRAME] Empty frame from {client_info}")
+            print(f"📭 [FRAME] Empty frame from {peer_info}")
             return b''
         
-        # Body lesen
+        # 4. Body lesen
         received = b''
         bytes_received = 0
         
         while len(received) < length:
             remaining_time = timeout - (time.time() - start_time)
             if remaining_time <= 0:
-                print(f"⏰ [FRAME] Body timeout from {client_info}, received {len(received)}/{length} bytes")
+                print(f"⏰ [FRAME] Body timeout from {peer_info}, received {len(received)}/{length} bytes")
                 raise TimeoutError(f"Body receive timeout after {timeout}s")
                 
             sock.settimeout(min(10, remaining_time))
@@ -437,90 +424,27 @@ def recv_frame(sock, timeout=30):
             chunk = sock.recv(chunk_size)
             
             if not chunk:
-                print(f"🔌 [FRAME] Connection closed by {client_info} during body")
+                print(f"🔌 [FRAME] Connection closed by {peer_info} during body")
                 raise ConnectionError(f"Incomplete frame: received {len(received)} of {length} bytes")
             
             received += chunk
             bytes_received += len(chunk)
         
-        # ✅ VERIFY-CODE VALIDIERUNG & ANGRIFFSERKENNUNG (nur für SIP-Nachrichten vom Client)
-        if len(received) > 0:
-            try:
-                message_str = received.decode('utf-8', errors='ignore')
-                
-                # Prüfe ob es eine SIP-Nachricht ist
-                sip_methods = ['REGISTER', 'INVITE', 'ACK', 'BYE', 'CANCEL', 'OPTIONS', 'MESSAGE']
-                is_sip_message = any(method in message_str for method in sip_methods)
-                
-                if is_sip_message and not message_str.startswith("SIP/2.0"):
-                    # ✅ VERIFY-CODE PRÜFUNG (nur für Client→Server Nachrichten)
-                    if "Verify-Code:" in message_str:
-                        # Extrahiere Verify-Code
-                        lines = message_str.split('\r\n')
-                        verify_code_value = None
-                        for line in lines:
-                            if line.startswith("Verify-Code:"):
-                                verify_code_value = line.split(":")[1].strip()
-                                break
-                        
-                        if verify_code_value:
-                            # ✅ ZURÜCK ZUM ORIGINAL: Keine Verify-Validierung in recv_frame()
-                            # Die Verify-Validierung erfolgt in handle_client() mit dem richtigen Client-Namen
-                            print(f"ℹ️ [VERIFY] Verify-Code {verify_code_value} von {client_info} - Validierung in handle_client()")
-                            # Nachricht akzeptieren, Validierung erfolgt später
-                        else:
-                            # ❌ MALFORMED CODE - ASYNCHRON LOGGEN
-                            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-                            log_entry = (
-                                f"⚠️ [MALFORMED] MALFORMED_VERIFY_CODE\n"
-                                f"   Client: {client_info}\n"
-                                f"   Time: {timestamp}\n"
-                                f"   Message: {message_str[:300]}...\n"
-                                f"{'='*50}\n"
-                            )
-                            
-                            try:
-                                with open("attacks.log", "a") as f:
-                                    f.write(log_entry)
-                            except Exception as log_error:
-                                print(f"⚠️ [LOG ERROR] Could not write to attacks.log: {log_error}")
-                            
-                            print(f"❌ [VERIFY] MALFORMED verify-code from {client_info}")
-                            return None
-                    else:
-                        # ❌ MISSING CODE - ASYNCHRON LOGGEN
-                        timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
-                        log_entry = (
-                            f"⚠️ [MISSING] MISSING_VERIFY_CODE\n"
-                            f"   Client: {client_info}\n"
-                            f"   Time: {timestamp}\n"
-                            f"   Message: {message_str[:300]}...\n"
-                            f"{'='*50}\n"
-                        )
-                        
-                        try:
-                            with open("attacks.log", "a") as f:
-                                f.write(log_entry)
-                        except Exception as log_error:
-                            print(f"⚠️ [LOG ERROR] Could not write to attacks.log: {log_error}")
-                        
-                        print(f"❌ [VERIFY] MISSING verify-code from {client_info}")
-                        return None
-                        
-            except Exception as e:
-                print(f"⚠️ [VERIFY] Error during verify-code validation: {e}")
-        
-        print(f"✅ [FRAME] Successfully received {length} bytes from {client_info}")
+        # 5. Erfolgslogging
+        print(f"✅ [FRAME] Successfully received {length} bytes from {peer_info}")
         return received
         
     except socket.timeout:
-        print(f"⏰ [FRAME] Overall timeout after {timeout}s from {client_info}")
+        print(f"⏰ [FRAME] Overall timeout after {timeout}s from {peer_info}")
         raise TimeoutError(f"Frame receive timeout after {timeout}s")
     except ConnectionError as e:
-        print(f"🔌 [FRAME] Connection error from {client_info}: {e}")
+        print(f"🔌 [FRAME] Connection error from {peer_info}: {e}")
+        raise
+    except ValueError as e:
+        print(f"❌ [FRAME] Validation error from {peer_info}: {e}")
         raise
     except Exception as e:
-        print(f"❌ [FRAME] Unexpected error from {client_info}: {e}")
+        print(f"❌ [FRAME] Unexpected error from {peer_info}: {e}")
         return None
     finally:
         try:
@@ -972,12 +896,11 @@ class AccurateRelayManager:
             print(f"⚠️  Verwende Standard: {self.max_traffic_mbps} Mbit/s")
     
     def _register_with_seeds(self):
-        """Registriert diesen Server bei Seed-Servern - verwendet framed SIP"""
+        """Registriert diesen Server bei Seed-Servern - VERBESSERT MIT FRAMED SIP"""
         print("📝 Registriere bei Seed-Servern...")
         
         for seed_host, seed_port in self.SEED_SERVERS:
             try:
-                # Verwende framed SIP für Seed-Kommunikation
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(10)
                 sock.connect((seed_host, seed_port))
@@ -999,15 +922,18 @@ class AccurateRelayManager:
                     registration_data
                 )
                 
-                # ✅ KORREKTUR: Verwende send_frame direkt statt Import
-                if send_frame(sock, sip_message.encode()):  # ❌ from server import entfernt
-                    # Empfange Response
-                    response_data = recv_frame(sock)  # ❌ from server import entfernt
+                # ✅ KORREKTUR: Verwende send_frame
+                if send_frame(sock, sip_message.encode('utf-8')):
+                    # Empfange Response MIT FRAMED SIP
+                    response_data = recv_frame(sock)
                     if response_data:
-                        response = json.loads(response_data.decode())
-                        if response.get('status') == 'registered':
-                            print(f"✅ Bei Seed {seed_host}:{seed_port} registriert")
-                            break
+                        try:
+                            response = json.loads(response_data.decode('utf-8'))
+                            if response.get('status') == 'registered':
+                                print(f"✅ Bei Seed {seed_host}:{seed_port} registriert")
+                                break
+                        except Exception as e:
+                            print(f"❌ Response parsing failed: {e}")
                     
             except Exception as e:
                 print(f"❌ Registrierung bei {seed_host}:{seed_port} fehlgeschlagen: {e}")
@@ -1016,14 +942,13 @@ class AccurateRelayManager:
                     sock.close()
                 except:
                     pass
-    
+
     def _discover_other_servers(self):
-        """Holt Server-Liste von Seed-Servern - verwendet framed SIP"""
+        """Holt Server-Liste von Seed-Servern - VERBESSERT MIT FRAMED SIP"""
         print("🔍 Hole Server-Liste...")
         
         for seed_host, seed_port in self.SEED_SERVERS:
             try:
-                # Framed SIP für Discovery
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(10)
                 sock.connect((seed_host, seed_port))
@@ -1041,26 +966,29 @@ class AccurateRelayManager:
                     request_data
                 )
                 
-                # ✅ KORREKTUR: Verwende send_frame direkt statt Import
-                if send_frame(sock, sip_message.encode()):  # ❌ from server import entfernt
-                    response_data = recv_frame(sock)  # ❌ from server import entfernt
+                # ✅ KORREKTUR: Verwende send_frame
+                if send_frame(sock, sip_message.encode('utf-8')):
+                    response_data = recv_frame(sock)
                     if response_data:
-                        response = json.loads(response_data.decode())
-                        if response.get('status') == 'success':
-                            servers = response.get('servers', {})
-                            
-                            # ✅ BEREINIGE: Entferne 0.0.0.0 Einträge
-                            clean_servers = {}
-                            for server_ip, server_data in servers.items():
-                                if server_ip != '0.0.0.0':
-                                    clean_servers[server_ip] = server_data
-                            
-                            with self.data_lock:
-                                self.known_servers = clean_servers
-                            
-                            print(f"✅ {len(clean_servers)} Server in Liste von {seed_host}")
-                            break
-                    
+                        try:
+                            response = json.loads(response_data.decode('utf-8'))
+                            if response.get('status') == 'success':
+                                servers = response.get('servers', {})
+                                
+                                # ✅ BEREINIGE: Entferne 0.0.0.0 Einträge
+                                clean_servers = {}
+                                for server_ip, server_data in servers.items():
+                                    if server_ip != '0.0.0.0':
+                                        clean_servers[server_ip] = server_data
+                                
+                                with self.data_lock:
+                                    self.known_servers = clean_servers
+                                
+                                print(f"✅ {len(clean_servers)} Server in Liste von {seed_host}")
+                                break
+                        except Exception as e:
+                            print(f"❌ Response parsing failed: {e}")
+                        
             except Exception as e:
                 print(f"❌ Discovery von {seed_host}:{seed_port} fehlgeschlagen: {e}")
             finally:
@@ -1068,9 +996,42 @@ class AccurateRelayManager:
                     sock.close()
                 except:
                     pass
+
+    def _update_load_on_seeds(self):
+        """Aktualisiert eigene Last bei Seed-Servern - VERBESSERT MIT FRAMED SIP"""
+        for seed_host, seed_port in self.SEED_SERVERS:
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(5)
+                sock.connect((seed_host, seed_port))
+                
+                update_data = {
+                    'type': 'update_load',
+                    'server_ip': self._real_server_ip,
+                    'current_load': self.server_load,
+                    'timestamp': time.time()
+                }
+                
+                # Sende als framed SIP
+                sip_message = self.server.build_sip_message(
+                    "MESSAGE",
+                    seed_host,
+                    update_data
+                )
+                
+                # ✅ KORREKTUR: Verwende send_frame
+                if send_frame(sock, sip_message.encode('utf-8')):
+                    print(f"📈 Load update an {seed_host}: {self.server_load}%")
+                
+                sock.close()
+                break  # Nur einen Seed-Server benachrichtigen
+                
+            except Exception as e:
+                print(f"❌ Load update an {seed_host} fehlgeschlagen: {e}")
+                continue
     
     def handle_seed_request(self, sip_message, client_socket, client_address):
-        """Verarbeitet Seed-Anfragen von anderen Servern - als framed SIP"""
+        """Verarbeitet Seed-Anfragen von anderen Servern - VOLLSTÄNDIG FRAMED SIP"""
         if not self.is_seed_server:
             return False
             
@@ -1091,18 +1052,27 @@ class AccurateRelayManager:
             elif request_type == 'update_load':
                 response_data = self._handle_load_update(custom_data)
             
-            # Sende Response als framed SIP
+            # ✅ KORREKTUR: IMMER FRAMED SIP VERWENDEN
             response_msg = self.server.build_sip_message(
                 "200 OK", 
                 client_address[0],
                 response_data
             )
             
-            # ✅ KORREKTUR: Verwende send_frame direkt statt Import
-            return send_frame(client_socket, response_msg.encode())  # ❌ from server import entfernt
+            # ✅ SEND_FRAME VERWENDEN, NICHT sock.send()
+            success = send_frame(client_socket, response_msg.encode('utf-8'))
             
+            if success:
+                print(f"[RELAY] ✅ Framed SIP response sent for {request_type} to {client_address[0]}")
+            else:
+                print(f"[RELAY] ❌ Failed to send framed SIP response to {client_address[0]}")
+                
+            return success
+                
         except Exception as e:
-            print(f"Seed Request Error: {e}")
+            print(f"[RELAY ERROR] Seed Request failed: {e}")
+            import traceback
+            traceback.print_exc()
             return False
     
     def _handle_seed_register(self, request_data, client_ip):
@@ -1180,38 +1150,7 @@ class AccurateRelayManager:
             except Exception as e:
                 print(f"Load Monitoring Error: {e}")
                 time.sleep(60)
-    
-    def _update_load_on_seeds(self):
-        """Aktualisiert eigene Last bei Seed-Servern - als framed SIP"""
-        for seed_host, seed_port in self.SEED_SERVERS:
-            try:
-                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                sock.settimeout(5)
-                sock.connect((seed_host, seed_port))
-                
-                update_data = {
-                    'type': 'update_load',
-                    'server_ip': self._real_server_ip,
-                    'current_load': self.server_load,
-                    'timestamp': time.time()
-                }
-                
-                # Sende als framed SIP
-                sip_message = self.server.build_sip_message(
-                    "MESSAGE",
-                    seed_host,
-                    update_data
-                )
-                
-                # ✅ KORREKTUR: Verwende send_frame direkt statt Import
-                if send_frame(sock, sip_message.encode()):  # ❌ from server import entfernt
-                    print(f"📈 Load update an {seed_host}: {self.server_load}%")
-                
-                sock.close()
-                break
-                
-            except:
-                continue
+
     
     def _server_discovery_loop(self):
         """Updated regelmäßig die Server-Liste"""
@@ -2534,7 +2473,51 @@ class Server:
         
         print("Server beendet")
 
-
+    def _handle_discovery_request(self, msg, client_socket, client_name):
+        """Verarbeitet Discovery-Requests - VOLLSTÄNDIG FRAMED SIP"""
+        try:
+            print(f"[DISCOVERY] Request from {client_name}")
+            
+            # Hole Server-Liste vom Relay Manager
+            server_list = self.relay_manager.get_server_list_for_client()
+            
+            # Baue Response mit framed SIP
+            response_data = {
+                "MESSAGE_TYPE": "DISCOVERY_RESPONSE",
+                "SERVERS": server_list.get('servers', {}),
+                "TOTAL_SERVERS": server_list.get('total_servers', 0),
+                "AVAILABLE_SERVERS": server_list.get('available_servers', 0),
+                "TIMESTAMP": int(time.time())
+            }
+            
+            response_msg = self.build_sip_message("200 OK", client_name, response_data)
+            
+            # ✅ IMMER FRAMED SIP VERWENDEN
+            success = send_frame(client_socket, response_msg.encode('utf-8'))
+            
+            if success:
+                print(f"[DISCOVERY] ✅ Framed SIP response sent to {client_name}")
+            else:
+                print(f"[DISCOVERY] ❌ Failed to send framed SIP response to {client_name}")
+                
+            return success
+            
+        except Exception as e:
+            print(f"[DISCOVERY ERROR] Handling failed: {str(e)}")
+            
+            # Sende auch Fehler mit framed SIP
+            error_msg = self.build_sip_message("500 Error", client_name, {
+                "MESSAGE_TYPE": "ERROR",
+                "ERROR": f"DISCOVERY_FAILED: {str(e)}",
+                "TIMESTAMP": int(time.time())
+            })
+            
+            try:
+                send_frame(client_socket, error_msg.encode('utf-8'))
+            except:
+                pass
+                
+            return False
 
     def validate_client_name(self, name):
         """Überprüft ob der Client-Name eindeutig ist"""
@@ -2715,23 +2698,23 @@ class Server:
                                 send_frame(client_socket, error_msg.encode('utf-8'))
                             continue
                         
-                        # === PING/PONG HANDLING ===
-                        elif (headers.get('PING') == 'true' or custom_data.get('PING') == 'true' or 
-                              message_type == 'PING'):
+                        elif message_type == 'PING':
                             print(f"[PING] Received from {client_name}")
-                            pong_response = self.build_sip_message("MESSAGE", client_name, {
-                                "MESSAGE_TYPE": "PONG",
-                                "TIMESTAMP": int(time.time())
+                            pong_response = self.build_sip_message("200 OK", client_name, {
+                                "MESSAGE_TYPE": "PONG",  # ✅ EXPLIZIT PONG
+                                "TIMESTAMP": int(time.time()),
+                                "STATUS": "SUCCESS"
                             })
                             if not send_frame(client_socket, pong_response.encode('utf-8')):
                                 print(f"[PING ERROR] Failed to send pong to {client_name}")
                             continue
                         
+                        # ✅ PONG EMPFANG BESTÄTIGEN  
                         elif message_type == 'PONG':
                             print(f"[PONG] Received from {client_name}")
-                            # Einfach bestätigen
+                            # Bestätigung senden
                             ack_msg = self.build_sip_message("200 OK", client_name, {
-                                "MESSAGE_TYPE": "PONG_ACK",
+                                "MESSAGE_TYPE": "PONG_ACK", 
                                 "TIMESTAMP": int(time.time())
                             })
                             send_frame(client_socket, ack_msg.encode('utf-8'))
@@ -3136,151 +3119,6 @@ class Server:
             expected_id = existing_id + 1
         
         return str(numeric_ids[-1] + 1)
-         
-    def _handle_relay_manager_request(self, register_data, client_socket, client_address):
-        """Verarbeitet Anfragen vom Relay-Manager (andere Server)"""
-        try:
-            if isinstance(register_data, bytes):
-                try:
-                    register_data = register_data.decode('utf-8')
-                except UnicodeDecodeError:
-                    return False
-            
-            message = self.parse_sip_message(register_data)
-            if not message:
-                return False
-            
-            custom_data = message.get('custom_data', {})
-            request_type = custom_data.get('type')
-            
-            # Prüfe ob es eine Relay-Manager Anfrage ist
-            if request_type in ['register', 'get_servers', 'update_load']:
-                print(f"[RELAY] Erhaltene Relay-Anfrage: {request_type} von {client_address}")
-                success = self.relay_manager.handle_seed_request(register_data, client_socket, client_address)
-                if success:
-                    print(f"[RELAY] Anfrage erfolgreich verarbeitet, schließe Verbindung")
-                    try:
-                        client_socket.close()
-                    except:
-                        pass
-                return success
-            
-            return False
-            
-        except Exception as e:
-            print(f"[RELAY ERROR] Fehler bei Relay-Anfrage: {e}")
-            return False
-
-    def _handle_relay_message_during_session(self, frame_data, client_socket, client_address, client_name):
-        """Verarbeitet Relay-Nachrichten während einer aktiven Session"""
-        try:
-            if isinstance(frame_data, bytes):
-                try:
-                    message_text = frame_data.decode('utf-8')
-                except UnicodeDecodeError:
-                    return False
-            else:
-                message_text = str(frame_data)
-                
-            message = self.parse_sip_message(message_text)
-            if not message:
-                return False
-                
-            custom_data = message.get('custom_data', {})
-            request_type = custom_data.get('type')
-            
-            # Prüfe auf Relay-Nachrichten
-            if request_type in ['register', 'get_servers', 'update_load']:
-                print(f"[RELAY] Relay-Nachricht während Session von {client_address}: {request_type}")
-                return self.relay_manager.handle_seed_request(message_text, client_socket, client_address)
-            
-            return False
-            
-        except Exception as e:
-            print(f"[RELAY ERROR] Fehler bei Relay-Nachricht: {e}")
-            return False
-    def get_relay_status(self):
-        """Gibt den Status des Relay-Managers zurück"""
-        if hasattr(self, 'relay_manager'):
-            return self.relay_manager.get_server_status()
-        return {'error': 'Relay manager not available'}
-
-    def get_available_servers(self):
-        """Gibt verfügbare Server für Clients zurück"""
-        if hasattr(self, 'relay_manager'):
-            return self.relay_manager.get_server_list_for_client()
-        return {'servers': {}, 'error': 'Relay manager not available'}
-
-    def update_traffic_stats(self, traffic_mbps):
-        """Aktualisiert Traffic-Statistiken"""
-        if hasattr(self, 'relay_manager'):
-            self.relay_manager.current_traffic = traffic_mbps
-            return True
-        return False
-    def _safe_remove_client(self, client_id):
-        """Thread-safe client removal - ENTFERNT CLIENT KOMPLETT"""
-        with self.clients_lock:
-            if client_id in self.clients:
-                # ✅ VERIFY-GENERATOR ENTFERNEN
-                client_name = self.clients[client_id].get('name')
-                if client_name:
-                    remove_generator(client_name)
-                    print(f"🔐 [VERIFY] Generator für '{client_name}' entfernt")
-                
-                # ✅ CLIENT KOMPLETT ENTFERNEN
-                del self.clients[client_id]
-                print(f"[SERVER] Client {client_id} komplett entfernt")
-        
-        # ✅ KEY-LISTE AKTUALISIEREN
-        with self.clients_lock:
-            clients_copy = self.clients.copy()
-        
-        all_public_keys = [self.server_public_key]
-        for cid, client_info in clients_copy.items():
-            if 'public_key' in client_info:
-                all_public_keys.append(client_info['public_key'])
-        
-        with self.key_lock:
-            self.all_public_keys = all_public_keys
-        
-        # ✅ AKTIVE CLIENTS DATEI AKTUALISIEREN (Client entfernen)
-        try:
-            if os.path.exists("active_clients.json"):
-                with open("active_clients.json", "r") as f:
-                    active_clients = json.load(f)
-                
-                if client_id in active_clients:
-                    del active_clients[client_id]
-                    with open("active_clients.json", "w") as f:
-                        json.dump(active_clients, f, indent=2)
-                    print(f"[SERVER] Client {client_id} aus active_clients.json entfernt")
-        except Exception as e:
-            print(f"⚠️ [SERVER] Fehler beim Aktualisieren active_clients.json: {e}")
-
-    def _generate_client_id_locked(self):
-        """Private method - muss innerhalb von clients_lock aufgerufen werden!"""
-        if not self.clients:
-            return "0"
-        
-        numeric_ids = []
-        for key in self.clients.keys():
-            if key.isdigit():
-                try:
-                    numeric_ids.append(int(key))
-                except ValueError:
-                    continue
-        
-        if not numeric_ids:
-            return "0"
-        
-        numeric_ids.sort()
-        expected_id = 0
-        for existing_id in numeric_ids:
-            if expected_id < existing_id:
-                return str(expected_id)
-            expected_id = existing_id + 1
-        
-        return str(numeric_ids[-1] + 1)            
     def handle_client(self, client_socket, client_address):
         """Vollständige Client-Behandlung - Jede Session isoliert"""
         print(f"\n[Server] Neue Verbindung von {client_address}")
@@ -3621,6 +3459,583 @@ class Server:
                     
                 except Exception as e:
                     print(f"[SERVER] Fehler bei {client_name}: {str(e)}")
+                    break
+
+        except socket.timeout:
+            print(f"[SERVER] Timeout bei Registrierung von {client_address}")
+            
+        except Exception as e:
+            print(f"[SERVER] Kritischer Fehler: {str(e)}")
+            import traceback
+            traceback.print_exc()
+            
+        finally:
+            # ✅ Cleanup (THREAD-SAFE)
+            print(f"[SERVER] Cleanup für {client_name if client_name else 'unknown'}")
+            
+            if client_id:
+                self._safe_remove_client(client_id)
+            
+            # ✅ Call cleanup für diesen Client
+            if hasattr(self, 'convey_manager') and client_name:
+                self.convey_manager.cleanup_client_calls(client_name)
+            
+            try:
+                client_socket.close()
+            except:
+                pass         
+    def _handle_relay_manager_request(self, register_data, client_socket, client_address):
+        """KORRIGIERT: Erkennt Registration korrekt und leitet NICHT an Relay weiter"""
+        try:
+            if isinstance(register_data, bytes):
+                try:
+                    register_data = register_data.decode('utf-8')
+                except UnicodeDecodeError:
+                    return False
+            
+            message = self.parse_sip_message(register_data)
+            if not message:
+                return False
+            
+            custom_data = message.get('custom_data', {})
+            headers = message.get('headers', {})
+            
+            print(f"[RELAY DEBUG] Received message from {client_address}")
+            print(f"[RELAY DEBUG] Message type: {custom_data.get('MESSAGE_TYPE')}")
+            print(f"[RELAY DEBUG] Custom data keys: {list(custom_data.keys())}")
+            
+            # ✅ WICHTIG: REGISTRATION NICHT AN RELAY WEITERLEITEN!
+            message_type = custom_data.get('MESSAGE_TYPE')
+            
+            # 1. REGISTRATION REQUEST - NICHT an Relay Manager weiterleiten!
+            if (message_type == 'REGISTER' or 
+                'PUBLIC_KEY' in custom_data or
+                'CLIENT_NAME' in custom_data):
+                print(f"[REGISTER] Detected registration request - NOT forwarding to relay")
+                return False  # WICHTIG: False zurückgeben = normale Registration
+            
+            # 2. DISCOVERY REQUEST (vom Client)
+            elif (message_type == 'DISCOVERY_REQUEST' or 
+                  message_type == 'DISCOVER' or
+                  'GET_SERVERS' in str(custom_data).upper()):
+                
+                print(f"[DISCOVERY] Handling discovery request from {client_address}")
+                servers = self.relay_manager.get_server_list_for_client()
+                
+                response_data = {
+                    "MESSAGE_TYPE": "DISCOVERY_RESPONSE",
+                    "servers": servers.get('servers', {}),
+                    "total_servers": servers.get('total_servers', 0),
+                    "available_servers": servers.get('available_servers', 0),
+                    "timestamp": int(time.time()),
+                    "status": "success"
+                }
+                
+                response_msg = self.build_sip_message("200 OK", client_address[0], response_data)
+                success = send_frame(client_socket, response_msg.encode('utf-8'))
+                
+                if success:
+                    print(f"[DISCOVERY] ✅ Sent discovery response to {client_address}")
+                return success
+            
+            # 3. PING REQUEST
+            elif message_type == 'PING':
+                print(f"[PING] Handling ping from {client_address}")
+                
+                response_data = {
+                    "MESSAGE_TYPE": "PONG",
+                    "timestamp": int(time.time()),
+                    "status": "success"
+                }
+                
+                response_msg = self.build_sip_message("200 OK", client_address[0], response_data)
+                success = send_frame(client_socket, response_msg.encode('utf-8'))
+                
+                if success:
+                    print(f"[PING] ✅ Sent PONG to {client_address}")
+                return success
+            
+            # 4. RELAY INTERNE REQUESTS (nur von anderen Servern)
+            request_type = custom_data.get('type')
+            if request_type in ['get_servers', 'register', 'update_load']:
+                print(f"[RELAY] Handling internal relay request: {request_type}")
+                return self.relay_manager.handle_seed_request(register_data, client_socket, client_address)
+            
+            # 5. UNBEKANNTE REQUESTS
+            else:
+                print(f"[RELAY WARNING] Unknown request type from {client_address}")
+                print(f"[RELAY DEBUG] Full custom data: {custom_data}")
+                
+                # Trotzdem antworten damit Client nicht hängt
+                response_data = {
+                    "MESSAGE_TYPE": "ERROR",
+                    "error": "UNKNOWN_REQUEST_TYPE",
+                    "received_type": message_type,
+                    "received_request": request_type,
+                    "timestamp": int(time.time())
+                }
+                
+                response_msg = self.build_sip_message("400 Bad Request", client_address[0], response_data)
+                send_frame(client_socket, response_msg.encode('utf-8'))
+                return True
+                
+        except Exception as e:
+            print(f"[RELAY ERROR] Request handling failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+    def _handle_relay_message_during_session(self, frame_data, client_socket, client_address, client_name):
+        """Verarbeitet Relay-Nachrichten während einer aktiven Session"""
+        try:
+            if isinstance(frame_data, bytes):
+                try:
+                    message_text = frame_data.decode('utf-8')
+                except UnicodeDecodeError:
+                    return False
+            else:
+                message_text = str(frame_data)
+                
+            message = self.parse_sip_message(message_text)
+            if not message:
+                return False
+                
+            custom_data = message.get('custom_data', {})
+            request_type = custom_data.get('type')
+            
+            # Prüfe auf Relay-Nachrichten
+            if request_type in ['register', 'get_servers', 'update_load']:
+                print(f"[RELAY] Relay-Nachricht während Session von {client_address}: {request_type}")
+                return self.relay_manager.handle_seed_request(message_text, client_socket, client_address)
+            
+            return False
+            
+        except Exception as e:
+            print(f"[RELAY ERROR] Fehler bei Relay-Nachricht: {e}")
+            return False
+    def get_relay_status(self):
+        """Gibt den Status des Relay-Managers zurück"""
+        if hasattr(self, 'relay_manager'):
+            return self.relay_manager.get_server_status()
+        return {'error': 'Relay manager not available'}
+
+    def get_available_servers(self):
+        """Gibt verfügbare Server für Clients zurück"""
+        if hasattr(self, 'relay_manager'):
+            return self.relay_manager.get_server_list_for_client()
+        return {'servers': {}, 'error': 'Relay manager not available'}
+
+    def update_traffic_stats(self, traffic_mbps):
+        """Aktualisiert Traffic-Statistiken"""
+        if hasattr(self, 'relay_manager'):
+            self.relay_manager.current_traffic = traffic_mbps
+            return True
+        return False
+    def _safe_remove_client(self, client_id):
+        """Thread-safe client removal - ENTFERNT CLIENT KOMPLETT"""
+        with self.clients_lock:
+            if client_id in self.clients:
+                # ✅ VERIFY-GENERATOR ENTFERNEN
+                client_name = self.clients[client_id].get('name')
+                if client_name:
+                    remove_generator(client_name)
+                    print(f"🔐 [VERIFY] Generator für '{client_name}' entfernt")
+                
+                # ✅ CLIENT KOMPLETT ENTFERNEN
+                del self.clients[client_id]
+                print(f"[SERVER] Client {client_id} komplett entfernt")
+        
+        # ✅ KEY-LISTE AKTUALISIEREN
+        with self.clients_lock:
+            clients_copy = self.clients.copy()
+        
+        all_public_keys = [self.server_public_key]
+        for cid, client_info in clients_copy.items():
+            if 'public_key' in client_info:
+                all_public_keys.append(client_info['public_key'])
+        
+        with self.key_lock:
+            self.all_public_keys = all_public_keys
+        
+        # ✅ AKTIVE CLIENTS DATEI AKTUALISIEREN (Client entfernen)
+        try:
+            if os.path.exists("active_clients.json"):
+                with open("active_clients.json", "r") as f:
+                    active_clients = json.load(f)
+                
+                if client_id in active_clients:
+                    del active_clients[client_id]
+                    with open("active_clients.json", "w") as f:
+                        json.dump(active_clients, f, indent=2)
+                    print(f"[SERVER] Client {client_id} aus active_clients.json entfernt")
+        except Exception as e:
+            print(f"⚠️ [SERVER] Fehler beim Aktualisieren active_clients.json: {e}")
+
+    def _generate_client_id_locked(self):
+        """Private method - muss innerhalb von clients_lock aufgerufen werden!"""
+        if not self.clients:
+            return "0"
+        
+        numeric_ids = []
+        for key in self.clients.keys():
+            if key.isdigit():
+                try:
+                    numeric_ids.append(int(key))
+                except ValueError:
+                    continue
+        
+        if not numeric_ids:
+            return "0"
+        
+        numeric_ids.sort()
+        expected_id = 0
+        for existing_id in numeric_ids:
+            if expected_id < existing_id:
+                return str(expected_id)
+            expected_id = existing_id + 1
+        
+        return str(numeric_ids[-1] + 1)            
+    def handle_client(self, client_socket, client_address):
+        """VOLLSTÄNDIG KORRIGIERT: Client-Behandlung mit allen Fehlerbehebungen"""
+        print(f"\n🎯 [SERVER] Neue Verbindung von {client_address}")
+        client_id = None
+        client_name = None
+        client_generator = None
+        client_local_ip = None
+        client_pubkey = None  # ✅ WICHTIG: Variable definieren
+
+        try:
+            # 1. Registration empfangen (mit Timeout)
+            client_socket.settimeout(30.0)
+            print(f"[SERVER] Warte auf Registration von {client_address}")
+            
+            register_data = recv_frame(client_socket)
+            if not register_data:
+                print("[SERVER] Keine Registrierungsdaten empfangen")
+                return
+
+            print(f"[SERVER] Empfangene Daten: {len(register_data)} bytes")
+            
+            # 2. Prüfe ob es eine Relay-Manager Anfrage ist
+            if self._handle_relay_manager_request(register_data, client_socket, client_address):
+                print("[RELAY] Relay-Manager Anfrage verarbeitet - Verbindung geschlossen")
+                return
+            
+            # 3. Normale Client-Registration verarbeiten
+            if isinstance(register_data, bytes):
+                try:
+                    register_data = register_data.decode('utf-8')
+                    print("[SERVER] Daten als UTF-8 decodiert")
+                except UnicodeDecodeError:
+                    print("[SERVER] Konnte Daten nicht als UTF-8 decodieren")
+                    return
+
+            # 4. SIP-Nachricht parsen
+            sip_msg = self.parse_sip_message(register_data)
+            if not sip_msg:
+                print("[SERVER] Ungültige SIP-Nachricht")
+                return
+
+            # 5. Client-Identifikation
+            from_header = sip_msg['headers'].get('From', sip_msg['headers'].get('FROM', ''))
+            client_name_match = re.search(r'<sip:(.*?)@', from_header)
+            if not client_name_match:
+                print(f"[SERVER] Kein Client-Name in FROM-Header: {from_header}")
+                return
+                
+            client_name = client_name_match.group(1)
+            print(f"[SERVER] Client-Name: {client_name}")
+
+            # 6. ✅ KORREKTUR: client_pubkey EXTRAHIEREN
+            custom_data = sip_msg.get('custom_data', {})
+            client_local_ip = custom_data.get('CLIENT_IP')
+            
+            # Public Key aus custom_data extrahieren
+            client_pubkey = custom_data.get('PUBLIC_KEY')
+            if not client_pubkey:
+                print("[SERVER ERROR] No PUBLIC_KEY in registration data")
+                # Versuche aus Body zu extrahieren
+                if sip_msg.get('body') and '-----BEGIN PUBLIC KEY-----' in sip_msg['body']:
+                    client_pubkey = sip_msg['body'].strip()
+                    print("[SERVER] Public Key aus Body extrahiert")
+                else:
+                    print("[SERVER] KEIN Public Key gefunden - Registration abgebrochen")
+                    error_msg = self.build_sip_message("400 Bad Request", client_name, {
+                        "MESSAGE_TYPE": "ERROR",
+                        "ERROR": "NO_PUBLIC_KEY",
+                        "TIMESTAMP": int(time.time())
+                    })
+                    send_frame(client_socket, error_msg.encode('utf-8'))
+                    return
+
+            print(f"[SERVER] Public Key gefunden: {len(client_pubkey)} Zeichen")
+            
+            if client_local_ip:
+                print(f"[SERVER] Client lokale IP aus Registration: {client_local_ip}")
+            else:
+                print(f"[SERVER WARNING] Keine CLIENT_IP in Registration von {client_name}")
+                client_local_ip = client_address[0]
+                print(f"[SERVER] Verwende NAT-IP als Fallback: {client_local_ip}")
+
+            # 7. Verify-Generator erstellen
+            print(f"🔐 [VERIFY] Initialisiere Generator für '{client_name}'")
+            client_generator = init_verify_generator(client_name, client_name)
+            print(f"🔐 [SERVER] Verify-Generator für Client-Name '{client_name}' initialisiert")
+
+            # 8. Verify-Code validieren
+            if "Verify-Code:" in register_data:
+                lines = register_data.split('\r\n')
+                verify_code_value = None
+                for line in lines:
+                    if line.startswith("Verify-Code:"):
+                        verify_code_value = line.split(":")[1].strip()
+                        break
+                
+                if verify_code_value:
+                    print(f"🔐 [VERIFY] Validating code: {verify_code_value}")
+                    if client_generator.verify_code(verify_code_value, sync_tolerance=10):
+                        print(f"✅ [VERIFY] Register-Nachricht verifiziert")
+                    else:
+                        print(f"❌ [VERIFY] Ungültiger Register-Code von {client_name}")
+                        error_msg = self.build_sip_message("401 Unauthorized", client_name, {
+                            "MESSAGE_TYPE": "ERROR", 
+                            "ERROR": "INVALID_VERIFY_CODE",
+                            "TIMESTAMP": int(time.time())
+                        })
+                        send_frame(client_socket, error_msg.encode('utf-8'))
+                        return
+                else:
+                    print(f"❌ [VERIFY] Kein Verify-Code in Register-Nachricht von {client_name}")
+                    error_msg = self.build_sip_message("400 Bad Request", client_name, {
+                        "MESSAGE_TYPE": "ERROR",
+                        "ERROR": "MISSING_VERIFY_CODE", 
+                        "TIMESTAMP": int(time.time())
+                    })
+                    send_frame(client_socket, error_msg.encode('utf-8'))
+                    return
+            else:
+                print(f"❌ [VERIFY] Kein Verify-Header in Register-Nachricht von {client_name}")
+                error_msg = self.build_sip_message("400 Bad Request", client_name, {
+                    "MESSAGE_TYPE": "ERROR",
+                    "ERROR": "MISSING_VERIFY_HEADER",
+                    "TIMESTAMP": int(time.time())
+                })
+                send_frame(client_socket, error_msg.encode('utf-8'))
+                return
+
+            # 9. ✅ Client ATOMIC registrieren (client_pubkey ist jetzt definiert!)
+            client_data = {
+                'name': client_name,
+                'public_key': client_pubkey,  # ✅ JETZT DEFINIERT
+                'socket': client_socket,
+                'ip': client_local_ip,
+                'nat_ip': client_address[0],
+                'port': client_address[1],
+                'login_time': time.time(),
+                'last_update': time.time(),
+                'verify_generator': client_generator
+            }
+            
+            # ✅ ATOMIC Registration unter clients_lock
+            with self.clients_lock:
+                client_id = self._generate_client_id_locked()
+                self.clients[client_id] = client_data
+                print(f"[SERVER] Client {client_name} registriert mit ID: {client_id}")
+
+            # ✅ Gespeicherte Clients aktualisieren
+            try:
+                self.save_active_clients()
+            except Exception as e:
+                print(f"⚠️ [SERVER] save_active_clients failed: {e}")
+            
+            # ✅ ALLE Public Keys sammeln (THREAD-SAFE)
+            with self.clients_lock:
+                clients_copy = self.clients.copy()
+            
+            all_public_keys = [self.server_public_key]
+            for cid, client_info in clients_copy.items():
+                if 'public_key' in client_info:
+                    all_public_keys.append(client_info['public_key'])
+            
+            # ✅ Keys unter key_lock speichern
+            with self.key_lock:
+                self.all_public_keys = all_public_keys
+            
+            clients_count = len(clients_copy)
+            print(f"[SERVER] Gesamte Keys: {len(all_public_keys)} (Server + {clients_count} Clients)")
+
+            # 10. Merkle Root berechnen
+            merkle_root = build_merkle_tree_from_keys(all_public_keys)
+            print(f"[SERVER] Merkle Root: {merkle_root}")
+
+            # 11. ✅ ERSTE ANTWORT: Server Public Key und Client ID - MIT FRAMED SIP
+            first_response_data = {
+                "MESSAGE_TYPE": "REGISTRATION_RESPONSE",
+                "SERVER_PUBLIC_KEY": self.server_public_key,
+                "CLIENT_ID": client_id,
+                "TIMESTAMP": int(time.time())
+            }
+                
+            first_response_msg = self.build_sip_message("200 OK", client_name, first_response_data)
+            print(f"[SERVER] Sende erste Antwort: {len(first_response_msg)} bytes")
+            
+            # ✅ KORREKTUR: IMMER FRAMED SIP VERWENDEN
+            if not send_frame(client_socket, first_response_msg.encode('utf-8')):
+                print("[SERVER ERROR] Failed to send first response with framed SIP")
+                return
+            print("[SERVER] ✅ Erste Antwort erfolgreich gesendet")
+
+            # Kurze Pause für Client-Verarbeitung
+            time.sleep(0.1)
+
+            # 12. ✅ ZWEITE ANTWORT: Merkle Root und alle Keys - MIT FRAMED SIP
+            second_response_data = {
+                "MESSAGE_TYPE": "MERKLE_DATA",
+                "MERKLE_ROOT": merkle_root,
+                "ALL_KEYS": all_public_keys,
+                "TOTAL_KEYS": len(all_public_keys),
+                "TIMESTAMP": int(time.time())
+            }            
+                
+            second_response_msg = self.build_sip_message("200 OK", client_name, second_response_data)
+            print(f"[SERVER] Sende zweite Antwort: {len(second_response_msg)} bytes")
+            print(f"[SERVER DEBUG] Merkle Root in Response: {merkle_root[:50]}...")
+            
+            # ✅ KORREKTUR: IMMER FRAMED SIP VERWENDEN
+            if not send_frame(client_socket, second_response_msg.encode('utf-8')):
+                print("[SERVER ERROR] Failed to send second response with framed SIP")
+                return
+            print("[SERVER] ✅ Zweite Antwort erfolgreich gesendet")
+
+            # 13. ✅ SOFORT PHONEBOOK SENDEN - MIT FRAMED SIP
+            time.sleep(0.5)
+            print(f"[SERVER] Sende Phonebook an {client_name}")
+            phonebook_success = self.send_phonebook(client_id)
+            if phonebook_success:
+                print(f"[SERVER] ✅ Phonebook an {client_name} gesendet")
+            else:
+                print(f"[SERVER] ❌ Phonebook an {client_name} fehlgeschlagen")
+
+            # 14. ✅ AKTIVE KOMMUNIKATIONSSCHLEIFE
+            print(f"[SERVER] Starte aktive Kommunikation mit {client_name}")
+            client_socket.settimeout(30.0)
+            
+            last_ping_time = time.time()
+            ping_interval = 30
+            
+            while True:
+                try:
+                    current_time = time.time()
+                    
+                    # Sende regelmäßig PING
+                    if current_time - last_ping_time >= ping_interval:
+                        ping_data = {
+                            "MESSAGE_TYPE": "PING",
+                            "TIMESTAMP": int(time.time())
+                        }
+                        ping_msg = self.build_sip_message("MESSAGE", client_name, ping_data)
+                        
+                        if send_frame(client_socket, ping_msg.encode('utf-8')):
+                            print(f"[SERVER PING] Ping an {client_name} gesendet")
+                            last_ping_time = current_time
+                        else:
+                            print(f"[SERVER PING] ❌ Ping an {client_name} fehlgeschlagen")
+                            break
+                    
+                    # Empfange Nachrichten vom Client
+                    frame_data = recv_frame(client_socket, timeout=5.0)
+                    
+                    if frame_data is None:
+                        # Timeout ist normal
+                        continue
+                        
+                    if len(frame_data) == 0:
+                        continue
+                        
+                    print(f"[SERVER] Nachricht von {client_name} empfangen: {len(frame_data)} bytes")
+                    
+                    # Nachricht verarbeiten
+                    try:
+                        message_str = frame_data.decode('utf-8', errors='ignore')
+                        
+                        # Verify-Code validieren
+                        if "Verify-Code:" in message_str:
+                            lines = message_str.split('\r\n')
+                            verify_code_value = None
+                            for line in lines:
+                                if line.startswith("Verify-Code:"):
+                                    verify_code_value = line.split(":")[1].strip()
+                                    break
+                            
+                            if verify_code_value:
+                                if client_generator.verify_code(verify_code_value, sync_tolerance=5):
+                                    print(f"✅ [VERIFY] Nachricht von {client_name} verifiziert")
+                                else:
+                                    print(f"❌ [VERIFY] Invalid code from {client_name}")
+                                    continue
+                        
+                        # SIP Nachricht parsen
+                        msg = self.parse_sip_message(message_str)
+                        if not msg:
+                            continue
+                            
+                        custom_data = msg.get('custom_data', {})
+                        message_type = custom_data.get('MESSAGE_TYPE')
+                        
+                        if message_type == 'PONG':
+                            print(f"[SERVER] PONG von {client_name} erhalten")
+                            
+                        elif message_type == 'UPDATE_REQUEST':
+                            print(f"[SERVER] UPDATE_REQUEST von {client_name}")
+                            self._handle_update_request(client_socket, client_name, msg)
+                            
+                        elif message_type == 'PHONEBOOK_REQUEST':
+                            print(f"[SERVER] PHONEBOOK_REQUEST von {client_name}")
+                            self.send_phonebook(client_id)
+                            
+                        elif message_type == 'GET_PUBLIC_KEY':
+                            print(f"[SERVER] GET_PUBLIC_KEY von {client_name}")
+                            if hasattr(self, 'convey_manager'):
+                                self.convey_manager.handle_get_public_key(msg, client_socket, client_name)
+                                
+                        elif message_type == 'CALL_REQUEST':
+                            print(f"[SERVER] CALL_REQUEST von {client_name}")
+                            if hasattr(self, 'convey_manager'):
+                                self.convey_manager.handle_call_request(msg, client_socket, client_name)
+                                
+                        elif message_type == 'CALL_RESPONSE':
+                            print(f"[SERVER] CALL_RESPONSE von {client_name}")
+                            if hasattr(self, 'convey_manager'):
+                                self.convey_manager.handle_call_response(msg, client_socket, client_name)
+                                
+                        elif message_type == 'CALL_END':
+                            print(f"[SERVER] CALL_END von {client_name}")
+                            if hasattr(self, 'convey_manager'):
+                                self.convey_manager.handle_call_end(msg, client_socket, client_name)
+                                
+                        else:
+                            print(f"[SERVER] Unbekannter Message-Type: {message_type}")
+                            # Generische Bestätigung senden
+                            ack_msg = self.build_sip_message("200 OK", client_name, {
+                                "MESSAGE_TYPE": "ACKNOWLEDGE",
+                                "RECEIVED_TYPE": message_type,
+                                "TIMESTAMP": int(time.time())
+                            })
+                            send_frame(client_socket, ack_msg.encode('utf-8'))
+                            
+                    except Exception as e:
+                        print(f"[SERVER ERROR] Message processing failed: {e}")
+                        continue
+                        
+                except socket.timeout:
+                    # Timeout ist normal
+                    continue
+                    
+                except ConnectionError as e:
+                    print(f"[SERVER] Verbindungsfehler bei {client_name}: {e}")
+                    break
+                    
+                except Exception as e:
+                    print(f"[SERVER] Fehler bei {client_name}: {e}")
                     break
 
         except socket.timeout:
