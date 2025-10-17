@@ -389,11 +389,19 @@ def send_frame(sock, data):
         return False
 
 def recv_frame(sock, timeout=30):
-    """EINHEITLICHER Frame-Empfänger für ALLE Nachrichten - KOMPATIBEL FÜR CLIENT UND SERVER"""
+    """EINHEITLICHER Frame-Empfänger für ALLE Nachrichten - IDENTISCH AUF CLIENT UND SERVER"""
     original_timeout = sock.gettimeout()
     sock.settimeout(timeout)
     
     try:
+        # Peer Info für Logging
+        try:
+            peer_info = f"{sock.getpeername()[0]}:{sock.getpeername()[1]}"
+        except:
+            peer_info = "unknown"
+        
+        print(f"📡 [FRAME] Waiting for frame from {peer_info}")
+        
         # 1. Header lesen (4 Bytes Network Byte Order)
         header = b''
         start_time = time.time()
@@ -401,81 +409,81 @@ def recv_frame(sock, timeout=30):
         while len(header) < 4:
             remaining_time = timeout - (time.time() - start_time)
             if remaining_time <= 0:
+                print(f"⏰ [FRAME] Header timeout from {peer_info}")
                 raise TimeoutError("Header receive timeout")
                 
-            sock.settimeout(remaining_time)
+            sock.settimeout(min(5, remaining_time))
             chunk = sock.recv(4 - len(header))
             if not chunk:
-                print("[FRAME] Connection closed during header reception")
+                print(f"🔌 [FRAME] Connection closed by {peer_info} during header")
                 return None
             header += chunk
         
         # 2. Länge decodieren
-        length = struct.unpack('!I', header)[0]
+        try:
+            length = struct.unpack('!I', header)[0]
+            print(f"📏 [FRAME] {peer_info} announced {length} bytes")
+        except struct.error as e:
+            print(f"❌ [FRAME] INVALID HEADER from {peer_info}: {header.hex()} - {e}")
+            return None
         
-        # 3. SICHERHEITSCHECKS (identisch auf beiden Seiten)
+        # 3. EINHEITLICHE SICHERHEITSCHECKS
+        MAX_FRAME_SIZE = 10 * 1024 * 1024  # 10MB Maximum (KONSISTENT)
+        
+        if length > MAX_FRAME_SIZE:
+            print(f"❌ [FRAME] OVERSIZE from {peer_info}: {length} bytes > {MAX_FRAME_SIZE} bytes")
+            raise ValueError(f"Frame too large: {length} bytes (max: {MAX_FRAME_SIZE} bytes)")
+        
+        if length < 0:
+            print(f"❌ [FRAME] NEGATIVE LENGTH from {peer_info}: {length}")
+            raise ValueError(f"Invalid frame length: {length} bytes")
+        
         if length == 0:
-            print("[FRAME] Empty frame received")
-            return b''  # Leerer Frame ist erlaubt
-            
-        if length > 10 * 1024 * 1024:  # 10MB Maximum (konservativ)
-            print(f"[FRAME SECURITY] Frame size suspicious: {length} bytes")
-            # Versuche Daten zu lesen und zu verwerfen um Verbindung zu resetten
-            try:
-                discard_timeout = min(5.0, timeout)  # Max 5 Sekunden zum Verwerfen
-                sock.settimeout(discard_timeout)
-                bytes_discarded = 0
-                while bytes_discarded < length:
-                    chunk_size = min(4096, length - bytes_discarded)
-                    chunk = sock.recv(chunk_size)
-                    if not chunk:
-                        break
-                    bytes_discarded += len(chunk)
-                print(f"[FRAME SECURITY] Discarded {bytes_discarded} bytes")
-            except:
-                pass
-            raise ValueError(f"Frame too large: {length} bytes (max: 10MB)")
+            print(f"📭 [FRAME] Empty frame from {peer_info}")
+            return b''
         
         # 4. Body lesen
         received = b''
+        bytes_received = 0
+        
         while len(received) < length:
             remaining_time = timeout - (time.time() - start_time)
             if remaining_time <= 0:
+                print(f"⏰ [FRAME] Body timeout from {peer_info}, received {len(received)}/{length} bytes")
                 raise TimeoutError(f"Body receive timeout after {timeout}s")
                 
-            sock.settimeout(remaining_time)
-            chunk_size = min(4096, length - len(received))
+            sock.settimeout(min(10, remaining_time))
+            chunk_size = min(8192, length - len(received))
             chunk = sock.recv(chunk_size)
+            
             if not chunk:
+                print(f"🔌 [FRAME] Connection closed by {peer_info} during body")
                 raise ConnectionError(f"Incomplete frame: received {len(received)} of {length} bytes")
+            
             received += chunk
+            bytes_received += len(chunk)
         
-        # 5. Erfolgslogging (konsistent)
-        if len(received) == length:
-            print(f"[FRAME] Successfully received {length} bytes")
-        else:
-            print(f"[FRAME WARNING] Length mismatch: expected {length}, got {len(received)}")
-        
+        # 5. Erfolgslogging
+        print(f"✅ [FRAME] Successfully received {length} bytes from {peer_info}")
         return received
         
     except socket.timeout:
-        print(f"[FRAME TIMEOUT] Timeout after {timeout} seconds")
+        print(f"⏰ [FRAME] Overall timeout after {timeout}s from {peer_info}")
         raise TimeoutError(f"Frame receive timeout after {timeout}s")
     except ConnectionError as e:
-        print(f"[FRAME CONNECTION] Connection error: {e}")
+        print(f"🔌 [FRAME] Connection error from {peer_info}: {e}")
         raise
     except ValueError as e:
-        print(f"[FRAME VALIDATION] Validation error: {e}")
+        print(f"❌ [FRAME] Validation error from {peer_info}: {e}")
         raise
     except Exception as e:
-        print(f"[FRAME ERROR] Unexpected error: {e}")
+        print(f"❌ [FRAME] Unexpected error from {peer_info}: {e}")
         return None
     finally:
-        # 6. Original Timeout immer zurücksetzen
         try:
             sock.settimeout(original_timeout)
         except:
-            pass  # Socket könnte bereits geschlossen sein
+            pass
 
 def get_public_ip():
     nat_type, public_ip, public_port = stun.get_ip_info()
@@ -2530,7 +2538,7 @@ class ClientRelayManager:
         except Exception as e:
             print(f"Debug failed: {e}")
     def discover_servers(self):
-        """Entdeckt verfügbare Server von Seed-Servern - mit DNS-Fallback"""
+        """Entdeckt verfügbare Server von Seed-Servern - VOLLSTÄNDIG KORRIGIERT"""
         print("[CLIENT RELAY] Starting server discovery...")
         
         discovered_servers = {}
@@ -2569,21 +2577,29 @@ class ClientRelayManager:
                 # ✅ VERBINDUNG MIT RESOLVED IP
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(10)
-                sock.connect((target_ip, seed_port))
                 
-                # Framed SIP für Discovery
+                try:
+                    sock.connect((target_ip, seed_port))
+                except (ConnectionRefusedError, OSError) as e:
+                    print(f"[CLIENT RELAY] Connection failed to {target_ip}:{seed_port}: {e}")
+                    sock.close()
+                    continue
+                
+                # ✅ VERIFY-CODE GENERIEREN
                 generator = init_verify_generator(client_name, client_name)
                 verify_code = generator.generate_verify_code()
                 print(f"[CLIENT RELAY] Generated verify-code for discovery: {verify_code}")
                 
-                # Baue SIP-Nachricht für Server-Liste Anfrage
+                # ✅ DISCOVERY REQUEST MIT KORREKTEM FORMAT
                 request_data = {
-                    'type': 'get_servers',
-                    'requester_type': 'client',
-                    'client_name': client_name,
-                    'timestamp': time.time()
+                    "MESSAGE_TYPE": "DISCOVERY_REQUEST",  # ✅ EXPLIZITER MESSAGE_TYPE
+                    "type": "get_servers",
+                    "requester_type": "client", 
+                    "client_name": client_name,
+                    "timestamp": int(time.time())
                 }
                 
+                # ✅ BAUE SIP NACHRICHT MIT VERIFY-CODE
                 sip_message = self.client.build_sip_message("MESSAGE", seed_host, request_data)
                 
                 # ✅ MANUELL VERIFY-HEADER HINZUFÜGEN
@@ -2612,62 +2628,81 @@ class ClientRelayManager:
                 
                 print(f"[CLIENT RELAY] Sending discovery request to {target_ip}:{seed_port} with verify-code: {verify_code}")
                 
-                if send_frame(sock, sip_message_with_verify.encode()):
-                    # Empfange Response
+                # ✅ SENDE REQUEST MIT FRAMED SIP
+                if send_frame(sock, sip_message_with_verify.encode('utf-8')):
+                    # ✅ EMPFANGE RESPONSE
                     print(f"[CLIENT RELAY] Waiting for response from {target_ip}:{seed_port}")
-                    response_data = recv_frame(sock)
+                    response_data = recv_frame(sock, timeout=10)
                     
                     if response_data:
                         print(f"[CLIENT RELAY] Received {len(response_data)} bytes from {target_ip}")
                         
                         try:
-                            # Versuche zuerst als String zu decodieren
-                            if isinstance(response_data, bytes):
-                                response_str = response_data.decode('utf-8')
-                            else:
-                                response_str = str(response_data)
-                            
+                            # ✅ DECODE RESPONSE
+                            response_str = response_data.decode('utf-8')
                             print(f"[CLIENT RELAY] Raw response: {response_str[:200]}...")
                             
-                            # Parse die SIP Nachricht
+                            # ✅ PARSE SIP NACHRICHT
                             sip_data = self.client.parse_sip_message(response_str)
                             if not sip_data:
                                 print(f"[CLIENT RELAY] Failed to parse SIP message from {target_ip}")
+                                sock.close()
                                 continue
                             
-                            # Extrahiere den Body
+                            # ✅ EXTRAHIERE BODY
                             body = sip_data.get('body', '')
                             if not body:
                                 print(f"[CLIENT RELAY] No body in response from {target_ip}")
+                                sock.close()
                                 continue
                             
                             print(f"[CLIENT RELAY] Response body: {body[:200]}...")
                             
-                            # Parse JSON Body
+                            # ✅ PARSE JSON BODY
                             try:
-                                response = json.loads(body)
+                                response_json = json.loads(body)
                                 print(f"[CLIENT RELAY] JSON parsed successfully from {target_ip}")
+                                print(f"[CLIENT RELAY DEBUG] Response keys: {list(response_json.keys())}")
                                 
-                                if response.get('status') == 'success':
-                                    servers = response.get('servers', {})
-                                    print(f"[CLIENT RELAY] Found {len(servers)} servers from {target_ip}")
+                                # ✅ KORREKTE FELDNAMEN FÜR SERVER-LISTE
+                                message_type = response_json.get('MESSAGE_TYPE')
+                                
+                                if message_type == 'DISCOVERY_RESPONSE':
+                                    # ✅ KORREKTE FELDER FÜR DISCOVERY RESPONSE
+                                    servers = response_json.get('servers', {})
+                                    total_servers = response_json.get('total_servers', 0)
+                                    available_servers = response_json.get('available_servers', 0)
                                     
-                                    # Füge gefundene Server hinzu
+                                    print(f"[CLIENT RELAY] Found {len(servers)} servers from {target_ip} (total: {total_servers}, available: {available_servers})")
+                                    
+                                    # ✅ FÜGE GEFUNDENE SERVER HINZU
                                     for server_ip, server_data in servers.items():
                                         if server_ip not in discovered_servers:
                                             discovered_servers[server_ip] = server_data
-                                            print(f"[CLIENT RELAY] Added server: {server_ip} - {server_data.get('name', 'Unknown')}")
+                                            server_name = server_data.get('name', 'Unknown')
+                                            server_port = server_data.get('port', 'unknown')
+                                            print(f"[CLIENT RELAY] ✅ Added server: {server_name} - {server_ip}:{server_port}")
+                                    
+                                elif message_type == 'ERROR':
+                                    error_msg = response_json.get('error', 'Unknown error')
+                                    print(f"[CLIENT RELAY] Server returned error: {error_msg}")
                                     
                                 else:
-                                    print(f"[CLIENT RELAY] Server returned error: {response.get('error', 'Unknown error')}")
+                                    print(f"[CLIENT RELAY] Unexpected message type: {message_type}")
+                                    # Debug: Zeige alle verfügbaren Felder
+                                    print(f"[CLIENT RELAY DEBUG] Available fields: {list(response_json.keys())}")
                                     
                             except json.JSONDecodeError as e:
                                 print(f"[CLIENT RELAY] JSON decode error from {target_ip}: {e}")
                                 print(f"[CLIENT RELAY] Body content that failed: {body}")
+                                sock.close()
                                 continue
                                 
                         except Exception as e:
                             print(f"[CLIENT RELAY] Response processing error from {target_ip}: {e}")
+                            import traceback
+                            traceback.print_exc()
+                            sock.close()
                             continue
                         
                     else:
@@ -2683,22 +2718,35 @@ class ClientRelayManager:
             except ConnectionRefusedError:
                 print(f"[CLIENT RELAY] Connection refused by {seed_host}:{seed_port}")
                 continue
+            except OSError as e:
+                if "No route to host" in str(e):
+                    print(f"[CLIENT RELAY] No route to host {seed_host}:{seed_port}")
+                else:
+                    print(f"[CLIENT RELAY] OS error connecting to {seed_host}:{seed_port}: {e}")
+                continue
             except Exception as e:
                 print(f"[CLIENT RELAY ERROR] Discovery from {seed_host}:{seed_port} failed: {e}")
                 import traceback
                 traceback.print_exc()
                 continue
         
-        # Aktualisiere verfügbare Server
+        # ✅ AKTUALISIERE VERFÜGBARE SERVER
         self.available_servers = discovered_servers
         self.last_discovery = time.time()
         
-        # Wähle besten Server aus
+        # ✅ WÄHLE BESTEN SERVER AUS
         self._select_best_server()
         
         print(f"[CLIENT RELAY] Discovery complete - {len(self.available_servers)} servers available")
+        
+        if self.best_server:
+            best_name = self.best_server.get('name', 'Unknown')
+            best_ip = self.best_server.get('ip', 'Unknown')
+            print(f"[CLIENT RELAY] ✅ Best server selected: {best_name} ({best_ip})")
+        else:
+            print(f"[CLIENT RELAY] ⚠️ No best server selected - using fallback")
+        
         return self.best_server
-
     def _select_best_server(self):
         """Wählt besten Server aus - KORRIGIERT für beide Ports"""
         if not self.available_servers:
