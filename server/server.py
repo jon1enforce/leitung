@@ -1031,7 +1031,7 @@ class AccurateRelayManager:
                 continue
     
     def handle_seed_request(self, sip_message, client_socket, client_address):
-        """Verarbeitet Seed-Anfragen von anderen Servern - VOLLSTÄNDIG FRAMED SIP"""
+        """Verarbeitet Seed-Anfragen - KORRIGIERT FÜR DISCOVERY"""
         if not self.is_seed_server:
             return False
             
@@ -1042,15 +1042,27 @@ class AccurateRelayManager:
                 
             custom_data = message.get('custom_data', {})
             request_type = custom_data.get('type')
+            message_type = custom_data.get('MESSAGE_TYPE')
             
             response_data = {}
             
-            if request_type == 'register':
+            # ✅ DISCOVERY_REQUEST VON CLIENT ERKENNEN
+            if message_type == 'DISCOVERY_REQUEST':
+                print(f"[RELAY] Discovery request from {client_address[0]}")
+                response_data = self._handle_seed_get_servers(custom_data)
+                
+            elif request_type == 'register':
                 response_data = self._handle_seed_register(custom_data, client_address[0])
             elif request_type == 'get_servers':
                 response_data = self._handle_seed_get_servers(custom_data)
             elif request_type == 'update_load':
                 response_data = self._handle_load_update(custom_data)
+            else:
+                print(f"[RELAY WARNING] Unknown seed request: {request_type}")
+                response_data = {
+                    'status': 'error',
+                    'error': f'Unknown request type: {request_type}'
+                }
             
             # ✅ KORREKTUR: IMMER FRAMED SIP VERWENDEN
             response_msg = self.server.build_sip_message(
@@ -1063,7 +1075,7 @@ class AccurateRelayManager:
             success = send_frame(client_socket, response_msg.encode('utf-8'))
             
             if success:
-                print(f"[RELAY] ✅ Framed SIP response sent for {request_type} to {client_address[0]}")
+                print(f"[RELAY] ✅ Framed SIP response sent for {request_type or message_type} to {client_address[0]}")
             else:
                 print(f"[RELAY] ❌ Failed to send framed SIP response to {client_address[0]}")
                 
@@ -3485,7 +3497,7 @@ class Server:
             except:
                 pass         
     def _handle_relay_manager_request(self, register_data, client_socket, client_address):
-        """KORRIGIERT: Erkennt Registration korrekt und leitet NICHT an Relay weiter"""
+        """KORRIGIERT: Erkennt DISCOVERY_REQUEST und verarbeitet sie korrekt"""
         try:
             if isinstance(register_data, bytes):
                 try:
@@ -3504,29 +3516,22 @@ class Server:
             print(f"[RELAY DEBUG] Message type: {custom_data.get('MESSAGE_TYPE')}")
             print(f"[RELAY DEBUG] Custom data keys: {list(custom_data.keys())}")
             
-            # ✅ WICHTIG: REGISTRATION NICHT AN RELAY WEITERLEITEN!
+            # ✅ WICHTIG: DISCOVERY_REQUEST ERKENNEN UND BEHANDELN
             message_type = custom_data.get('MESSAGE_TYPE')
             
-            # 1. REGISTRATION REQUEST - NICHT an Relay Manager weiterleiten!
-            if (message_type == 'REGISTER' or 
-                'PUBLIC_KEY' in custom_data or
-                'CLIENT_NAME' in custom_data):
-                print(f"[REGISTER] Detected registration request - NOT forwarding to relay")
-                return False  # WICHTIG: False zurückgeben = normale Registration
-            
-            # 2. DISCOVERY REQUEST (vom Client)
-            elif (message_type == 'DISCOVERY_REQUEST' or 
-                  message_type == 'DISCOVER' or
-                  'GET_SERVERS' in str(custom_data).upper()):
-                
+            # 1. DISCOVERY REQUEST (vom Client)
+            if message_type == 'DISCOVERY_REQUEST':
                 print(f"[DISCOVERY] Handling discovery request from {client_address}")
-                servers = self.relay_manager.get_server_list_for_client()
                 
+                # Hole Server-Liste vom Relay Manager
+                servers_data = self.relay_manager.get_server_list_for_client()
+                
+                # Baue Response
                 response_data = {
                     "MESSAGE_TYPE": "DISCOVERY_RESPONSE",
-                    "servers": servers.get('servers', {}),
-                    "total_servers": servers.get('total_servers', 0),
-                    "available_servers": servers.get('available_servers', 0),
+                    "servers": servers_data.get('servers', {}),
+                    "total_servers": servers_data.get('total_servers', 0),
+                    "available_servers": servers_data.get('available_servers', 0),
                     "timestamp": int(time.time()),
                     "status": "success"
                 }
@@ -3536,7 +3541,17 @@ class Server:
                 
                 if success:
                     print(f"[DISCOVERY] ✅ Sent discovery response to {client_address}")
+                else:
+                    print(f"[DISCOVERY] ❌ Failed to send discovery response to {client_address}")
+                
                 return success
+            
+            # 2. REGISTRATION REQUEST - NICHT an Relay Manager weiterleiten!
+            elif (message_type == 'REGISTER' or 
+                  'PUBLIC_KEY' in custom_data or
+                  'CLIENT_NAME' in custom_data):
+                print(f"[REGISTER] Detected registration request - NOT forwarding to relay")
+                return False  # WICHTIG: False zurückgeben = normale Registration
             
             # 3. PING REQUEST
             elif message_type == 'PING':
@@ -3564,6 +3579,8 @@ class Server:
             # 5. UNBEKANNTE REQUESTS
             else:
                 print(f"[RELAY WARNING] Unknown request type from {client_address}")
+                print(f"[RELAY DEBUG] Message type: {message_type}")
+                print(f"[RELAY DEBUG] Request type: {request_type}")
                 print(f"[RELAY DEBUG] Full custom data: {custom_data}")
                 
                 # Trotzdem antworten damit Client nicht hängt
