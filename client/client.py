@@ -3370,7 +3370,9 @@ class CALL:
                 print("✅ [AUDIO IN] Socket closed")
         
         return True        
-     def audio_stream_out(self, target_ip, target_port, iv, key, session_id):
+
+
+    def audio_stream_out(self, target_ip, target_port, iv, key, session_id):
         """Sendet Audio MIT KORREKTEM PADDING"""
         if not self.audio_available:
             print("❌ [AUDIO OUT] Kein Audio-Backend verfügbar")
@@ -3554,6 +3556,7 @@ class CALL:
                 print(f"✅ [AUDIO OUT] Socket closed")
         
         return True
+
     def _start_audio_streams(self):
         """Startet bidirektionale Audio-Streams - MIT FESTEM PORT 51821"""
         try:
