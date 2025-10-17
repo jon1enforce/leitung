@@ -2948,13 +2948,13 @@ class ClientRelayManager:
                   f"(ping: {best_server_info['ping_time']:.2f}ms, load: {best_server_info['load']}%)")
 
     def _ping_server(self, server_ip, server_data, results_dict):
-        """VERBESSERTES Ping mit DNS-FALLBACK für beide Ports"""
+        """Optimiertes Ping das beide Ports korrekt testet"""
         try:
             reported_port = server_data.get('port', 5060)
             
             # ✅ KORREKTUR: Teste beide Ports für DuckDNS
             if "duckdns.org" in server_ip:
-                ports_to_test = [5061, 5060]  # ✅ Zuerst 5061, dann 5060 testen
+                ports_to_test = [5060, 5061]  # ✅ 5060 zuerst testen (der funktioniert)
                 print(f"[PING] DuckDNS detected, testing ports: {ports_to_test}")
             else:
                 ports_to_test = [reported_port]
@@ -2966,105 +2966,45 @@ class ClientRelayManager:
                 try:
                     print(f"[PING] Testing {server_ip}:{port}")
                     
-                    # ✅ DNS-AUFLÖSUNG MIT FALLBACK
-                    target_ip = None
+                    # ✅ DNS-AUFLÖSUNG
                     try:
-                        # Methode 1: getaddrinfo
-                        addr_info = socket.getaddrinfo(server_ip, port, socket.AF_INET, socket.SOCK_STREAM)
-                        if addr_info:
-                            target_ip = addr_info[0][4][0]
-                            print(f"[PING DNS] Resolved {server_ip} -> {target_ip}")
+                        target_ip = socket.gethostbyname(server_ip)
+                        print(f"[PING DNS] Resolved {server_ip} -> {target_ip}")
                     except socket.gaierror:
-                        # Methode 2: gethostbyname Fallback
-                        try:
-                            target_ip = socket.gethostbyname(server_ip)
-                            print(f"[PING DNS] Fallback resolved {server_ip} -> {target_ip}")
-                        except socket.gaierror:
-                            print(f"[PING DNS] ❌ DNS failed for {server_ip}:{port}")
-                            continue
-                    
-                    if not target_ip:
+                        print(f"[PING DNS] ❌ DNS failed for {server_ip}:{port}")
                         continue
                     
-                    # Erstelle temporären Socket
+                    # Schneller Socket-Test
                     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-                    sock.settimeout(3.0)
+                    sock.settimeout(2.0)  # Ausgewogenes Timeout
                     
                     start_time = time.time()
                     sock.connect((target_ip, port))
+                    end_time = time.time()
                     
-                    # ✅ VERIFY-CODE FÜR PING-NACHRICHT GENERIEREN
-                    client_name = getattr(self, '_client_name', 'ping_tester')
-                    generator = init_verify_generator(client_name, client_name)
-                    verify_code = generator.generate_verify_code()
-                    print(f"🔐 [PING] Ping Verify-Code für {target_ip}:{port}: {verify_code}")
-                    
-                    # Baue Ping-Nachricht MIT VERIFY-CODE
-                    ping_data = {
-                        "MESSAGE_TYPE": "PING",
-                        "TIMESTAMP": int(start_time),
-                        "CLIENT_NAME": client_name
-                    }
-                    
-                    ping_msg = self.client.build_sip_message("MESSAGE", server_ip, ping_data)
-                    
-                    # ✅ MANUELL VERIFY-HEADER HINZUFÜGEN
-                    lines = ping_msg.split('\r\n')
-                    
-                    # Finde die Stelle wo wir den Verify-Header einfügen können (vor Content-Headern)
-                    insert_position = -1
-                    for i, line in enumerate(lines):
-                        if line.startswith('Content-Type:') or line.startswith('Content-Length:'):
-                            insert_position = i
-                            break
-                    
-                    if insert_position != -1:
-                        lines.insert(insert_position, f"Verify-Code: {verify_code}")
-                    else:
-                        # Falls keine Content-Header gefunden, vor dem leeren Zeilen-Trenner einfügen
-                        for i, line in enumerate(lines):
-                            if line == '':
-                                lines.insert(i, f"Verify-Code: {verify_code}")
-                                break
-                        else:
-                            # Notfall: am Ende einfügen
-                            lines.insert(-1, f"Verify-Code: {verify_code}")
-                    
-                    ping_msg_with_verify = '\r\n'.join(lines)
-                    
-                    # Sende Ping mit Frame
-                    if send_frame(sock, ping_msg_with_verify.encode('utf-8')):
-                        # Warte auf Pong mit Frame
-                        response = recv_frame(sock, timeout=2.0)
-                        if response:
-                            # ✅ PRÜFE OB ES EINE GÜLTIGE PONG-ANTWORT IST
-                            try:
-                                response_str = response.decode('utf-8', errors='ignore')
-                                if "PONG" in response_str or "pong" in response_str.lower():
-                                    end_time = time.time()
-                                    ping_time = (end_time - start_time) * 1000
-                                    
-                                    if ping_time < best_ping:
-                                        best_ping = ping_time
-                                        successful_port = port
-                                        
-                                    print(f"[PING] {target_ip}:{port}: {ping_time:.2f}ms - SUCCESS")
-                                else:
-                                    print(f"[PING] {target_ip}:{port}: Invalid response (not PONG)")
-                            except:
-                                print(f"[PING] {target_ip}:{port}: Invalid response format")
-                        else:
-                            print(f"[PING] {target_ip}:{port}: No response")
-                    else:
-                        print(f"[PING] {target_ip}:{port}: Send failed")
-                        
+                    ping_time = (end_time - start_time) * 1000
                     sock.close()
+                    
+                    if ping_time < best_ping:
+                        best_ping = ping_time
+                        successful_port = port
+                    
+                    print(f"[PING] {target_ip}:{port}: {ping_time:.2f}ms - CONNECTION SUCCESS")
+                    
+                    # ✅ ERFOLGREICHEN PORT GEFUNDEN - ABBRECHEN
+                    break
                     
                 except socket.timeout:
                     print(f"[PING] {server_ip}:{port}: Timeout")
                     continue
                 except ConnectionRefusedError:
                     print(f"[PING] {server_ip}:{port}: Connection refused")
+                    continue
+                except OSError as e:
+                    if "No route to host" in str(e):
+                        print(f"[PING] {server_ip}:{port}: No route to host")
+                    else:
+                        print(f"[PING] {server_ip}:{port}: OS error - {e}")
                     continue
                 except Exception as e:
                     print(f"[PING] {server_ip}:{port}: Error - {e}")
