@@ -3195,7 +3195,7 @@ class CALL:
         self.connection_lock = threading.Lock()
         self.connection_state = "disconnected"
     def audio_stream_in(self, target_ip, listen_port, iv, key, expected_session_id):
-        """Empfängt Audio MIT PKCS7 PADDING ENTFERNUNG"""
+        """Empfängt Audio MIT KORREKTEM PADDING-HANDLING"""
         audio_socket = None
         
         if not self.audio_available:
@@ -3260,25 +3260,8 @@ class CALL:
             # ✅ KORREKTUR: Session-ID als Bytes für Vergleich vorbereiten
             expected_session_bytes = expected_session_id.encode('utf-8')[:16].ljust(16, b'\0')
             
-            # ✅ PKCS7 PADDING ENTFERNUNGS-FUNKTION
-            def remove_pkcs7_padding(data):
-                """Entfernt PKCS7 Padding"""
-                if len(data) == 0:
-                    return data
-                padding_length = data[-1]
-                # Validiere Padding
-                if padding_length > len(data):
-                    return data  # Ungültiges Padding, gebe Original zurück
-                if all(byte == padding_length for byte in data[-padding_length:]):
-                    return data[:-padding_length]
-                return data  # Kein gültiges PKCS7 Padding, gebe Original zurück
-            
-            # ✅ DETAILLIERTES DEBUGGING FÜR VERSCHLÜSSELUNG
             print(f"[AUDIO IN DEBUG] Expected Session ID (hex): {expected_session_bytes.hex()}")
-            print(f"[AUDIO IN DEBUG] IV length: {len(iv) if iv else 'None'}, Key length: {len(key) if key else 'None'}")
-            if iv and key:
-                print(f"[AUDIO IN DEBUG] IV (first 8): {iv[:8].hex() if len(iv) >= 8 else 'N/A'}")
-                print(f"[AUDIO IN DEBUG] Key (first 8): {key[:8].hex() if len(key) >= 8 else 'N/A'}")
+            print(f"[AUDIO IN DEBUG] IV length: {len(iv)}, Key length: {len(key)}")
             
             while self.active_call and self.audio_available:
                 try:
@@ -3292,9 +3275,8 @@ class CALL:
                             received_session_bytes = data[:16]
                             encrypted_data = data[16:]
                             
-                            if packet_counter <= 5:
+                            if packet_counter <= 10:
                                 print(f"[AUDIO IN DEBUG] Packet #{packet_counter}: {len(data)} bytes from {addr}")
-                                print(f"[AUDIO IN DEBUG] Session ID check (bytes): {received_session_bytes.hex()} vs expected: {expected_session_bytes.hex()}")
                                 print(f"[AUDIO IN DEBUG] Encrypted data: {len(encrypted_data)} bytes")
                                 print(f"[AUDIO IN DEBUG] Encrypted divisible by 16: {len(encrypted_data) % 16 == 0}")
                             
@@ -3302,95 +3284,78 @@ class CALL:
                             if received_session_bytes == expected_session_bytes:
                                 valid_packets += 1
                                 
-                                # ✅ ✅ ✅ KONSISTENTE ENTSCHELÜSSELUNG MIT PKCS7 PADDING
+                                # ✅ ✅ ✅ KORREKTE ENTSCHELÜSSELUNG MIT PADDING-HANDLING
+                                decrypted_data = None
+                                
+                                # VERSUCH 1: Normale Entschlüsselung
                                 try:
-                                    if packet_counter <= 5:
-                                        print(f"[AUDIO IN DEBUG] Attempting decryption for packet #{packet_counter}")
-                                    
-                                    # Verschlüsselung initialisieren
-                                    cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)  # 0 = decrypt
-                                    
-                                    # Entschlüsseln
+                                    cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
                                     decrypted_data = cipher.update(encrypted_data)
                                     decrypted_data += cipher.final()
+                                    print(f"✅ [AUDIO IN] Decryption successful: {len(decrypted_data)} bytes")
+                                except Exception as e1:
+                                    print(f"🔴 [AUDIO IN] Attempt 1 failed: {str(e1)}")
                                     
-                                    if packet_counter <= 5:
-                                        print(f"✅ [AUDIO IN] Decryption successful! Decrypted data: {len(decrypted_data)} bytes")
+                                    # VERSUCH 2: Mit Padding falls nicht durch 16 teilbar
+                                    if len(encrypted_data) % 16 != 0:
+                                        print(f"🔧 [AUDIO IN] Adding padding for attempt 2")
+                                        # Berechne korrektes Padding
+                                        padding_needed = (16 - (len(encrypted_data) % 16)) % 16
+                                        encrypted_data_padded = encrypted_data + b'\x00' * padding_needed
+                                        print(f"🔧 [AUDIO IN] Padded from {len(encrypted_data)} to {len(encrypted_data_padded)} bytes")
+                                        
+                                        try:
+                                            cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
+                                            decrypted_data = cipher.update(encrypted_data_padded)
+                                            decrypted_data += cipher.final()
+                                            print(f"✅ [AUDIO IN] Attempt 2 with padding successful: {len(decrypted_data)} bytes")
+                                        except Exception as e2:
+                                            print(f"🔴 [AUDIO IN] Attempt 2 failed: {str(e2)}")
+                                            continue
+                                
+                                if decrypted_data is not None:
+                                    # ✅ PKCS7 PADDING ENTFERNUNG
+                                    def remove_pkcs7_padding(data):
+                                        if len(data) == 0:
+                                            return data
+                                        padding_length = data[-1]
+                                        # Validiere Padding
+                                        if padding_length > len(data) or padding_length == 0:
+                                            return data
+                                        if all(byte == padding_length for byte in data[-padding_length:]):
+                                            return data[:-padding_length]
+                                        return data
                                     
-                                    # ✅ PKCS7 PADDING ENTFERNEN
                                     unpadded_data = remove_pkcs7_padding(decrypted_data)
                                     
                                     if packet_counter <= 5:
-                                        print(f"[AUDIO IN DEBUG] After PKCS7 removal: {len(unpadded_data)} bytes")
+                                        print(f"🔧 [AUDIO IN] After padding removal: {len(unpadded_data)} bytes")
                                     
-                                    # ✅ ✅ ✅ UNIVERSALE AUDIO-GRÖSSEN HANDHABUNG
-                                    try:
-                                        expected_size = self.audio_config.CHUNK * self.audio_config.get_sample_size(self.audio_config.FORMAT)
-                                        
-                                        if packet_counter <= 5:
-                                            print(f"[AUDIO IN DEBUG] Expected size: {expected_size}, Actual size: {len(unpadded_data)}")
-                                        
-                                        # ✅ FLEXIBLE GRÖSSENANPASSUNG
-                                        actual_size = len(unpadded_data)
-                                        
-                                        if actual_size == expected_size:
-                                            # Perfekte Größe
-                                            self.output_stream.write(unpadded_data)
-                                            if packet_counter % 100 == 0:
-                                                print(f"[AUDIO IN] Perfect frame: {actual_size} bytes")
-                                        
-                                        elif actual_size == 768:
-                                            # Spezielle 768-Byte Größe
-                                            self.output_stream.write(unpadded_data)
-                                            if packet_counter % 100 == 0:
-                                                print(f"✅ [AUDIO IN] 768-byte frame processed")
-                                        
-                                        elif actual_size > expected_size:
-                                            # Zu groß - kürzen
-                                            unpadded_data = unpadded_data[:expected_size]
-                                            self.output_stream.write(unpadded_data)
-                                            if packet_counter % 100 == 0:
-                                                print(f"[AUDIO IN] Truncated frame: {actual_size} -> {expected_size} bytes")
-                                        
-                                        elif actual_size < expected_size:
-                                            # Zu klein - auffüllen mit Stille
-                                            padding_needed = expected_size - actual_size
-                                            unpadded_data += b"\x00" * padding_needed
-                                            self.output_stream.write(unpadded_data)
-                                            if packet_counter % 100 == 0:
-                                                print(f"[AUDIO IN] Padded frame: {actual_size} -> {expected_size} bytes")
-                                        
-                                        else:
-                                            # Fallback: Direkt schreiben
-                                            self.output_stream.write(unpadded_data)
-                                            if packet_counter % 100 == 0:
-                                                print(f"[AUDIO IN] Fallback frame: {actual_size} bytes")
-                                            
-                                    except Exception as size_error:
-                                        print(f"[AUDIO IN SIZE ERROR] {str(size_error)}")
-                                        # Notfall: Direkt abspielen
+                                    # ✅ ✅ ✅ AUDIO AUSGABE
+                                    expected_size = self.audio_config.CHUNK * self.audio_config.get_sample_size(self.audio_config.FORMAT)
+                                    actual_size = len(unpadded_data)
+                                    
+                                    if actual_size == expected_size:
                                         self.output_stream.write(unpadded_data)
-                                        print(f"[AUDIO IN] Emergency fallback: {len(unpadded_data)} bytes")
+                                    elif actual_size == 768:
+                                        self.output_stream.write(unpadded_data)
+                                    elif actual_size > expected_size:
+                                        unpadded_data = unpadded_data[:expected_size]
+                                        self.output_stream.write(unpadded_data)
+                                    elif actual_size < expected_size:
+                                        padding_needed = expected_size - actual_size
+                                        unpadded_data += b"\x00" * padding_needed
+                                        self.output_stream.write(unpadded_data)
+                                    else:
+                                        self.output_stream.write(unpadded_data)
                                     
                                     if valid_packets % 100 == 0:
                                         print(f"[AUDIO IN] Received {valid_packets} valid packets")
-                                        
-                                except Exception as e:
-                                    print(f"🔴 [AUDIO IN DECRYPT ERROR] {str(e)}")
-                                    print(f"[AUDIO IN DEBUG] Key available: {key is not None}")
-                                    print(f"[AUDIO IN DEBUG] IV available: {iv is not None}")
-                                    print(f"[AUDIO IN DEBUG] Key length: {len(key) if key else 0}")
-                                    print(f"[AUDIO IN DEBUG] IV length: {len(iv) if iv else 0}")
-                                    print(f"[AUDIO IN DEBUG] Encrypted data length: {len(encrypted_data)}")
-                                    print(f"[AUDIO IN DEBUG] Encrypted data divisible by 16: {len(encrypted_data) % 16 == 0}")
-                                    continue
                                     
                             else:
                                 wrong_session_counter += 1
-                                if wrong_session_counter <= 5:  # Nur erste paar anzeigen
+                                if wrong_session_counter <= 5:
                                     print(f"[AUDIO IN] Wrong session ID: {received_session_bytes.hex()} vs {expected_session_bytes.hex()}")
-                                elif wrong_session_counter % 100 == 0:
-                                    print(f"[AUDIO IN] Filtered {wrong_session_counter} wrong session packets")
                                 continue
                                 
                         except Exception as e:
@@ -3430,7 +3395,7 @@ class CALL:
         
         return True        
     def audio_stream_out(self, target_ip, target_port, iv, key, session_id):
-        """Sendet Audio MIT ERZWUNGENEM PADDING"""
+        """Sendet Audio MIT KORREKTEM PADDING"""
         if not self.audio_available:
             print("❌ [AUDIO OUT] Kein Audio-Backend verfügbar")
             return False
@@ -3439,25 +3404,16 @@ class CALL:
         
         print(f"[AUDIO OUT] Starting OUTGOING stream for session {session_id}")
         print(f"[AUDIO OUT] Target: {target_ip}:{target_port}")
-        print(f"[AUDIO OUT] Initial active_call: {self.active_call}")
         
         # Warte auf active_call
         import time
         wait_start = time.time()
-        check_count = 0
-        
-        while not self.active_call:
-            check_count += 1
-            current_time = time.time()
-            
-            if check_count % 10 == 0:
-                print(f"[AUDIO OUT] Waiting for active_call... ({check_count} checks, {current_time - wait_start:.1f}s)")
-                
-            if (current_time - wait_start) > 3:
-                print("❌ [AUDIO OUT] Timeout waiting for active_call")
-                return False
-                
+        while not self.active_call and (time.time() - wait_start) < 3.0:
             time.sleep(0.01)
+        
+        if not self.active_call:
+            print("❌ [AUDIO OUT] Timeout waiting for active_call")
+            return False
             
         print(f"✅ [AUDIO OUT] Active call confirmed: {self.active_call}")
         
@@ -3478,20 +3434,18 @@ class CALL:
             
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 
-            # ✅ REUSEADDR + REUSEPORT für maximale Kompatibilität
+            # ✅ SOCKET OPTIONEN
             try:
                 audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEPORT, 1)
-                print("✅ [AUDIO OUT] SO_REUSEPORT enabled")
             except AttributeError:
-                print("✅ [AUDIO OUT] SO_REUSEPORT not available (Windows)")
+                pass
             
             try:
                 audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-                print("✅ [AUDIO OUT] SO_REUSEADDR enabled")
-            except Exception as e:
-                print(f"✅ [AUDIO OUT] SO_REUSEADDR failed: {e}")
+            except Exception:
+                pass
 
-            # ✅ BEIDE binden an Port 51821 (mit REUSEADDR/REUSEPORT möglich)
+            # ✅ BINDING
             try:
                 audio_socket.bind(('0.0.0.0', 51821))
                 print(f"✅ [AUDIO OUT] Bound to source port 51821")
@@ -3502,7 +3456,6 @@ class CALL:
             audio_socket.settimeout(0.1)
             
             print(f"🎤 [AUDIO OUT] Transmission ACTIVE for session {session_id}")
-            print(f"   Source: port 51821, Target: {target_ip}:{target_port}")
             
             packet_counter = 0
             
@@ -3526,42 +3479,48 @@ class CALL:
                     else:
                         filtered_data = raw_data
                     
-                    # ✅ ✅ ✅ ERZWUNGENES PADDING FÜR AES
+                    # ✅ ✅ ✅ KORREKTE VERSCHLÜSSELUNG MIT PADDING
                     try:
                         original_length = len(filtered_data)
                         
-                        # ✅ WICHTIG: PADDING ERZwingen - auch wenn bereits durch 16 teilbar
-                        # AES benötigt IMMER Padding, auch wenn die Daten bereits block-aligned sind
-                        padding_needed = 16 - (original_length % 16)
+                        # ✅ KORREKTES PADDING BERECHNEN
+                        # Berechne wie viele Bytes wir für 16-Byte Alignment brauchen
+                        padding_needed = (16 - (original_length % 16)) % 16
                         if padding_needed == 0:
-                            padding_needed = 16  # PKCS7: Wenn bereits aligned, füge ganzen Block hinzu
+                            padding_needed = 16  # PKCS7: Füge ganzen Block hinzu wenn bereits aligned
                         
                         # Padding hinzufügen
                         padded_data = filtered_data + bytes([padding_needed]) * padding_needed
                         
-                        if packet_counter <= 10:  # Erste 10 Pakete debuggen
+                        if packet_counter <= 5:
                             print(f"🔧 [AUDIO OUT PADDING] Original: {original_length} bytes")
                             print(f"🔧 [AUDIO OUT PADDING] Padding needed: {padding_needed} bytes")
                             print(f"🔧 [AUDIO OUT PADDING] Padded: {len(padded_data)} bytes")
                             print(f"🔧 [AUDIO OUT PADDING] Padded divisible by 16: {len(padded_data) % 16 == 0}")
                         
                         # Verschlüsseln
-                        cipher = EVP.Cipher("aes_256_cbc", key, iv, 1)  # 1 = encrypt
+                        cipher = EVP.Cipher("aes_256_cbc", key, iv, 1)
                         encrypted_data = cipher.update(padded_data)
                         encrypted_data += cipher.final()
                         
-                        if packet_counter <= 10:
-                            print(f"✅ [AUDIO OUT] Encryption successful: {len(encrypted_data)} bytes")
+                        if packet_counter <= 5:
+                            print(f"✅ [AUDIO OUT] Encrypted: {len(encrypted_data)} bytes")
                             print(f"✅ [AUDIO OUT] Encrypted divisible by 16: {len(encrypted_data) % 16 == 0}")
+                        
+                        # ✅ VALIDIERE DASS VERSCHLÜSSELTE DATEN DURCH 16 TEILBAR SIND
+                        if len(encrypted_data) % 16 != 0:
+                            print(f"🔴 [AUDIO OUT CRITICAL] Encrypted data not divisible by 16: {len(encrypted_data)} bytes")
+                            # Füge zusätzliches Padding hinzu
+                            extra_padding = 16 - (len(encrypted_data) % 16)
+                            encrypted_data += b'\x00' * extra_padding
+                            print(f"🔧 [AUDIO OUT] Added emergency padding: {extra_padding} bytes")
+                            print(f"🔧 [AUDIO OUT] Final encrypted: {len(encrypted_data)} bytes")
                         
                     except Exception as encrypt_error:
                         print(f"🔴 [AUDIO OUT ENCRYPT ERROR] {str(encrypt_error)}")
-                        print(f"[AUDIO OUT DEBUG] Data length: {len(filtered_data)}")
-                        print(f"[AUDIO OUT DEBUG] Key length: {len(key) if key else 0}")
-                        print(f"[AUDIO OUT DEBUG] IV length: {len(iv) if iv else 0}")
                         continue
                     
-                    # ✅ SESSION-MARKIERUNG (immer 16 Bytes für Konsistenz)
+                    # ✅ SESSION-MARKIERUNG
                     session_header = session_id.encode('utf-8')[:16].ljust(16, b'\0')
                     packet_with_session = session_header + encrypted_data
                     
@@ -3571,27 +3530,22 @@ class CALL:
                         
                         if packet_counter % 100 == 0:
                             print(f"[AUDIO OUT] Sent packet {packet_counter}")
-                            print(f"   Audio: {original_length} bytes → Encrypted: {len(encrypted_data)} bytes")
                             
                     except Exception as send_error:
                         print(f"[AUDIO OUT SEND ERROR] {str(send_error)}")
-                        if "Message too long" in str(send_error):
-                            print(f"[AUDIO OUT] Packet too large: {len(packet_with_session)} bytes")
                         continue
                     
                 except socket.timeout:
                     continue
                 except Exception as e:
                     if self.active_call:
-                        print(f"[AUDIO OUT ERROR] Session {session_id}: {str(e)}")
+                        print(f"[AUDIO OUT ERROR] {str(e)}")
                     break
                         
             print(f"[AUDIO OUT] Session {session_id} ended. Total packets: {packet_counter}")
                             
         except Exception as e:
             print(f"[AUDIO OUT SETUP ERROR] Session {session_id}: {str(e)}")
-            import traceback
-            traceback.print_exc()
             return False
         finally:
             if hasattr(self, 'input_stream') and self.input_stream:
@@ -3599,12 +3553,12 @@ class CALL:
                     self.input_stream.stop_stream()
                     self.input_stream.close()
                     self.input_stream = None
-                    print(f"✅ [AUDIO OUT] Session {session_id} - Input stream closed")
+                    print(f"✅ [AUDIO OUT] Input stream closed")
                 except Exception as e:
                     print(f"[AUDIO OUT CLOSE ERROR] {e}")
             if audio_socket:
                 audio_socket.close()
-                print(f"✅ [AUDIO OUT] Session {session_id} - Socket closed")
+                print(f"✅ [AUDIO OUT] Socket closed")
         
         return True
     def _start_audio_streams(self):
