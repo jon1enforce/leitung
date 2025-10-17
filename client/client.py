@@ -68,7 +68,7 @@ BUFFER_SIZE = 4096
 FORMAT = pyaudio.paInt16  # 16-Bit-Audio
 CHANNELS = 1  # Mono
 RATE = 44100  # Abtastrate (44.1 kHz)
-CHUNK = 1024  # Grösse der Audioblöcke in Frames
+CHUNK = 512  # Grösse der Audioblöcke in Frames
 
 # AES-Einstellungen
 ENC_METHOD = "aes_256_cbc"
@@ -998,7 +998,7 @@ class AudioConfig:
         
         # Standard-Qualität
         self.quality_profile = "middle"
-        self.CHUNK = 1024
+        self.CHUNK = 256
         
         # Output Format-Check
         self.output_supports_24bit = True
@@ -1144,7 +1144,7 @@ class AudioConfig:
                     self.FORMAT = pyaudio.paInt16
                     self.RATE = 44100
                     self.CHANNELS = 1
-                    self.CHUNK = 1024
+                    self.CHUNK = 512
                     self.sample_width = 2
                     self.actual_format = "16-bit"
                     self.sample_format_name = "16-bit @ 44.1kHz (OpenBSD sndio)"
@@ -1208,7 +1208,7 @@ class AudioConfig:
             self.FORMAT = pyaudio.paInt16
             self.RATE = 44100
             self.CHANNELS = 1
-            self.CHUNK = 1024
+            self.CHUNK = 512
             self.sample_width = 2
             self.actual_format = "16-bit"
             self.sample_format_name = "16-bit @ 44.1kHz (OpenBSD PyAudio)"
@@ -1232,7 +1232,7 @@ class AudioConfig:
             self.FORMAT = pyaudio.paInt16
             self.RATE = 44100
             self.CHANNELS = 1
-            self.CHUNK = 1024
+            self.CHUNK = 512
             self.sample_width = 2
             self.actual_format = "16-bit"
             self.sample_format_name = "16-bit @ 44.1kHz (Basic Fallback)"
@@ -1262,7 +1262,7 @@ class AudioConfig:
         self.FORMAT = pyaudio.paInt16
         self.RATE = 22050  # Noch niedrigere Rate für Stabilität
         self.CHANNELS = 1
-        self.CHUNK = 1024
+        self.CHUNK = 512
         self.sample_width = 2
         self.actual_format = "16-bit"
         self.sample_format_name = "16-bit @ 22.05kHz (EMERGENCY FALLBACK)"
@@ -1650,9 +1650,9 @@ class AudioConfig:
             
             # 6. Chunk-Größe anpassen (ohne Qualität zu ändern)
             if self.RATE >= 96000:
-                self.CHUNK = 1024
+                self.CHUNK = 256
             else:
-                self.CHUNK = 2048
+                self.CHUNK = 512
             
             print(f"[AUDIO] Final configuration (QUALITY PRESERVED):")
             print(f"  Format: {self.FORMAT} ({self.actual_format})")
@@ -1694,9 +1694,9 @@ class AudioConfig:
                 
                 # Chunk-Größe anpassen
                 if self.RATE >= 96000:
-                    self.CHUNK = 2048
+                    self.CHUNK = 256
                 else:
-                    self.CHUNK = 1024
+                    self.CHUNK = 512
                 
                 # ✅ TESTE OB DIE KONFIGURATION FUNKTIONIERT
                 if self._test_audio_configuration():
@@ -1808,9 +1808,9 @@ class AudioConfig:
         
         # Passe Chunk-Größe basierend auf Sample-Rate an
         if self.RATE >= 96000:
-            self.CHUNK = 1024
+            self.CHUNK = 256
         else:
-            self.CHUNK = 2048
+            self.CHUNK = 512
             
         self._print_config("Input")
     
@@ -2259,7 +2259,7 @@ Rauschprofil Informationen (180s Clear Room):
             print(f"[AUDIO TEST] Test signal generated ({len(test_signal)} bytes)")
             
             # Signal in Chunks abspielen
-            chunk_size = 1024
+            chunk_size = 256
             total_chunks = len(test_signal) // chunk_size
             
             for i in range(total_chunks):
@@ -2316,7 +2316,7 @@ Rauschprofil Informationen (180s Clear Room):
 class OdeToJoyGenerator:
     """🎵 Generator für Beethoven's 'Ode an die Freude' (9. Sinfonie)"""
     
-    def __init__(self, sample_rate=44100, chunk_size=1024):
+    def __init__(self, sample_rate=44100, chunk_size=256):
         self.sample_rate = sample_rate
         self.chunk_size = chunk_size
         self.position = 0
@@ -3387,7 +3387,7 @@ class CALL:
         
         return True    
     def audio_stream_in(self, target_ip, listen_port, iv, key, expected_session_id):
-        """Empfängt Audio OHNE PADDING-MANIPULATION"""
+        """Empfängt Audio MIT KORREKTER FEHLERBEHANDLUNG"""
         audio_socket = None
         
         if not self.audio_available:
@@ -3395,6 +3395,17 @@ class CALL:
             return False
                 
         print(f"[AUDIO IN] Starting listener for session {expected_session_id}")
+
+        # ✅ PKCS7 PADDING FUNKTION - AUSSERHALB DER SCHLEIFE!
+        def remove_pkcs7_padding(data):
+            if len(data) == 0:
+                return data
+            padding_length = data[-1]
+            if padding_length > len(data) or padding_length == 0:
+                return data
+            if all(byte == padding_length for byte in data[-padding_length:]):
+                return data[:-padding_length]
+            return data
 
         # Warte auf active_call
         import time
@@ -3433,6 +3444,7 @@ class CALL:
             
             packet_counter = 0
             valid_packets = 0
+            success_packets = 0
             
             # Session-ID als Bytes für Vergleich
             expected_session_bytes = expected_session_id.encode('utf-8')[:16].ljust(16, b'\0')
@@ -3450,60 +3462,63 @@ class CALL:
                         if received_session_bytes == expected_session_bytes:
                             valid_packets += 1
                             
-                            # ✅ ✅ ✅ WICHTIG: KEINE PADDING-MANIPULATION MEHR!
-                            # Die Daten SO WIE SIE SIND verwenden, auch wenn nicht durch 16 teilbar
+                            # ✅ VERSUCHE ENTSCHLÜSSELUNG
                             try:
                                 encrypted_length = len(encrypted_data)
                                 
-                                # 🔥 NEUE STRATEGIE: Daten unverändert lassen und Fehler abfangen
                                 if encrypted_length % 16 != 0:
                                     print(f"⚠️ [AUDIO IN PADDING WARN #{packet_counter}] Data not aligned: {encrypted_length} bytes")
-                                    # ABER: Nicht manipulieren! Einfach versuchen zu entschlüsseln
                                 
-                                # Versuche Entschlüsselung mit den originalen Daten
+                                # Versuche Entschlüsselung
                                 cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
                                 decrypted_data = cipher.update(encrypted_data)
+                                decrypted_data += cipher.final()  # Dieser Aufruf kann fehlschlagen
                                 
+                                # ✅ ENTSCHLÜSSELUNG ERFOLGREICH
+                                unpadded_data = remove_pkcs7_padding(decrypted_data)
+                                
+                                print(f"✅ [AUDIO IN SUCCESS #{packet_counter}] Decrypted: {len(decrypted_data)} -> {len(unpadded_data)} bytes")
+                                
+                                # Audio ausgeben
+                                if len(unpadded_data) > 0:
+                                    self.output_stream.write(unpadded_data)
+                                    success_packets += 1
+                                    
+                                if success_packets % 20 == 0:
+                                    print(f"🎉 [AUDIO IN] Successfully processed {success_packets} packets")
+                                    
+                            except Exception as decrypt_error:
+                                # 🔥 NEUE STRATEGIE: Direktes Padding ohne cipher.final()
+                                print(f"🔴 [AUDIO IN DECRYPT ERROR #{packet_counter}] {str(decrypt_error)}")
+                                
+                                # Versuche alternative Entschlüsselung
                                 try:
-                                    decrypted_data += cipher.final()
-                                    print(f"✅ [AUDIO IN DECRYPT #{packet_counter}] SUCCESS!")
+                                    # Manuelle Block-Entschlüsselung
+                                    block_size = 16
+                                    decrypted_blocks = []
                                     
-                                    # PKCS7 Padding entfernen
-                                    def remove_pkcs7_padding(data):
-                                        if len(data) == 0:
-                                            return data
-                                        padding_length = data[-1]
-                                        if padding_length > len(data) or padding_length == 0:
-                                            return data
-                                        if all(byte == padding_length for byte in data[-padding_length:]):
-                                            return data[:-padding_length]
-                                        return data
+                                    for i in range(0, len(encrypted_data), block_size):
+                                        block = encrypted_data[i:i + block_size]
+                                        if len(block) == block_size:
+                                            cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
+                                            decrypted_block = cipher.update(block)
+                                            decrypted_blocks.append(decrypted_block)
                                     
-                                    unpadded_data = remove_pkcs7_padding(decrypted_data)
-                                    
-                                    print(f"   Decrypted: {len(decrypted_data)} -> {len(unpadded_data)} bytes")
-                                    
-                                    # Audio ausgeben
-                                    if len(unpadded_data) > 0:
-                                        self.output_stream.write(unpadded_data)
+                                    if decrypted_blocks:
+                                        combined_data = b''.join(decrypted_blocks)
+                                        unpadded_data = remove_pkcs7_padding(combined_data)
                                         
-                                    if valid_packets % 50 == 0:
-                                        print(f"✅ [AUDIO IN] Processed {valid_packets} packets")
-                                        
-                                except Exception as final_error:
-                                    print(f"🔴 [AUDIO IN FINAL ERROR #{packet_counter}] {str(final_error)}")
-                                    # Versuche es ohne final() - vielleicht sind die Daten schon komplett
-                                    if len(decrypted_data) > 0:
-                                        unpadded_data = remove_pkcs7_padding(decrypted_data)
                                         if len(unpadded_data) > 0:
                                             self.output_stream.write(unpadded_data)
-                                            print(f"🔧 [AUDIO IN RECOVERED #{packet_counter}] Used partial data: {len(unpadded_data)} bytes")
-                                    
-                            except Exception as e1:
-                                print(f"🔴 [AUDIO IN DECRYPT #{packet_counter}] FAILED: {str(e1)}")
-                                print(f"   Encrypted data length: {len(encrypted_data)}")
-                                print(f"   Encrypted divisible by 16: {len(encrypted_data) % 16 == 0}")
-                                continue
+                                            success_packets += 1
+                                            print(f"🔧 [AUDIO IN RECOVERED #{packet_counter}] Manual decrypt: {len(unpadded_data)} bytes")
+                                        else:
+                                            print(f"⚠️ [AUDIO IN SKIP #{packet_counter}] No data after manual decrypt")
+                                    else:
+                                        print(f"⚠️ [AUDIO IN SKIP #{packet_counter}] No valid blocks found")
+                                        
+                                except Exception as manual_error:
+                                    print(f"🔴 [AUDIO IN MANUAL ERROR #{packet_counter}] {str(manual_error)}")
                                 
                 except socket.timeout:
                     continue
@@ -3512,7 +3527,7 @@ class CALL:
                         print(f"[AUDIO IN ERROR] {str(e)}")
                     break
                             
-            print(f"[AUDIO IN] Session ended. Total: {packet_counter}, Valid: {valid_packets}")
+            print(f"[AUDIO IN] Session ended. Total: {packet_counter}, Valid: {valid_packets}, Success: {success_packets}")
                                         
         except Exception as e:
             print(f"[AUDIO IN SETUP ERROR] {str(e)}")
@@ -3530,8 +3545,7 @@ class CALL:
             if audio_socket:
                 audio_socket.close()
         
-        return True
-
+        return success_packets > 0
     def _start_audio_streams(self):
         """Startet bidirektionale Audio-Streams - MIT FESTEM PORT 51821"""
         try:
@@ -5909,9 +5923,9 @@ class PHONEBOOK(ctk.CTk):
                     
                     # Chunk-Größe anpassen
                     if self.audio_config.RATE >= 96000:
-                        self.audio_config.CHUNK = 2048
+                        self.audio_config.CHUNK = 256
                     else:
-                        self.audio_config.CHUNK = 1024
+                        self.audio_config.CHUNK = 512
                     
                     print(f"[AUDIO] Quality set (safe): {self.audio_config.sample_format_name}")
                 
