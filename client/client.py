@@ -1024,7 +1024,18 @@ class AudioConfig:
         
         # Initialisiere Audio-System mit robustem Fallback
         self._initialize_audio_system()
-
+    def get_sample_size(self, format):
+        """Gibt die Sample-Größe in Bytes zurück"""
+        if format == pyaudio.paInt16:
+            return 2  # 16-bit = 2 Bytes
+        elif format == pyaudio.paInt24:
+            return 3  # 24-bit = 3 Bytes  
+        elif format == pyaudio.paInt32:
+            return 4  # 32-bit = 4 Bytes
+        elif format == pyaudio.paFloat32:
+            return 4  # 32-bit float = 4 Bytes
+        else:
+            return 2  # Default: 16-bit
     def _initialize_audio_system(self):
         """Robuste Audio-System-Initialisierung mit Fallback-Mechanismus"""
         max_retries = 3
@@ -3197,7 +3208,7 @@ class CALL:
         self.connection_state = "disconnected"
 
     def audio_stream_in(self, target_ip, listen_port, iv, key, expected_session_id):
-        """Empfängt Audio MIT REUSEADDR/REUSEPORT - KORRIGIERTE VERSION"""
+        """Empfängt Audio MIT REUSEADDR/REUSEPORT - MIT DETAILIERTEM DEBUGGING"""
         audio_socket = None
         
         if not self.audio_available:
@@ -3262,6 +3273,13 @@ class CALL:
             # ✅ KORREKTUR: Session-ID als Bytes für Vergleich vorbereiten
             expected_session_bytes = expected_session_id.encode('utf-8')[:16].ljust(16, b'\0')
             
+            # ✅ DETAILLIERTES DEBUGGING FÜR VERSCHLÜSSELUNG
+            print(f"[AUDIO IN DEBUG] Expected Session ID (hex): {expected_session_bytes.hex()}")
+            print(f"[AUDIO IN DEBUG] IV length: {len(iv) if iv else 'None'}, Key length: {len(key) if key else 'None'}")
+            if iv and key:
+                print(f"[AUDIO IN DEBUG] IV (first 8): {iv[:8].hex() if len(iv) >= 8 else 'N/A'}")
+                print(f"[AUDIO IN DEBUG] Key (first 8): {key[:8].hex() if len(key) >= 8 else 'N/A'}")
+            
             while self.active_call and self.audio_available:
                 try:
                     data, addr = audio_socket.recvfrom(4096)
@@ -3286,24 +3304,52 @@ class CALL:
                             if received_session_bytes == expected_session_bytes:
                                 valid_packets += 1
                                 
-                                # Entschlüsseln
+                                # ✅ ENTSCHELÜSSELUNG MIT DETAILLIERTEM DEBUGGING
                                 try:
-                                    cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
-                                    decrypted_data = cipher.update(encrypted_data) + cipher.final()
+                                    print(f"[AUDIO IN DEBUG] Attempting decryption for packet #{packet_counter}")
+                                    print(f"[AUDIO IN DEBUG] Encrypted data length: {len(encrypted_data)}")
+                                    
+                                    # Verschlüsselung initialisieren
+                                    cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)  # 0 = decrypt
+                                    
+                                    # Entschlüsseln
+                                    decrypted_data = cipher.update(encrypted_data)
+                                    decrypted_data += cipher.final()
+                                    
+                                    print(f"[AUDIO IN DEBUG] Decryption successful! Decrypted data: {len(decrypted_data)} bytes")
                                     
                                     # ✅ GRÖSSENPRÜFUNG für stabile Wiedergabe
-                                    expected_size = self.audio_config.CHUNK * self.audio_config.get_sample_size(self.audio_config.FORMAT)
-                                    if len(decrypted_data) == expected_size:
+                                    try:
+                                        expected_size = self.audio_config.CHUNK * self.audio_config.get_sample_size(self.audio_config.FORMAT)
+                                        print(f"[AUDIO IN DEBUG] Expected size: {expected_size}, Actual size: {len(decrypted_data)}")
+                                        
+                                        if len(decrypted_data) == expected_size:
+                                            self.output_stream.write(decrypted_data)
+                                            print(f"[AUDIO IN DEBUG] Audio written to output stream successfully")
+                                        else:
+                                            print(f"[AUDIO IN WARNING] Wrong decrypted size: {len(decrypted_data)} vs {expected_size}")
+                                            # TROTZDEM versuchen abzuspielen
+                                            self.output_stream.write(decrypted_data)
+                                            print(f"[AUDIO IN DEBUG] Audio written despite size mismatch")
+                                            
+                                    except Exception as size_error:
+                                        print(f"[AUDIO IN SIZE ERROR] {str(size_error)}")
+                                        # Fallback: Direkt abspielen
                                         self.output_stream.write(decrypted_data)
-                                    else:
-                                        print(f"[AUDIO IN WARNING] Wrong decrypted size: {len(decrypted_data)} vs {expected_size}")
+                                        print(f"[AUDIO IN DEBUG] Audio written as fallback")
                                     
                                     if valid_packets % 100 == 0:
                                         print(f"[AUDIO IN] Received {valid_packets} valid packets - Data: {len(decrypted_data)} bytes")
                                         
                                 except Exception as e:
-                                    if valid_packets < 10:
-                                        print(f"[AUDIO IN DECRYPT ERROR] {str(e)}")
+                                    print(f"🔴 [AUDIO IN DECRYPT ERROR] {str(e)}")
+                                    print(f"[AUDIO IN DEBUG] Key available: {key is not None}")
+                                    print(f"[AUDIO IN DEBUG] IV available: {iv is not None}")
+                                    print(f"[AUDIO IN DEBUG] Key length: {len(key) if key else 0}")
+                                    print(f"[AUDIO IN DEBUG] IV length: {len(iv) if iv else 0}")
+                                    print(f"[AUDIO IN DEBUG] Encrypted data length: {len(encrypted_data)}")
+                                    import traceback
+                                    traceback.print_exc()
                                     continue
                                     
                             else:
