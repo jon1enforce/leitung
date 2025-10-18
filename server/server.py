@@ -3497,7 +3497,7 @@ class Server:
             except:
                 pass         
     def _handle_relay_manager_request(self, register_data, client_socket, client_address):
-        """KORRIGIERT: Erkennt DISCOVERY_REQUEST und verarbeitet sie korrekt"""
+        """KORRIGIERT: Sendet IMMER framed SIP"""
         try:
             if isinstance(register_data, bytes):
                 try:
@@ -3514,7 +3514,6 @@ class Server:
             
             print(f"[RELAY DEBUG] Received message from {client_address}")
             print(f"[RELAY DEBUG] Message type: {custom_data.get('MESSAGE_TYPE')}")
-            print(f"[RELAY DEBUG] Custom data keys: {list(custom_data.keys())}")
             
             # ✅ WICHTIG: DISCOVERY_REQUEST ERKENNEN UND BEHANDELN
             message_type = custom_data.get('MESSAGE_TYPE')
@@ -3526,7 +3525,7 @@ class Server:
                 # Hole Server-Liste vom Relay Manager
                 servers_data = self.relay_manager.get_server_list_for_client()
                 
-                # Baue Response
+                # ✅ KORREKTUR: Framed SIP Response bauen
                 response_data = {
                     "MESSAGE_TYPE": "DISCOVERY_RESPONSE",
                     "servers": servers_data.get('servers', {}),
@@ -3536,16 +3535,23 @@ class Server:
                     "status": "success"
                 }
                 
+                # ✅ KORREKTUR: Framed SIP Nachricht bauen
                 response_msg = self.build_sip_message("200 OK", client_address[0], response_data)
+                
+                print(f"[DISCOVERY DEBUG] Sending framed SIP response to {client_address}")
+                print(f"[DISCOVERY DEBUG] Response size: {len(response_msg)} bytes")
+                print(f"[DISCOVERY DEBUG] Response preview: {response_msg[:100]}...")
+                
+                # ✅ KORREKTUR: MIT FRAMED SIP SENDEN
                 success = send_frame(client_socket, response_msg.encode('utf-8'))
                 
                 if success:
-                    print(f"[DISCOVERY] ✅ Sent discovery response to {client_address}")
+                    print(f"[DISCOVERY] ✅ Sent FRAMED SIP discovery response to {client_address}")
                 else:
-                    print(f"[DISCOVERY] ❌ Failed to send discovery response to {client_address}")
+                    print(f"[DISCOVERY] ❌ Failed to send framed SIP response to {client_address}")
                 
                 return success
-            
+                
             # 2. REGISTRATION REQUEST - NICHT an Relay Manager weiterleiten!
             elif (message_type == 'REGISTER' or 
                   'PUBLIC_KEY' in custom_data or
@@ -3563,27 +3569,27 @@ class Server:
                     "status": "success"
                 }
                 
+                # ✅ KORREKTUR: Framed SIP
                 response_msg = self.build_sip_message("200 OK", client_address[0], response_data)
                 success = send_frame(client_socket, response_msg.encode('utf-8'))
                 
                 if success:
-                    print(f"[PING] ✅ Sent PONG to {client_address}")
+                    print(f"[PING] ✅ Sent FRAMED SIP PONG to {client_address}")
                 return success
             
             # 4. RELAY INTERNE REQUESTS (nur von anderen Servern)
             request_type = custom_data.get('type')
             if request_type in ['get_servers', 'register', 'update_load']:
                 print(f"[RELAY] Handling internal relay request: {request_type}")
+                
+                # ✅ KORREKTUR: Auch hier framed SIP verwenden
                 return self.relay_manager.handle_seed_request(register_data, client_socket, client_address)
             
             # 5. UNBEKANNTE REQUESTS
             else:
                 print(f"[RELAY WARNING] Unknown request type from {client_address}")
-                print(f"[RELAY DEBUG] Message type: {message_type}")
-                print(f"[RELAY DEBUG] Request type: {request_type}")
-                print(f"[RELAY DEBUG] Full custom data: {custom_data}")
                 
-                # Trotzdem antworten damit Client nicht hängt
+                # ✅ KORREKTUR: Framed SIP Error
                 response_data = {
                     "MESSAGE_TYPE": "ERROR",
                     "error": "UNKNOWN_REQUEST_TYPE",
@@ -3593,13 +3599,29 @@ class Server:
                 }
                 
                 response_msg = self.build_sip_message("400 Bad Request", client_address[0], response_data)
-                send_frame(client_socket, response_msg.encode('utf-8'))
-                return True
+                success = send_frame(client_socket, response_msg.encode('utf-8'))
                 
+                if success:
+                    print(f"[RELAY] ✅ Sent FRAMED SIP error response to {client_address}")
+                return success
+                    
         except Exception as e:
             print(f"[RELAY ERROR] Request handling failed: {e}")
             import traceback
             traceback.print_exc()
+            
+            # ✅ KORREKTUR: Auch Fehler als framed SIP senden
+            try:
+                error_data = {
+                    "MESSAGE_TYPE": "ERROR", 
+                    "error": f"INTERNAL_SERVER_ERROR: {str(e)}",
+                    "timestamp": int(time.time())
+                }
+                error_msg = self.build_sip_message("500 Error", client_address[0], error_data)
+                send_frame(client_socket, error_msg.encode('utf-8'))
+            except:
+                pass
+                
             return False
     def _handle_relay_message_during_session(self, frame_data, client_socket, client_address, client_name):
         """Verarbeitet Relay-Nachrichten während einer aktiven Session"""
