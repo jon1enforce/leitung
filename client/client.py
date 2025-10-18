@@ -2,7 +2,7 @@ from access_monitor import SecurityMonitor
 import socket
 import threading
 from M2Crypto import RSA, BIO, EVP, Rand
-from M2Crypto.Errors import PaddingError
+#from M2Crypto.Errors import PaddingError
 from tkinter import ttk, messagebox, filedialog
 import json
 import os
@@ -390,7 +390,7 @@ def send_frame(sock, data):
         return False
 
 def recv_frame(sock, timeout=30):
-    """EINHEITLICHER Frame-Empfänger für ALLE Nachrichten - IDENTISCH AUF CLIENT UND SERVER"""
+    """EINHEITLICHER Frame-Empfänger für ALLE Nachrichten - MIT ROH-SIP ERKENNUNG"""
     original_timeout = sock.gettimeout()
     sock.settimeout(timeout)
     
@@ -428,9 +428,71 @@ def recv_frame(sock, timeout=30):
             print(f"❌ [FRAME] INVALID HEADER from {peer_info}: {header.hex()} - {e}")
             return None
         
-        # 3. EINHEITLICHE SICHERHEITSCHECKS
+        # 3. 🔥 AUTOMATISCHE ROH-SIP ERKENNUNG
         MAX_FRAME_SIZE = 10 * 1024 * 1024  # 10MB Maximum (KONSISTENT)
         
+        if length == 1397313583:  # "SIP!" in Little Endian
+            print(f"🔄 [FRAME] Detected RAW SIP response from {peer_info}, switching to raw mode")
+            
+            # Die ersten 4 Bytes sind bereits "SIP!", jetzt den Rest lesen
+            data = header  # Enthält bereits die 4 "SIP!" Bytes
+            
+            # Lese den Rest der Roh-SIP Nachricht
+            sock.settimeout(timeout)
+            try:
+                while True:
+                    remaining_time = timeout - (time.time() - start_time)
+                    if remaining_time <= 0:
+                        break
+                        
+                    sock.settimeout(min(2, remaining_time))
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        break
+                    
+                    data += chunk
+                    
+                    # Prüfe auf vollständige SIP-Nachricht (doppelte CRLF + optional Body)
+                    if b'\r\n\r\n' in data:
+                        header_end = data.find(b'\r\n\r\n') + 4
+                        headers_text = data[:header_end].decode('utf-8', errors='ignore')
+                        
+                        # Prüfe Content-Length für Body
+                        content_length = 0
+                        for line in headers_text.split('\r\n'):
+                            if line.lower().startswith('content-length:'):
+                                try:
+                                    content_length = int(line.split(':')[1].strip())
+                                    break
+                                except:
+                                    pass
+                        
+                        if content_length > 0:
+                            # Warte auf kompletten Body
+                            total_needed = header_end + content_length
+                            if len(data) >= total_needed:
+                                print(f"✅ [RAW SIP] Complete message received: {len(data)} bytes")
+                                break
+                        else:
+                            # Kein Body - Nachricht ist komplett
+                            print(f"✅ [RAW SIP] Header-only message received: {len(data)} bytes")
+                            break
+                    
+                    # Größenlimit prüfen
+                    if len(data) > MAX_FRAME_SIZE:
+                        print(f"⚠️ [RAW SIP] Message exceeds max size, truncating: {len(data)} bytes")
+                        data = data[:MAX_FRAME_SIZE]
+                        break
+                        
+            except socket.timeout:
+                # Timeout ist normal bei unvollständigen Nachrichten
+                if len(data) > 4:
+                    print(f"✅ [RAW SIP] Incomplete but usable message: {len(data)} bytes")
+            
+            print(f"📨 [RAW SIP] Final data: {len(data)} bytes")
+            return data
+        
+        # 4. NORMALE FRAMED SIP VERARBEITUNG
         if length > MAX_FRAME_SIZE:
             print(f"❌ [FRAME] OVERSIZE from {peer_info}: {length} bytes > {MAX_FRAME_SIZE} bytes")
             raise ValueError(f"Frame too large: {length} bytes (max: {MAX_FRAME_SIZE} bytes)")
@@ -443,7 +505,7 @@ def recv_frame(sock, timeout=30):
             print(f"📭 [FRAME] Empty frame from {peer_info}")
             return b''
         
-        # 4. Body lesen
+        # 5. Body lesen
         received = b''
         bytes_received = 0
         
@@ -464,7 +526,7 @@ def recv_frame(sock, timeout=30):
             received += chunk
             bytes_received += len(chunk)
         
-        # 5. Erfolgslogging
+        # 6. Erfolgslogging
         print(f"✅ [FRAME] Successfully received {length} bytes from {peer_info}")
         return received
         
@@ -2539,7 +2601,7 @@ class ClientRelayManager:
         except Exception as e:
             print(f"Debug failed: {e}")
     def discover_servers(self):
-        """Entdeckt verfügbare Server von Seed-Servern - VOLLSTÄNDIG KORRIGIERT"""
+        """KORRIGIERT: Verarbeitet VOLLSTÄNDIGE SIP Responses vom Server"""
         print("[CLIENT RELAY] Starting server discovery...")
         
         discovered_servers = {}
@@ -2551,19 +2613,18 @@ class ClientRelayManager:
             print(f"⚠️ [CLIENT RELAY] Client name not initialized, using fallback: {client_name}")
         
         for seed_host, seed_port in self.SEED_SERVERS:
+            sock = None
             try:
                 print(f"[CLIENT RELAY] Trying {seed_host}:{seed_port}")
                 
-                # ✅ DNS-AUFLÖSUNG MIT FALLBACK
+                # ✅ DNS-AUFLÖSUNG
                 target_ip = None
                 try:
-                    # Methode 1: getaddrinfo (modern)
                     addr_info = socket.getaddrinfo(seed_host, seed_port, socket.AF_INET, socket.SOCK_STREAM)
                     if addr_info:
-                        target_ip = addr_info[0][4][0]  # Erste IPv4 Adresse
+                        target_ip = addr_info[0][4][0]
                         print(f"[DNS] getaddrinfo resolved {seed_host} -> {target_ip}")
                 except socket.gaierror:
-                    # Methode 2: gethostbyname (Fallback)
                     try:
                         target_ip = socket.gethostbyname(seed_host)
                         print(f"[DNS] gethostbyname resolved {seed_host} -> {target_ip}")
@@ -2575,15 +2636,15 @@ class ClientRelayManager:
                     print(f"[CLIENT RELAY] ❌ Could not resolve {seed_host}, skipping")
                     continue
                 
-                # ✅ VERBINDUNG MIT RESOLVED IP
+                # ✅ VERBINDUNG
                 sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
                 sock.settimeout(10)
                 
                 try:
                     sock.connect((target_ip, seed_port))
+                    print(f"[CLIENT RELAY] ✅ Connected to {target_ip}:{seed_port}")
                 except (ConnectionRefusedError, OSError) as e:
                     print(f"[CLIENT RELAY] Connection failed to {target_ip}:{seed_port}: {e}")
-                    sock.close()
                     continue
                 
                 # ✅ VERIFY-CODE GENERIEREN
@@ -2591,22 +2652,21 @@ class ClientRelayManager:
                 verify_code = generator.generate_verify_code()
                 print(f"[CLIENT RELAY] Generated verify-code for discovery: {verify_code}")
                 
-                # ✅ DISCOVERY REQUEST MIT KORREKTEM FORMAT
+                # ✅ DISCOVERY REQUEST
                 request_data = {
-                    "MESSAGE_TYPE": "DISCOVERY_REQUEST",  # ✅ EXPLIZITER MESSAGE_TYPE
+                    "MESSAGE_TYPE": "DISCOVERY_REQUEST",
                     "type": "get_servers",
                     "requester_type": "client", 
                     "client_name": client_name,
-                    "timestamp": int(time.time())
+                    "timestamp": int(time.time()),
+                    "verify_code": verify_code
                 }
                 
-                # ✅ BAUE SIP NACHRICHT MIT VERIFY-CODE
+                # ✅ BAUE SIP NACHRICHT
                 sip_message = self.client.build_sip_message("MESSAGE", seed_host, request_data)
                 
-                # ✅ MANUELL VERIFY-HEADER HINZUFÜGEN
+                # ✅ VERIFY-HEADER HINZUFÜGEN
                 lines = sip_message.split('\r\n')
-                
-                # Finde die Stelle wo wir den Verify-Header einfügen können (vor Content-Headern)
                 insert_position = -1
                 for i, line in enumerate(lines):
                     if line.startswith('Content-Type:') or line.startswith('Content-Length:'):
@@ -2616,103 +2676,93 @@ class ClientRelayManager:
                 if insert_position != -1:
                     lines.insert(insert_position, f"Verify-Code: {verify_code}")
                 else:
-                    # Falls keine Content-Header gefunden, vor dem leeren Zeilen-Trenner einfügen
                     for i, line in enumerate(lines):
                         if line == '':
                             lines.insert(i, f"Verify-Code: {verify_code}")
                             break
                     else:
-                        # Notfall: am Ende einfügen
                         lines.insert(-1, f"Verify-Code: {verify_code}")
                 
                 sip_message_with_verify = '\r\n'.join(lines)
                 
-                print(f"[CLIENT RELAY] Sending discovery request to {target_ip}:{seed_port} with verify-code: {verify_code}")
+                print(f"[CLIENT RELAY] Sending discovery request to {target_ip}:{seed_port}")
                 
-                # ✅ SENDE REQUEST MIT FRAMED SIP
-                if send_frame(sock, sip_message_with_verify.encode('utf-8')):
-                    # ✅ EMPFANGE RESPONSE
-                    print(f"[CLIENT RELAY] Waiting for response from {target_ip}:{seed_port}")
-                    response_data = recv_frame(sock, timeout=10)
+                # ✅ SENDE REQUEST
+                if not send_frame(sock, sip_message_with_verify.encode('utf-8')):
+                    print(f"[CLIENT RELAY ERROR] Failed to send framed SIP to {target_ip}:{seed_port}")
+                    continue
+                
+                print(f"[CLIENT RELAY] ✅ Request sent, waiting for response...")
+                
+                # ✅ EMPFANGE RESPONSE
+                response_data = recv_frame(sock, timeout=10)
+                
+                if not response_data:
+                    print(f"[CLIENT RELAY] No response from {target_ip}:{seed_port}")
+                    continue
+                
+                print(f"[CLIENT RELAY] ✅ Received response: {len(response_data)} bytes from {target_ip}")
+                
+                try:
+                    # ✅ DECODE RESPONSE
+                    response_str = response_data.decode('utf-8')
+                    print(f"[CLIENT RELAY DEBUG] Raw response preview: {response_str[:200]}...")
                     
-                    if response_data:
-                        print(f"[CLIENT RELAY] Received {len(response_data)} bytes from {target_ip}")
+                    # ✅ ✅ ✅ KRITISCHE KORREKTUR: PARSE VOLLSTÄNDIGE SIP-NACHRICHT
+                    sip_data = self.client.parse_sip_message(response_str)
+                    if not sip_data:
+                        print(f"[CLIENT RELAY] Failed to parse SIP message from {target_ip}")
+                        print(f"[CLIENT RELAY DEBUG] Response that failed parsing: {response_str[:500]}")
+                        continue
+                    
+                    # ✅ EXTRAHIERE CUSTOM_DATA AUS DEM GEPARSTEN SIP
+                    custom_data = sip_data.get('custom_data', {})
+                    message_type = custom_data.get('MESSAGE_TYPE')
+                    
+                    print(f"[CLIENT RELAY DEBUG] Message type: {message_type}")
+                    print(f"[CLIENT RELAY DEBUG] Custom data keys: {list(custom_data.keys())}")
+                    
+                    if message_type == 'DISCOVERY_RESPONSE':
+                        # ✅ KORREKTE FELDER FÜR DISCOVERY RESPONSE
+                        servers = custom_data.get('servers', {})
+                        total_servers = custom_data.get('total_servers', 0)
+                        available_servers = custom_data.get('available_servers', 0)
                         
-                        try:
-                            # ✅ DECODE RESPONSE
-                            response_str = response_data.decode('utf-8')
-                            print(f"[CLIENT RELAY] Raw response: {response_str[:200]}...")
-                            
-                            # ✅ PARSE SIP NACHRICHT
-                            sip_data = self.client.parse_sip_message(response_str)
-                            if not sip_data:
-                                print(f"[CLIENT RELAY] Failed to parse SIP message from {target_ip}")
-                                sock.close()
-                                continue
-                            
-                            # ✅ EXTRAHIERE BODY
-                            body = sip_data.get('body', '')
-                            if not body:
-                                print(f"[CLIENT RELAY] No body in response from {target_ip}")
-                                sock.close()
-                                continue
-                            
-                            print(f"[CLIENT RELAY] Response body: {body[:200]}...")
-                            
-                            # ✅ PARSE JSON BODY
-                            try:
-                                response_json = json.loads(body)
-                                print(f"[CLIENT RELAY] JSON parsed successfully from {target_ip}")
-                                print(f"[CLIENT RELAY DEBUG] Response keys: {list(response_json.keys())}")
-                                
-                                # ✅ KORREKTE FELDNAMEN FÜR SERVER-LISTE
-                                message_type = response_json.get('MESSAGE_TYPE')
-                                
-                                if message_type == 'DISCOVERY_RESPONSE':
-                                    # ✅ KORREKTE FELDER FÜR DISCOVERY RESPONSE
-                                    servers = response_json.get('servers', {})
-                                    total_servers = response_json.get('total_servers', 0)
-                                    available_servers = response_json.get('available_servers', 0)
-                                    
-                                    print(f"[CLIENT RELAY] Found {len(servers)} servers from {target_ip} (total: {total_servers}, available: {available_servers})")
-                                    
-                                    # ✅ FÜGE GEFUNDENE SERVER HINZU
-                                    for server_ip, server_data in servers.items():
-                                        if server_ip not in discovered_servers:
-                                            discovered_servers[server_ip] = server_data
-                                            server_name = server_data.get('name', 'Unknown')
-                                            server_port = server_data.get('port', 'unknown')
-                                            print(f"[CLIENT RELAY] ✅ Added server: {server_name} - {server_ip}:{server_port}")
-                                    
-                                elif message_type == 'ERROR':
-                                    error_msg = response_json.get('error', 'Unknown error')
-                                    print(f"[CLIENT RELAY] Server returned error: {error_msg}")
-                                    
-                                else:
-                                    print(f"[CLIENT RELAY] Unexpected message type: {message_type}")
-                                    # Debug: Zeige alle verfügbaren Felder
-                                    print(f"[CLIENT RELAY DEBUG] Available fields: {list(response_json.keys())}")
-                                    
-                            except json.JSONDecodeError as e:
-                                print(f"[CLIENT RELAY] JSON decode error from {target_ip}: {e}")
-                                print(f"[CLIENT RELAY] Body content that failed: {body}")
-                                sock.close()
-                                continue
-                                
-                        except Exception as e:
-                            print(f"[CLIENT RELAY] Response processing error from {target_ip}: {e}")
-                            import traceback
-                            traceback.print_exc()
-                            sock.close()
-                            continue
+                        print(f"[CLIENT RELAY] ✅ Found {len(servers)} servers from {target_ip} (total: {total_servers}, available: {available_servers})")
+                        
+                        # ✅ FÜGE GEFUNDENE SERVER HINZU
+                        for server_ip, server_data in servers.items():
+                            if server_ip not in discovered_servers:
+                                discovered_servers[server_ip] = {
+                                    'ip': server_ip,
+                                    'port': server_data.get('port', 5060),
+                                    'name': server_data.get('name', 'Unknown Server'),
+                                    'current_load': server_data.get('current_load', 0),
+                                    'max_traffic': server_data.get('max_traffic', 100),
+                                    'last_seen': time.time()
+                                }
+                                server_name = server_data.get('name', 'Unknown')
+                                server_port = server_data.get('port', 5060)
+                                server_load = server_data.get('current_load', 0)
+                                print(f"[CLIENT RELAY] ✅ Added server: {server_name} - {server_ip}:{server_port} (load: {server_load}%)")
+                        
+                        print(f"[CLIENT RELAY] ✅ Successfully discovered {len(servers)} servers from {seed_host}")
+                        break  # ✅ ERFOLG - BRECHE AB
+                        
+                    elif message_type == 'ERROR':
+                        error_msg = custom_data.get('error', 'Unknown error')
+                        print(f"[CLIENT RELAY] Server returned error: {error_msg}")
                         
                     else:
-                        print(f"[CLIENT RELAY] No response data from {target_ip}")
-                else:
-                    print(f"[CLIENT RELAY] Failed to send request to {target_ip}")
+                        print(f"[CLIENT RELAY] Unexpected message type: {message_type}")
+                        # Debug: Zeige was wir bekommen haben
+                        print(f"[CLIENT RELAY DEBUG] Full SIP data: {sip_data}")
+                        
+                except Exception as e:
+                    print(f"[CLIENT RELAY] Response processing error from {target_ip}: {e}")
+                    import traceback
+                    traceback.print_exc()
                     
-                sock.close()
-                
             except socket.timeout:
                 print(f"[CLIENT RELAY] Timeout connecting to {seed_host}:{seed_port}")
                 continue
@@ -2730,6 +2780,12 @@ class ClientRelayManager:
                 import traceback
                 traceback.print_exc()
                 continue
+            finally:
+                if sock:
+                    try:
+                        sock.close()
+                    except:
+                        pass
         
         # ✅ AKTUALISIERE VERFÜGBARE SERVER
         self.available_servers = discovered_servers
@@ -2743,7 +2799,9 @@ class ClientRelayManager:
         if self.best_server:
             best_name = self.best_server.get('name', 'Unknown')
             best_ip = self.best_server.get('ip', 'Unknown')
-            print(f"[CLIENT RELAY] ✅ Best server selected: {best_name} ({best_ip})")
+            best_port = self.best_server.get('port', 5060)
+            best_load = self.best_server.get('current_load', 0)
+            print(f"[CLIENT RELAY] ✅ Best server selected: {best_name} ({best_ip}:{best_port}) - Load: {best_load}%")
         else:
             print(f"[CLIENT RELAY] ⚠️ No best server selected - using fallback")
         
@@ -3135,6 +3193,37 @@ class ClientRelayManager:
             print(f"[CLIENT RELAY] Manual selection failed - server {server_ip} not in available servers")
             return False
 
+def pkcs7_pad(data, block_size=16):
+    """
+    Fügt PKCS#7 Padding hinzu - für AES-Verschlüsselung erforderlich
+    """
+    if not isinstance(data, bytes):
+        raise TypeError("Input must be bytes")
+    
+    padlen = block_size - len(data) % block_size
+    # Fügt `padlen` Bytes hinzu, die jeweils den Wert `padlen` haben
+    return data + bytes([padlen]) * padlen
+
+def pkcs7_unpad(data):
+    """
+    Entfernt PKCS#7 Padding von den Daten - mit verbesserter Fehlerbehandlung
+    """
+    if len(data) == 0:
+        return data
+    
+    padding_len = data[-1]
+    
+    # Validiere Padding-Länge
+    if not (1 <= padding_len <= len(data)):
+        print(f"⚠️ [PADDING WARN] Invalid padding length: {padding_len}, data length: {len(data)}")
+        return data  # Gebe Daten unverändert zurück
+    
+    # Prüfe ob alle Padding-Bytes korrekt sind
+    if all(byte == padding_len for byte in data[-padding_len:]):
+        return data[:-padding_len]
+    else:
+        print(f"⚠️ [PADDING WARN] Padding bytes don't match expected value {padding_len}")
+        return data  # Gebe Daten unverändert zurück
 
 
 class CALL:
@@ -3195,9 +3284,130 @@ class CALL:
         # Lock für Thread-Safety
         self.connection_lock = threading.Lock()
         self.connection_state = "disconnected"
+
+
+
+    def audio_stream_out(self, target_ip, port, iv, key, session_id):
+        """Sendet Audio ZUM RELAY SERVER MIT KORREKTER VERSCHLÜSSELUNG UND PADDING"""
+        audio_socket = None
         
+        if not self.audio_available:
+            print("❌ [AUDIO OUT] Kein Audio-Backend verfügbar")
+            return False
+            
+        print(f"[AUDIO OUT] Starting sender for session {session_id} to {target_ip}:{port}")
+
+        # Warte auf active_call
+        import time
+        wait_start = time.time()
+        while not self.active_call and (time.time() - wait_start) < 2.0:
+            time.sleep(0.01)
+        
+        if not self.active_call:
+            print("❌ [AUDIO OUT] Timeout waiting for active_call")
+            return False
+            
+        print(f"✅ [AUDIO OUT] Active call confirmed: {self.active_call}")
+        
+        try:
+            # Input Stream öffnen (Mikrofon)
+            if self.audio_available and self.audio:
+                self.input_stream = self.audio_config.audio.open(
+                    format=self.audio_config.FORMAT,
+                    channels=self.audio_config.CHANNELS,
+                    rate=self.audio_config.RATE,
+                    input=True,
+                    frames_per_buffer=self.audio_config.CHUNK,
+                    input_device_index=self.audio_config.input_device_index
+                )
+                print(f"✅ [AUDIO OUT] Input stream opened successfully")
+            else:
+                return False
+            
+            # Socket für Senden
+            audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            audio_socket.settimeout(0.1)
+            
+            # Session-ID als Bytes für Header
+            session_bytes = session_id.encode('utf-8')[:16].ljust(16, b'\0')
+            
+            print(f"🎤 [AUDIO OUT] Sender ACTIVE to {target_ip}:{port}")
+            
+            packet_counter = 0
+            success_packets = 0
+            
+            while self.active_call and self.audio_available:
+                try:
+                    # Audio-Daten vom Mikrofon lesen
+                    data = self.input_stream.read(self.audio_config.CHUNK, exception_on_overflow=False)
+                    
+                    if not data:
+                        continue
+                        
+                    packet_counter += 1
+                    
+                    # ✅ SCHRITT 1: PKCS7 PADDING HINZUFÜGEN (Vor Verschlüsselung!)
+                    padded_data = pkcs7_pad(data)
+                    
+                    if packet_counter <= 5:
+                        print(f"🔍 [AUDIO OUT PROCESS #{packet_counter}]")
+                        print(f"   Original data: {len(data)} bytes")
+                        print(f"   After padding: {len(padded_data)} bytes")
+                        print(f"   Padded divisible by 16: {len(padded_data) % 16 == 0}")
+                    
+                    # ✅ SCHRITT 2: VERSCHLÜSSELUNG (Mit gepaddeten Daten!)
+                    cipher = EVP.Cipher("aes_256_cbc", key, iv, 1)  # op=1 für Verschlüsselung
+                    encrypted_data = cipher.update(padded_data)
+                    encrypted_data += cipher.final()
+                    
+                    if packet_counter <= 5:
+                        print(f"✅ [AUDIO OUT ENCRYPT #{packet_counter}]")
+                        print(f"   Encrypted: {len(encrypted_data)} bytes")
+                        print(f"   Encrypted divisible by 16: {len(encrypted_data) % 16 == 0}")
+                    
+                    # ✅ SCHRITT 3: PAKET ZUSAMMENBAUEN UND SENDEN
+                    # Format: [16 Bytes Session-ID] + [Verschlüsselte Audio-Daten]
+                    packet = session_bytes + encrypted_data
+                    
+                    audio_socket.sendto(packet, (target_ip, port))
+                    success_packets += 1
+                    
+                    if packet_counter <= 5:
+                        print(f"📤 [AUDIO OUT SEND #{packet_counter}] Sent {len(packet)} bytes to {target_ip}:{port}")
+                    
+                    # Erfolgsstatistik
+                    if success_packets % 50 == 0:
+                        print(f"🎉 [AUDIO OUT] Successfully sent {success_packets} packets to relay")
+                        
+                except socket.timeout:
+                    continue
+                except Exception as e:
+                    if self.active_call:
+                        print(f"[AUDIO OUT ERROR] {str(e)}")
+                    break
+                            
+            print(f"[AUDIO OUT] Session ended. Total: {packet_counter}, Success: {success_packets}")
+                                        
+        except Exception as e:
+            print(f"[AUDIO OUT SETUP ERROR] {str(e)}")
+            import traceback
+            traceback.print_exc()
+            return False
+        finally:
+            if hasattr(self, 'input_stream') and self.input_stream:
+                try:
+                    self.input_stream.stop_stream()
+                    self.input_stream.close()
+                    self.input_stream = None
+                except Exception as e:
+                    print(f"[AUDIO OUT CLOSE ERROR] {e}")
+            if audio_socket:
+                audio_socket.close()
+        
+        return success_packets > 0
+
     def audio_stream_in(self, target_ip, listen_port, iv, key, expected_session_id):
-        """Empfängt Audio MIT KORREKTER PKCS7 PADDING-ENTFERNUNG"""
+        """Empfängt Audio VOM RELAY SERVER MIT KORREKTER ENTSCHELÜSSELUNG UND PADDING-ENTFERNUNG"""
         audio_socket = None
         
         if not self.audio_available:
@@ -3205,23 +3415,6 @@ class CALL:
             return False
                 
         print(f"[AUDIO IN] Starting listener for session {expected_session_id}")
-
-        # ✅ KORREKTE PKCS7 PADDING-ENTFERNUNG
-        def pkcs7_unpad(data):
-            """Removes PKCS#7 padding from data."""
-            if len(data) == 0:
-                return data
-            padding_len = data[-1]
-            # Validiere Padding
-            if not (1 <= padding_len <= len(data)):
-                print(f"⚠️ [PADDING WARN] Invalid padding length: {padding_len}")
-                return data  # Gebe Daten unverändert zurück
-            # Prüfe ob alle Padding-Bytes korrekt sind
-            if all(byte == padding_len for byte in data[-padding_len:]):
-                return data[:-padding_len]
-            else:
-                print(f"⚠️ [PADDING WARN] Padding bytes don't match")
-                return data  # Gebe Daten unverändert zurück
 
         # Warte auf active_call
         import time
@@ -3250,13 +3443,13 @@ class CALL:
             else:
                 return False
             
-            # Socket für Empfang
+            # ✅ ASYMMETRISCHES RELAY: Client empfängt auf 51821 vom Relay
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            audio_socket.bind(('0.0.0.0', 51821))
+            audio_socket.bind(('0.0.0.0', 51821))  # Client Port
             audio_socket.settimeout(0.1)
             
-            print(f"🎧 [AUDIO IN] Listener ACTIVE on port 51821")
+            print(f"🎧 [AUDIO IN] Listener ACTIVE on Client:51821 (waiting for relay)")
             
             packet_counter = 0
             valid_packets = 0
@@ -3267,6 +3460,7 @@ class CALL:
             
             while self.active_call and self.audio_available:
                 try:
+                    # ✅ EMPFANGE VOM RELAY SERVER
                     data, addr = audio_socket.recvfrom(4096)
                     packet_counter += 1
                     
@@ -3278,45 +3472,47 @@ class CALL:
                         if received_session_bytes == expected_session_bytes:
                             valid_packets += 1
                             
-                            # ✅ ✅ ✅ KORREKTE AES-ENTSCHLÜSSELUNG MIT PADDING-ENTFERNUNG
+                            # ✅ ✅ ✅ KORREKTE M2CRYPTO ENTSCHELÜSSELUNG MIT PADDING
                             try:
                                 encrypted_length = len(encrypted_data)
                                 
-                                if packet_counter <= 10:
+                                if packet_counter <= 5:
                                     print(f"🔍 [AUDIO IN PROCESS #{packet_counter}]")
                                     print(f"   Encrypted data: {encrypted_length} bytes")
                                     print(f"   Encrypted divisible by 16: {encrypted_length % 16 == 0}")
+                                    print(f"   From: {addr[0]}:{addr[1]}")
                                 
-                                # 🔥 SCHRITT 1: AES-ENTSCHLÜSSELUNG
-                                cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
+                                # 🔥 SCHRITT 1: AES-ENTSCHELÜSSELUNG (Zuerst!)
+                                cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)  # op=0 für Entschlüsselung
                                 decrypted_data = cipher.update(encrypted_data)
                                 decrypted_data += cipher.final()
                                 
-                                if packet_counter <= 10:
+                                if packet_counter <= 5:
                                     print(f"✅ [AUDIO IN DECRYPT #{packet_counter}]")
                                     print(f"   Decrypted: {len(decrypted_data)} bytes")
                                     print(f"   Last byte (padding indicator): 0x{decrypted_data[-1]:02x}")
                                 
-                                # 🔥 SCHRITT 2: PKCS7 PADDING ENTFERNEN
+                                # 🔥 SCHRITT 2: PKCS7 PADDING ENTFERNEN (Nach Entschlüsselung!)
                                 unpadded_data = pkcs7_unpad(decrypted_data)
                                 
-                                if packet_counter <= 10:
+                                if packet_counter <= 5:
                                     print(f"🔧 [AUDIO IN PADDING REMOVAL #{packet_counter}]")
                                     print(f"   After padding removal: {len(unpadded_data)} bytes")
+                                    print(f"   Padding removed: {len(decrypted_data) - len(unpadded_data)} bytes")
                                 
-                                # 🔥 SCHRITT 3: AUDIO AUSGEBEN
+                                # 🔥 SCHRITT 3: AUDIO AUSGEBEN (Zum Schluss!)
                                 if len(unpadded_data) > 0:
                                     self.output_stream.write(unpadded_data)
                                     success_packets += 1
                                     
-                                    if packet_counter <= 10:
+                                    if packet_counter <= 5:
                                         print(f"✅ [AUDIO IN SUCCESS #{packet_counter}] Processed {len(unpadded_data)} audio bytes")
                                 else:
                                     print(f"⚠️ [AUDIO IN EMPTY #{packet_counter}] No audio data after padding removal")
                                 
                                 # Erfolgsstatistik
-                                if success_packets % 20 == 0:
-                                    print(f"🎉 [AUDIO IN] Successfully processed {success_packets} packets")
+                                if success_packets % 50 == 0:
+                                    print(f"🎉 [AUDIO IN] Successfully processed {success_packets} packets from relay")
                                     
                             except Exception as decrypt_error:
                                 print(f"🔴 [AUDIO IN AES DECRYPT ERROR #{packet_counter}] {str(decrypt_error)}")
@@ -3324,8 +3520,10 @@ class CALL:
                                 print(f"   Encrypted divisible by 16: {len(encrypted_data) % 16 == 0}")
                                 
                         else:
-                            if packet_counter <= 10:
+                            if packet_counter <= 5:
                                 print(f"🔴 [AUDIO IN WRONG SESSION #{packet_counter}]")
+                                print(f"   Expected: {expected_session_bytes.hex()}")
+                                print(f"   Received: {received_session_bytes.hex()}")
                                 
                 except socket.timeout:
                     continue
@@ -3353,224 +3551,52 @@ class CALL:
                 audio_socket.close()
         
         return success_packets > 0
-    def audio_stream_out(self, target_ip, target_port, iv, key, session_id):
-        """Sendet Audio MIT KORREKTEM PKCS7 PADDING VOR VERSCHLÜSSELUNG"""
-        audio_socket = None
-        
-        if not self.audio_available:
-            print("❌ [AUDIO OUT] Kein Audio-Backend verfügbar")
-            return False
-            
-        print(f"[AUDIO OUT] Starting OUTGOING stream for session {session_id}")
-        print(f"[AUDIO OUT] Target: {target_ip}:{target_port}")
-        
-        # ✅ PKCS7 PADDING FUNKTIONEN
-        def pkcs7_pad(data, block_size=16):
-            """Pads data according to PKCS#7 standard."""
-            padding_len = block_size - (len(data) % block_size)
-            if padding_len == 0:
-                padding_len = block_size  # Immer Padding hinzufügen!
-            padding = bytes([padding_len]) * padding_len
-            return data + padding
 
-        # Warte auf active_call
-        import time
-        wait_start = time.time()
-        while not self.active_call and (time.time() - wait_start) < 3.0:
-            time.sleep(0.01)
-        
-        if not self.active_call:
-            print("❌ [AUDIO OUT] Timeout waiting for active_call")
-            return False
-            
-        print(f"✅ [AUDIO OUT] Active call confirmed: {self.active_call}")
-        
-        try:
-            # Input Stream öffnen
-            if self.audio_available and self.audio:
-                self.input_stream = self.audio_config.audio.open(
-                    format=self.audio_config.FORMAT,
-                    channels=self.audio_config.CHANNELS,
-                    rate=self.audio_config.RATE,
-                    input=True,
-                    frames_per_buffer=self.audio_config.CHUNK,
-                    input_device_index=self.audio_config.input_device_index
-                )
-                print("✅ [AUDIO OUT] Input stream opened")
-            else:
-                return False
-            
-            audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            audio_socket.bind(('0.0.0.0', 51821))
-            audio_socket.settimeout(0.1)
-            
-            print(f"🎤 [AUDIO OUT] Transmission ACTIVE for session {session_id}")
-            
-            packet_counter = 0
-            
-            while self.active_call and self.audio_available:
-                try:
-                    # Audio-Daten lesen
-                    raw_data = self.input_stream.read(
-                        self.audio_config.CHUNK,
-                        exception_on_overflow=False
-                    )
-                    
-                    if len(raw_data) == 0:
-                        continue
-                    
-                    packet_counter += 1
-                    
-                    # Rauschfilterung
-                    if (self.audio_config.noise_profile['enabled'] and 
-                        self.audio_config.noise_profile['profile_captured']):
-                        filtered_data = self.audio_config.apply_noise_filter(raw_data)
-                    else:
-                        filtered_data = raw_data
-                    
-                    # ✅ ✅ ✅ KORREKTE PKCS7 PADDING IMPLEMENTATION
-                    try:
-                        original_length = len(filtered_data)
-                        
-                        # 🔥 SCHRITT 1: PKCS7 PADDING HINZUFÜGEN
-                        padded_data = pkcs7_pad(filtered_data, 16)
-                        
-                        # ✅ VALIDIERE DASS DATEN DURCH 16 TEILBAR SIND
-                        if len(padded_data) % 16 != 0:
-                            print(f"🔴 [AUDIO OUT PADDING ERROR] {len(padded_data)} % 16 = {len(padded_data) % 16}")
-                            # KRITISCHER FEHLER - überspringe Paket
-                            continue
-                        
-                        if packet_counter <= 10:
-                            print(f"🔧 [AUDIO OUT PADDING #{packet_counter}]")
-                            print(f"   Original: {original_length} bytes")
-                            print(f"   Padded: {len(padded_data)} bytes")
-                            print(f"   Padded divisible by 16: {len(padded_data) % 16 == 0}")
-                            print(f"   Last byte (padding value): 0x{padded_data[-1]:02x}")
-                            print(f"   Last 16 bytes: {padded_data[-16:].hex()}")
-                        
-                        # 🔥 SCHRITT 2: VERSCHLÜSSELUNG (NACH PADDING!)
-                        cipher = EVP.Cipher("aes_256_cbc", key, iv, 1)
-                        encrypted_data = cipher.update(padded_data)
-                        encrypted_data += cipher.final()
-                        
-                        # ✅ VALIDIERE VERSCHLÜSSELTE DATEN
-                        encrypted_length = len(encrypted_data)
-                        if encrypted_length % 16 != 0:
-                            print(f"🔴 [AUDIO OUT AES CRITICAL] Encrypted not aligned: {encrypted_length} bytes")
-                            continue
-                        
-                        if packet_counter <= 10:
-                            print(f"✅ [AUDIO OUT ENCRYPT #{packet_counter}]")
-                            print(f"   Encrypted: {encrypted_length} bytes")
-                            print(f"   Encrypted divisible by 16: {encrypted_length % 16 == 0}")
-                            print(f"   AES SUCCESS: Properly padded and encrypted")
-                        
-                    except Exception as encrypt_error:
-                        print(f"🔴 [AUDIO OUT AES ENCRYPT ERROR] {str(encrypt_error)}")
-                        continue
-                    
-                    # ✅ SESSION-MARKIERUNG
-                    session_header = session_id.encode('utf-8')[:16].ljust(16, b'\0')
-                    packet_with_session = session_header + encrypted_data
-                    
-                    if packet_counter <= 5:
-                        print(f"📤 [AUDIO OUT SEND #{packet_counter}]")
-                        print(f"   Session header: {session_header.hex()}")
-                        print(f"   Total packet: {len(packet_with_session)} bytes")
-                        print(f"   Encrypted data: {len(encrypted_data)} bytes")
-                    
-                    # Senden
-                    try:
-                        audio_socket.sendto(packet_with_session, (target_ip, target_port))
-                        
-                        if packet_counter % 50 == 0:
-                            print(f"[AUDIO OUT] Sent packet {packet_counter}")
-                            
-                    except Exception as send_error:
-                        print(f"[AUDIO OUT SEND ERROR] {str(send_error)}")
-                        continue
-                    
-                except socket.timeout:
-                    continue
-                except Exception as e:
-                    if self.active_call:
-                        print(f"[AUDIO OUT ERROR] {str(e)}")
-                    break
-                        
-            print(f"[AUDIO OUT] Session {session_id} ended. Total packets: {packet_counter}")
-                            
-        except Exception as e:
-            print(f"[AUDIO OUT SETUP ERROR] Session {session_id}: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return False
-        finally:
-            if hasattr(self, 'input_stream') and self.input_stream:
-                try:
-                    self.input_stream.stop_stream()
-                    self.input_stream.close()
-                    self.input_stream = None
-                    print(f"✅ [AUDIO OUT] Input stream closed")
-                except Exception as e:
-                    print(f"[AUDIO OUT CLOSE ERROR] {e}")
-            if audio_socket:
-                audio_socket.close()
-                print(f"✅ [AUDIO OUT] Socket closed")
-        
-        return True
     def _start_audio_streams(self):
-        """Startet bidirektionale Audio-Streams - MIT FESTEM PORT 51821"""
+        """Startet bidirektionale Audio-Streams FÜR ASYMMETRISCHES RELAY"""
         try:
-            print(f"[AUDIO] Starting audio streams - Single Port Mode")
+            print(f"[AUDIO] Starting audio streams - Asymmetric Relay Mode")
             
             if not self.current_secret:
                 print("[AUDIO] No session key available")
                 return
                 
-            # ✅ EINHEITLICHER CLIENT-PORT
-            CLIENT_PORT = 51821  # Fester Port für ALLE Client-Operationen
-            SERVER_PORT = 51820  # Server FastLoop Port
+            # ✅ ASYMMETRISCHES PORT-DESIGN
+            CLIENT_PORT = 51821  # Fester Client-Port für Ein/Ausgang
+            SERVER_RELAY_PORT = 51820  # Server Relay Port
             
-            # ✅ SICHERE SESSION-ID MIT SHA3
+            # ✅ SICHERE SESSION-ID
             import hashlib
             session_id = hashlib.sha3_256(self.current_secret).hexdigest()[:16]
             self.session_id = session_id
             
             if self.use_udp_relay and self.relay_server_ip:
-                target_ip = self.relay_server_ip
+                relay_ip = self.relay_server_ip
                 
-                # ✅ VEREINFACHT: BEIDE CLIENTS VERWENDEN DIESELBE KONFIGURATION
-                listen_port = CLIENT_PORT    # Empfangen auf 51821
-                send_to_port = SERVER_PORT   # Senden zu Server:51820
+                # ✅ ASYMMETRISCHE KONFIGURATION:
+                # - Client empfängt auf 51821
+                # - Client sendet zu Server:51820  
+                # - Relay routet zwischen Clients
+                listen_port = CLIENT_PORT    # Empfangen auf Client:51821
+                send_to_port = SERVER_RELAY_PORT   # Senden zu Server:51820
                 
-                # ✅ ROLLEN-ERKENNUNG
-                if hasattr(self, 'pending_call') and self.pending_call:
-                    role = "Caller"
-                    self.my_role = 'caller'
-                elif hasattr(self, 'incoming_call') and self.incoming_call:
-                    role = "Callee" 
-                    self.my_role = 'callee'
-                else:
-                    print("[AUDIO] ❌ ERROR: Cannot determine call role!")
-                    return
-                
-                print(f"[AUDIO] {role} mode - SINGLE PORT: {CLIENT_PORT}")
-                print(f"[AUDIO] Listen: {listen_port}, Send to: {target_ip}:{send_to_port}")
+                print(f"[AUDIO] 🎯 Asymmetric Relay Configuration:")
+                print(f"  📡 Listen: 0.0.0.0:{listen_port} (Client)")
+                print(f"  📤 Send to: {relay_ip}:{send_to_port} (Server Relay)")
+                print(f"  🔄 Relay routes: ClientA:51821 ↔ Server:51820 ↔ ClientB:51821")
                 
             else:
                 print("[AUDIO] ❌ ERROR: No UDP relay configured!")
                 return
             
-            # ✅✅✅ KRITISCHE KORREKTUR: NUR EINE active_call VARIABLE!
+            # ✅ ACTIVE CALL SETZEN
             print("[AUDIO] Setting active_call to True...")
-            self.active_call = True  # ✅ NUR DIESE EINE!
+            self.active_call = True
             
-            # ✅ VERLÄNGERTE VERZÖGERUNG FÜR THREAD-SYNCHRONISATION
+            # ✅ SYNCHRONISATION
             import time
-            time.sleep(0.2)  # 200ms für bessere Synchronisation
-            print(f"[AUDIO] Active call confirmed after sync: {self.active_call}")
+            time.sleep(0.2)
+            print(f"[AUDIO] Active call confirmed: {self.active_call}")
             
             # Starte Timer-Anzeige
             self._start_call_timer()
@@ -3578,33 +3604,32 @@ class CALL:
             iv = self.current_secret[:16]
             key = self.current_secret[16:48]
             
-            # ✅ PRÜFE MIKROFON-VERFÜGBARKEIT
+            # ✅ PRÜFE MIKROFON
             has_microphone = self._check_microphone_available()
             
-            # ✅ SESSION-ID AN AUDIO STREAMS ÜBERGEBEN
+            # ✅ STARTE AUDIO-STREAMS
             if has_microphone:
-                # NORMALE AUDIO-STREAMS
                 send_thread = threading.Thread(
                     target=self.audio_stream_out, 
-                    args=(target_ip, send_to_port, iv, key, session_id),
+                    args=(relay_ip, send_to_port, iv, key, session_id),
                     daemon=True,
                     name=f"AudioOut_{session_id}"
                 )
                 print(f"[AUDIO] 🎤 Using microphone for audio transmission")
             else:
-                # 🎹 BEETHOVEN'S "FÜR ELISE" FALLBACK
+                # Fallback: Test-Audio generieren
                 send_thread = threading.Thread(
-                    target=self.audio_stream_out_fur_elise, 
-                    args=(target_ip, send_to_port, iv, key, session_id),
+                    target=self.audio_stream_out, 
+                    args=(relay_ip, send_to_port, iv, key, session_id),
                     daemon=True,
-                    name=f"AudioOut_FurElise_{session_id}"
+                    name=f"AudioOut_{session_id}"
                 )
-                print(f"[AUDIO] 🎹 No microphone - using Beethoven's 'Für Elise' as fallback")
+                print(f"[AUDIO] 🎹 No microphone - using audio fallback")
             
-            # EMPFANGS-STREAM (immer starten)
+            # EMPFANGS-STREAM
             recv_thread = threading.Thread(
                 target=self.audio_stream_in,
-                args=(target_ip, listen_port, iv, key, session_id),
+                args=(relay_ip, listen_port, iv, key, session_id),
                 daemon=True,
                 name=f"AudioIn_{session_id}"
             )
@@ -3616,120 +3641,15 @@ class CALL:
             self.audio_threads = [send_thread, recv_thread]
             self.call_start_time = time.time()
             
-            print(f"[AUDIO] ✅ Session {session_id} started - {role}")
-            print(f"[AUDIO] ✅ Listening on: {listen_port}, Sending to: {target_ip}:{send_to_port}")
-            print(f"[AUDIO] ✅ Audio Source: {'Microphone' if has_microphone else 'Für Elise'}")
+            print(f"[AUDIO] ✅ Asymmetric audio streams started successfully!")
+            print(f"[AUDIO] ✅ Session: {session_id}")
+            print(f"[AUDIO] ✅ Relay: {relay_ip}:{send_to_port}")
             
         except Exception as e:
             print(f"[AUDIO ERROR] Failed to start streams: {e}")
-            self.active_call = False  # ✅ HIER AUCH NUR EINE!
-
-    def _check_microphone_available(self):
-        """Prüft ob ein Mikrofon verfügbar ist"""
-        try:
-            if not self.audio_available:
-                return False
-                
-            input_devices = self.audio_config.get_input_devices()
-            has_devices = len(input_devices) > 0
-            
-            # Zusätzlich prüfen ob wir auf ein Mikrofon zugreifen können
-            if has_devices:
-                try:
-                    # Test: Versuche Stream zu öffnen
-                    test_stream = self.audio_config.audio.open(
-                        format=self.audio_config.FORMAT,
-                        channels=self.audio_config.CHANNELS,
-                        rate=self.audio_config.RATE,
-                        input=True,
-                        frames_per_buffer=self.audio_config.CHUNK,
-                        input_device_index=self.audio_config.input_device_index
-                    )
-                    test_stream.stop_stream()
-                    test_stream.close()
-                    return True
-                except:
-                    return False
-            return False
-            
-        except Exception as e:
-            print(f"[AUDIO WARNING] Microphone check failed: {e}")
-            return False
-
-    def audio_stream_out_fur_elise(self, target_ip, target_port, iv, key, session_id):
-        """🎹 Sendet Beethoven's 'Für Elise' als Audio-Fallback"""
-        audio_socket = None
-        
-        print(f"[AUDIO OUT FÜR ELISE] 🎹 Starting BEETHOVEN stream for session {session_id}")
-        print(f"[AUDIO OUT FÜR ELISE] Target: {target_ip}:{target_port}")
-        
-        # ✅ WARTE AUF active_call 
-        import time
-        wait_start = time.time()
-        
-        while not self.active_call:
-            if (time.time() - wait_start) > 3:
-                print("❌ [AUDIO OUT FÜR ELISE] Timeout waiting for active_call")
-                return False
-            time.sleep(0.01)
-        
-        print(f"✅ [AUDIO OUT FÜR ELISE] Active call confirmed: {self.active_call}")
-        
-        try:
-            # ✅ SOCKET SETUP
-            audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-            audio_socket.bind(('0.0.0.0', 51821))
-            audio_socket.settimeout(0.1)
-            
-            print(f"🎹 [AUDIO OUT FÜR ELISE] BEETHOVEN transmission ACTIVE! 🎵")
-            
-            packet_counter = 0
-            
-            # 🎹 FÜR ELISE GENERATOR
-            fur_elise_generator = FurEliseGenerator(
-                sample_rate=self.audio_config.RATE,
-                chunk_size=self.audio_config.CHUNK
-            )
-            
-            while self.active_call:
-                try:
-                    # 🎵 GENERIERE FÜR ELISE AUDIO-CHUNK
-                    raw_data = fur_elise_generator.generate_chunk()
-                    
-                    packet_counter += 1
-                    if packet_counter % 50 == 0:  # Weniger logging für Performance
-                        print(f"[FÜR ELISE] 🎵 Packet {packet_counter} - 'E-D#-E-D#-E-B-D-C-A'")
-                    
-                    # ✅ VERSCHLÜSSELUNG
-                    cipher = EVP.Cipher("aes_256_cbc", key, iv, 1)
-                    encrypted_data = cipher.update(raw_data) + cipher.final()
-                    
-                    # ✅ SENDEN
-                    session_header = session_id.encode('utf-8')
-                    packet_with_session = session_header + encrypted_data
-                    audio_socket.sendto(packet_with_session, (target_ip, target_port))
-                    
-                except socket.timeout:
-                    continue
-                except Exception as e:
-                    if self.active_call:
-                        print(f"[FÜR ELISE ERROR] Session {session_id}: {str(e)}")
-                    break
-                        
-            print(f"[FÜR ELISE] 🎹 Composition ended. Total packets: {packet_counter}")
-            
-        except Exception as e:
-            print(f"[FÜR ELISE SETUP ERROR] Session {session_id}: {str(e)}")
-            return False
-        finally:
-            if audio_socket:
-                audio_socket.close()
-                print(f"✅ [AUDIO OUT FÜR ELISE] Session {session_id} - Socket closed")
-        
-        return True
-
-
+            self.active_call = False
+            import traceback
+            traceback.print_exc()
     def show_audio_devices_popup(self):
         """Audio-Geräte, Qualitätsauswahl und Rauschfilterung - KORRIGIERTE DPI-VERSION"""
         try:
