@@ -3225,7 +3225,7 @@ class CALL:
 
 
 
-    def audio_stream_out_simple(self, target_ip, port, iv, key, session_id):
+    def audio_stream_out(self, target_ip, port, iv, key, session_id):
         """🎤 VEREINFACHT: Sendet Audio mit Session-ID"""
         audio_socket = None
         
@@ -3524,7 +3524,7 @@ class CALL:
             
             # ✅ STARTE VEREINFACHTE AUDIO-STREAMS
             send_thread = threading.Thread(
-                target=self.audio_stream_out_simple, 
+                target=self.audio_stream_out, 
                 args=(relay_ip, send_to_port, iv, key, session_id),
                 daemon=True,
                 name=f"AudioOutSimple_{session_id}"
@@ -5234,7 +5234,7 @@ class CALL:
             traceback.print_exc()
             return False
     def handle_call_confirmed(self, msg):
-        """Verarbeitet Call-Bestätigung für Angerufene - KORRIGIERTE REIHENFOLGE"""
+        """✅ KORRIGIERT: Verarbeitet CALL_CONFIRMED mit Session-ID"""
         try:
             print(f"[CALL] CALL_CONFIRMED received, type: {type(msg)}")
             
@@ -5244,10 +5244,21 @@ class CALL:
             else:
                 data = msg
             
+            # ✅ WICHTIG: Session-ID extrahieren und speichern
+            if 'SESSION_ID' in data:
+                self.session_id = data['SESSION_ID']
+                print(f"[CALL] ✅ Session ID received: {self.session_id}")
+            else:
+                print("❌ [CALL ERROR] No SESSION_ID in call confirmation - audio will not work!")
+                # Fallback: Generiere eine Session-ID
+                import hashlib
+                self.session_id = hashlib.sha3_256(str(time.time()).encode()).hexdigest()[:16]
+                print(f"[CALL] ⚠️ Using fallback Session-ID: {self.session_id}")
+            
             # ✅ UDP Relay Konfiguration
             use_relay = data.get('USE_AUDIO_RELAY', False)
             relay_ip = data.get('AUDIO_RELAY_IP')
-            relay_port = data.get('AUDIO_RELAY_PORT', 51820)  # ✅ Port korrigiert auf 51820
+            relay_port = data.get('SERVER_RELAY_PORT', 51820)  # ✅ Korrektur: SERVER_RELAY_PORT statt AUDIO_RELAY_PORT
             
             print(f"[CALL] Relay config - use_relay: {use_relay}, ip: {relay_ip}, port: {relay_port}")
             
@@ -5265,9 +5276,9 @@ class CALL:
                 import time
                 time.sleep(0.05)  # 50ms für bessere Synchronisation
                 
-                # ✅ Audio streams MIT current_secret starten
+                # ✅ Audio streams MIT current_secret UND Session-ID starten
                 if hasattr(self, 'current_secret') and self.current_secret:
-                    print(f"[CALL] Starting audio streams with session secret ({len(self.current_secret)} bytes)")
+                    print(f"[CALL] Starting audio streams with Session-ID: {self.session_id}")
                     self._start_audio_streams()
                     if hasattr(self, 'pending_call'):
                         self.pending_call['status'] = 'connected'
