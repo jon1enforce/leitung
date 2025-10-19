@@ -3551,7 +3551,33 @@ class CALL:
                 audio_socket.close()
         
         return success_packets > 0
-
+    def _check_microphone_available(self):
+        """Prüft ob ein Mikrofon verfügbar ist"""
+        try:
+            if not self.audio_available or not self.audio:
+                print("[MIC CHECK] No audio backend available")
+                return False
+                
+            # Versuche Input-Devices zu finden
+            input_devices = []
+            try:
+                for i in range(self.audio.get_device_count()):
+                    device_info = self.audio.get_device_info_by_index(i)
+                    if device_info.get('maxInputChannels', 0) > 0:
+                        input_devices.append(device_info)
+            except:
+                pass
+                
+            if input_devices:
+                print(f"[MIC CHECK] Found {len(input_devices)} input devices")
+                return True
+            else:
+                print("[MIC CHECK] No input devices found")
+                return False
+                
+        except Exception as e:
+            print(f"[MIC CHECK ERROR] {e}")
+            return False
     def _start_audio_streams(self):
         """Startet bidirektionale Audio-Streams FÜR ASYMMETRISCHES RELAY"""
         try:
@@ -3589,14 +3615,16 @@ class CALL:
                 print("[AUDIO] ❌ ERROR: No UDP relay configured!")
                 return
             
-            # ✅ ACTIVE CALL SETZEN
-            print("[AUDIO] Setting active_call to True...")
-            self.active_call = True
+            # ✅ PRÜFE OB ACTIVE CALL GESETZT IST
+            if not self.active_call:
+                print("❌ [AUDIO] Active call is not set - cannot start audio streams")
+                return
+                
+            print(f"[AUDIO] ✅ Active call confirmed: {self.active_call}")
             
             # ✅ SYNCHRONISATION
             import time
-            time.sleep(0.2)
-            print(f"[AUDIO] Active call confirmed: {self.active_call}")
+            time.sleep(0.1)
             
             # Starte Timer-Anzeige
             self._start_call_timer()
@@ -3604,7 +3632,7 @@ class CALL:
             iv = self.current_secret[:16]
             key = self.current_secret[16:48]
             
-            # ✅ PRÜFE MIKROFON
+            # ✅ PRÜFE MIKROFON (mit neuer Methode)
             has_microphone = self._check_microphone_available()
             
             # ✅ STARTE AUDIO-STREAMS
@@ -5202,9 +5230,20 @@ class CALL:
                     self.relay_server_ip = relay_ip
                     self.relay_server_port = relay_port
                     
-                    # ✅ KORREKTUR: NUR RELAY KONFIGURIEREN, ABER AUDIO STREAMS NOCH NICHT STARTEN
-                    # Die Audio Streams werden erst nach CALL_CONFIRMED gestartet
-                    print(f"[CALL] Relay configured, waiting for CALL_CONFIRMED to start audio")
+                    # ✅ KORREKTUR: AUDIO STREAMS SOFORT STARTEN FÜR CALLER
+                    print(f"[CALL] Starting audio streams immediately for caller")
+                    self.active_call = True
+                    
+                    # Kurze Verzögerung für Synchronisation
+                    import time
+                    time.sleep(0.05)
+                    
+                    if hasattr(self, 'current_secret') and self.current_secret:
+                        print(f"[CALL] Starting audio streams with session secret ({len(self.current_secret)} bytes)")
+                        self._start_audio_streams()
+                        print("[CALL] ✅ Audio streams started for caller")
+                    else:
+                        print("[CALL ERROR] No session secret available for audio streams")
                     
                 else:
                     print("[CALL] Direct connection (no relay)")
@@ -5264,9 +5303,6 @@ class CALL:
             # Im Fehlerfall Ressourcen bereinigen
             self.cleanup_call_resources()
             return False
-
-
-
     def handle_call_confirmed(self, msg):
         """Verarbeitet Call-Bestätigung für Angerufene - KORRIGIERTE REIHENFOLGE"""
         try:
@@ -5281,7 +5317,7 @@ class CALL:
             # ✅ UDP Relay Konfiguration
             use_relay = data.get('USE_AUDIO_RELAY', False)
             relay_ip = data.get('AUDIO_RELAY_IP')
-            relay_port = data.get('AUDIO_RELAY_PORT', 51822)
+            relay_port = data.get('AUDIO_RELAY_PORT', 51820)  # ✅ Port korrigiert auf 51820
             
             print(f"[CALL] Relay config - use_relay: {use_relay}, ip: {relay_ip}, port: {relay_port}")
             
@@ -5316,7 +5352,6 @@ class CALL:
             print(f"[CALL ERROR] Call confirmation handling failed: {str(e)}")
             import traceback
             traceback.print_exc()
-
     def _handle_session_key(self, msg):
         """Verarbeitet Session Key vom Server"""
         try:
@@ -5359,12 +5394,43 @@ class CALL:
             print(f"[TIMER ERROR] Failed to start timer: {str(e)}")
 
     def _update_call_timer_ui(self):
-        """Aktualisiert die Timer-Anzeige in der UI"""
+        """Aktualisiert die Timer-Anzeige in der UI mit ROBUSTER Fehlerbehandlung"""
         if not self.call_timer_running or not self.active_call:
             return
         
-        # ✅ PRÜFE OB UI NOCH EXISTIERT
-        if not hasattr(self.client, 'winfo_exists') or not self.client.winfo_exists():
+        # ✅ ROBUSTE PRÜFUNG OB UI NOCH EXISTIERT
+        try:
+            # Prüfe ob Hauptfenster existiert
+            if not hasattr(self.client, 'winfo_exists') or not self.client.winfo_exists():
+                self.stop_call_timer()
+                return
+                
+            # Zusätzliche Prüfung für spezifische UI-Elemente
+            ui_element_exists = False
+            if hasattr(self.client, 'status_label'):
+                try:
+                    # Direkter Test ob das Widget noch existiert
+                    _ = self.client.status_label.cget('text')  # Dieser Befehl löst den Fehler aus falls Widget zerstört
+                    ui_element_exists = True
+                except Exception:
+                    ui_element_exists = False
+            elif hasattr(self.client, 'call_timer_label'):
+                try:
+                    _ = self.client.call_timer_label.cget('text')
+                    ui_element_exists = True
+                except Exception:
+                    ui_element_exists = False
+            else:
+                # Kein UI-Element gefunden
+                ui_element_exists = False
+                
+            if not ui_element_exists:
+                print("[TIMER] UI element destroyed, stopping timer")
+                self.stop_call_timer()
+                return
+                
+        except Exception as e:
+            print(f"[TIMER UI CHECK ERROR] {e}")
             self.stop_call_timer()
             return
             
@@ -5374,14 +5440,24 @@ class CALL:
             seconds = elapsed % 60
             timer_text = f"Call: {minutes:02d}:{seconds:02d}"
             
-            # UI Update - verschiedene mögliche Implementierungen
+            # UI Update mit Fehlerbehandlung
             if hasattr(self.client, 'status_label'):
-                self.client.status_label.configure(text=timer_text)
+                try:
+                    self.client.status_label.configure(text=timer_text)
+                except Exception as e:
+                    print(f"[TIMER STATUS LABEL ERROR] {e}")
+                    self.stop_call_timer()
+                    return
             elif hasattr(self.client, 'call_timer_label'):
-                self.client.call_timer_label.configure(text=timer_text)
+                try:
+                    self.client.call_timer_label.configure(text=timer_text)
+                except Exception as e:
+                    print(f"[TIMER LABEL ERROR] {e}")
+                    self.stop_call_timer()
+                    return
             
-            # Nächste Aktualisierung in 1 Sekunde
-            if hasattr(self.client, 'after'):
+            # Nächste Aktualisierung in 1 Sekunde - nur wenn Timer noch läuft
+            if hasattr(self.client, 'after') and self.call_timer_running:
                 self.call_timer_after_id = self.client.after(1000, self._update_call_timer_ui)
                 
         except Exception as e:
@@ -5400,6 +5476,24 @@ class CALL:
         self.active_call = False
         time.sleep(0.1)
         
+        # ✅ Streams schließen bevor Threads gestoppt werden
+        try:
+            if hasattr(self, 'input_stream') and self.input_stream:
+                self.input_stream.stop_stream()
+                self.input_stream.close()
+                self.input_stream = None
+        except Exception as e:
+            print(f"[AUDIO STOP ERROR] Input: {e}")
+        
+        try:
+            if hasattr(self, 'output_stream') and self.output_stream:
+                self.output_stream.stop_stream()
+                self.output_stream.close()
+                self.output_stream = None
+        except Exception as e:
+            print(f"[AUDIO STOP ERROR] Output: {e}")
+        
+        # Threads stoppen
         for thread in self.audio_threads:
             try:
                 if thread.is_alive():
@@ -7309,12 +7403,22 @@ class PHONEBOOK(ctk.CTk):
                     verify_code = generator.generate_verify_code()
                     print(f"🔐 [PING] PONG Verify-Code (Fallback): {verify_code}")
                 
+                # ✅ CUSTOM_DATA FÜR PONG-NACHRICHT
+                custom_data = {
+                    "MESSAGE_TYPE": "PONG",  # ✅ Expliziter Message-Type
+                    "VERIFY_CODE": verify_code,
+                    "TIMESTAMP": int(time.time())
+                }
+                
+                # ✅ BUILD_SIP_MESSAGE OHNE ADDITIONAL_HEADERS AUFRUFEN
                 pong_msg = self.build_sip_message(
-                    "MESSAGE",
-                    "server",
-                    {"PONG": "true"},
-                    additional_headers=[f"Verify-Code: {verify_code}"]  # ✅ VERIFY-CODE HINZUFÜGEN
+                    method="MESSAGE",  # oder "RESPONSE" je nach Bedarf
+                    recipient="server",
+                    custom_data=custom_data,
+                    from_server=False,
+                    client_name=getattr(self, '_client_name', 'unknown')
                 )
+                
                 self.client_socket.sendall(pong_msg.encode('utf-8'))
                 print("[DEBUG] Sent PONG response with verify-code")
                 return True
@@ -7322,7 +7426,6 @@ class PHONEBOOK(ctk.CTk):
         except Exception as e:
             print(f"[ERROR] Failed to send PONG: {str(e)}")
             return False
-   
 
 
     def _process_queue_simple(self):
