@@ -1386,7 +1386,7 @@ class CONVEY:
                 }
             
             # ✅ DEBUG AUSGABE
-            self._debug_session_routing()
+            print(f"[RELAY SIMPLE] ✅ Session routing established: {session_id}")
             print(f"[RELAY SIMPLE] 🎉 Session-based audio relay SUCCESS for call {call_id}")
             return True
             
@@ -1395,7 +1395,20 @@ class CONVEY:
             import traceback
             traceback.print_exc()
             return False
-
+    def _debug_session_routing(self):
+        """Debug-Ausgabe der Session Routing Table"""
+        with self.relay_lock:
+            print("\n=== SESSION ROUTING DEBUG ===")
+            print(f"Total sessions: {len(self.session_routing)}")
+            
+            if not self.session_routing:
+                print("  ❌ NO SESSIONS")
+            else:
+                for session_bytes, target_addr in self.session_routing.items():
+                    session_hex = session_bytes.hex()[:8]
+                    print(f"  Session {session_hex}... -> {target_addr}")
+            
+            print("=" * 50)
     def _is_server_in_same_nat(self, caller_nat_ip, callee_nat_ip):
         """Ermittelt ob der Server im gleichen NAT wie die Clients ist - VOLLSTÄNDIG KORRIGIERT"""
         try:
@@ -1697,7 +1710,7 @@ class CONVEY:
                 
             return False
     def handle_call_response(self, msg, client_socket, client_name):
-        """KORRIGIERT: Single-Port System (51820 Server, 51821 Clients)"""
+        """✅ KORRIGIERT: Mit Session-ID für Audio-Routing"""
         try:
             custom_data = msg.get('custom_data', {})
             response = custom_data.get('RESPONSE')
@@ -1754,14 +1767,21 @@ class CONVEY:
             if response == "accepted":
                 print(f"[CONVEY] Call {call_id} accepted by {client_name}")
                 
-                # UDP Relay registrieren
+                # ✅ UDP Relay mit Session-ID registrieren
                 relay_success = self._register_audio_relay(call_id, call_data['caller_name'], call_data['callee_name'])
                 
-                # ✅ VEREINFACHT: SINGLE-PORT SYSTEM
+                # ✅ Session-ID aus Relay-Daten holen
+                relay_data = self.audio_relays.get(call_id, {})
+                session_id = relay_data.get('session_id', 'default_session')
+                
+                print(f"[CONVEY] ✅ Using Session-ID: {session_id}")
+                
+                # ✅ VEREINFACHT: Response mit Session-ID
                 response_data = {
                     "MESSAGE_TYPE": "CALL_RESPONSE",
                     "RESPONSE": "accepted",
                     "CALLER_CLIENT_ID": caller_id,
+                    "SESSION_ID": session_id,  # ✅ WICHTIG: Session-ID mitsenden
                     "TIMESTAMP": int(time.time()),
                     "USE_AUDIO_RELAY": True,
                     "AUDIO_RELAY_IP": server_ip,
@@ -1775,13 +1795,14 @@ class CONVEY:
                 
                 if send_success:
                     call_data['status'] = 'accepted'
-                    print(f"[CONVEY] ✅ Call accepted response sent to {call_data['caller_name']}")
+                    print(f"[CONVEY] ✅ Call accepted response sent to {call_data['caller_name']} with Session-ID: {session_id}")
                     
-                    # ✅ CALL_CONFIRMED an BEIDE CLIENTS
+                    # ✅ CALL_CONFIRMED an BEIDE CLIENTS mit Session-ID
                     
                     # 1. CALL_CONFIRMED an CALLEE
                     callee_msg_data = {
                         "MESSAGE_TYPE": "CALL_CONFIRMED",
+                        "SESSION_ID": session_id,  # ✅ WICHTIG: Session-ID mitsenden
                         "TIMESTAMP": int(time.time()),
                         "USE_AUDIO_RELAY": True,
                         "AUDIO_RELAY_IP": server_ip,
@@ -1791,11 +1812,12 @@ class CONVEY:
                     
                     callee_msg = self.server.build_sip_message("MESSAGE", client_name, callee_msg_data)
                     send_frame(client_socket, callee_msg.encode('utf-8'))
-                    print(f"[CONVEY] ✅ CALL_CONFIRMED sent to callee {client_name}")
+                    print(f"[CONVEY] ✅ CALL_CONFIRMED sent to callee {client_name} with Session-ID: {session_id}")
                     
                     # 2. CALL_CONFIRMED an CALLER
                     caller_confirmed_data = {
                         "MESSAGE_TYPE": "CALL_CONFIRMED",
+                        "SESSION_ID": session_id,  # ✅ WICHTIG: Session-ID mitsenden
                         "TIMESTAMP": int(time.time()),
                         "USE_AUDIO_RELAY": True,
                         "AUDIO_RELAY_IP": server_ip,
@@ -1805,9 +1827,9 @@ class CONVEY:
                     
                     caller_confirmed_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], caller_confirmed_data)
                     send_frame(call_data['caller_socket'], caller_confirmed_msg.encode('utf-8'))
-                    print(f"[CONVEY] ✅ CALL_CONFIRMED sent to caller {call_data['caller_name']}")
+                    print(f"[CONVEY] ✅ CALL_CONFIRMED sent to caller {call_data['caller_name']} with Session-ID: {session_id}")
                     
-                    print(f"[CONVEY] ✅ Framed SIP call {call_id} accepted with UDP Relay: {relay_success}")
+                    print(f"[CONVEY] ✅ Framed SIP call {call_id} accepted with Session-ID: {session_id}")
                 else:
                     print(f"[CONVEY ERROR] Failed to send accepted response to caller")
                     
