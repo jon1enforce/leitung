@@ -1217,11 +1217,14 @@ class CONVEY:
         self.connection_map = {}  # O(1) Lookups!
         self.client_names = {}    # {client_addr: client_name}
         
+        # ✅ WICHTIG: Session-Routing hinzufügen
+        self.session_routing = {}  # {session_bytes: target_addr}
+        
         # Starte UDP Relay Server
         self._start_udp_relay()
 
     def _start_udp_relay(self):
-        """🚀 STARTET UDP RELAY MIT FESTEM PORT 51820"""
+        """🚀 STARTET UDP RELAY MIT SESSION-BASIERTEM ROUTING"""
         try:
             # ⚡ TURBO-LOOP (Haupt-Performance)
             self.udp_relay_port = 51820  # Single Port für maximale Performance
@@ -1237,19 +1240,25 @@ class CONVEY:
             self.connection_map = {}  # O(1) Lookups!
             self.client_names = {}    # {client_addr: client_name}
             
-            print(f"[TURBO RELAY] 🚀 Hybrid System gestartet:")
+            # ✅ WICHTIG: Session-Routing initialisieren
+            self.session_routing = {}  # {session_bytes: target_addr}
+            
+            print(f"[TURBO RELAY] 🚀 Session-based System gestartet:")
             print(f"  ⚡ Turbo-Loop: Port {self.udp_relay_port} (Performance)")
             print(f"  📞 Clients auf Port 51821")
+            print(f"  🔑 Session-based routing aktiviert")
             
-            # Starte Turbo Loop
-            threading.Thread(target=self._turbo_relay_loop_simple, daemon=True, name="TurboLoop").start()
+            # Starte Session-basierte Turbo Loop
+            threading.Thread(target=self._turbo_relay_loop, daemon=True, name="SessionTurboLoop").start()
             
         except Exception as e:
             print(f"[RELAY ERROR] Failed to start: {e}")
             import traceback
-            traceback.print_exc()
+            traceback.print_exc())
 
-    def _turbo_relay_loop_simple(self):
+
+
+    def _turbo_relay_loop(self):
         """⚡ VEREINFACHT: Session-basiertes UDP Relay"""
         import select
         packet_count = 0
