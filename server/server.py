@@ -1254,7 +1254,7 @@ class CONVEY:
         except Exception as e:
             print(f"[RELAY ERROR] Failed to start: {e}")
             import traceback
-            traceback.print_exc())
+            traceback.print_exc()
 
 
 
