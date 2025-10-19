@@ -5026,42 +5026,68 @@ class CALL:
             self.cleanup_call_resources()
             return False
     def _send_call_response(self, response, caller_id):
-        """Sendet Call-Response an Server - FEHLTE IN DER CALL KLASSE"""
-        try:
-            print(f"[CALL] Preparing {response} response for caller {caller_id}")
-            
-            # ✅ KORREKT: Einheitliches SIP + JSON Format
-            response_data = {
-                "MESSAGE_TYPE": "CALL_RESPONSE",
-                "RESPONSE": response,
-                "CALLER_CLIENT_ID": caller_id,
-                "TIMESTAMP": int(time.time()),
-                "CLIENT_NAME": getattr(self.client, '_client_name', 'Unknown')
-            }
-            
-            # ✅ KORREKT: SIP-Nachricht mit JSON Body erstellen
-            response_msg = self.client.build_sip_message("MESSAGE", "server", response_data)
-            
-            print(f"[CALL] Built framed SIP message: {len(response_msg)} chars")
-            
-            # ✅ KORREKT: Immer send_frame verwenden
-            if hasattr(self.client, 'client_socket') and self.client.client_socket:
+        """🚀 KORRIGIERT: Robuste Call-Response mit Retry-Mechanismus"""
+        max_retries = 3
+        retry_delay = 0.5
+        
+        for attempt in range(max_retries):
+            try:
+                print(f"[CALL RETRY] Attempt {attempt + 1}/{max_retries} for {response} to {caller_id}")
+                
+                # ✅ KORREKT: Einheitliches SIP + JSON Format
+                response_data = {
+                    "MESSAGE_TYPE": "CALL_RESPONSE",
+                    "RESPONSE": response,
+                    "CALLER_CLIENT_ID": caller_id,
+                    "TIMESTAMP": int(time.time()),
+                    "CLIENT_NAME": getattr(self.client, '_client_name', 'Unknown')
+                }
+                
+                # ✅ KORREKT: SIP-Nachricht mit JSON Body erstellen
+                response_msg = self.client.build_sip_message("MESSAGE", "server", response_data)
+                
+                print(f"[CALL] Built framed SIP message: {len(response_msg)} chars")
+                
+                # ✅ SOCKET VERFÜGBARKEIT PRÜFEN
+                if not hasattr(self.client, 'client_socket') or not self.client.client_socket:
+                    print(f"[CALL WARNING] No socket available on attempt {attempt + 1}")
+                    
+                    # Versuche Reconnection
+                    if hasattr(self.client, 'reconnect') and attempt == 0:
+                        print("[CALL] Attempting reconnect...")
+                        self.client.reconnect()
+                        time.sleep(1.0)  # Längere Wartezeit für Reconnect
+                        continue
+                    else:
+                        time.sleep(retry_delay)
+                        continue
+                
+                # ✅ KORREKT: Immer send_frame verwenden
                 success = send_frame(self.client.client_socket, response_msg.encode('utf-8'))
                 print(f"[CALL] send_frame result: {success}")
                 
                 if success:
                     print(f"[CALL] ✓ Framed SIP response '{response}' sent successfully")
+                    return True
                 else:
-                    print(f"[CALL ERROR] ✗ Failed to send framed SIP response")
+                    print(f"[CALL] ✗ Send failed on attempt {attempt + 1}")
+                    if attempt < max_retries - 1:
+                        print(f"[CALL] Retrying in {retry_delay}s...")
+                        time.sleep(retry_delay)
                     
-                return success
-            else:
-                print("[CALL ERROR] No socket available for framed SIP response")
-                return False
-            
-        except Exception as e:
-            print(f"[CALL CRITICAL ERROR] Failed to send framed SIP response: {str(e)}")
-            return False
+            except Exception as e:
+                print(f"[CALL ERROR] Attempt {attempt + 1} failed: {str(e)}")
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+        
+        print(f"[CALL CRITICAL] Failed to send response after {max_retries} attempts")
+        
+        # ✅ FEHLERMELDUNG FÜR BENUTZER
+        if hasattr(self.client, 'after'):
+            error_msg = f"Verbindungsfehler: {response}-Antwort konnte nicht gesendet werden"
+            self.client.after(0, lambda: messagebox.showerror("Netzwerkfehler", error_msg))
+        
+        return False
     def _reject_incoming_call(self, caller_id):
         """Lehnt eingehenden Anruf ab - VOLLSTÄNDIG FRAME-SIP KOMPATIBEL"""
         try:
@@ -5271,31 +5297,39 @@ class CALL:
             traceback.print_exc()
             return False
     def handle_call_confirmed(self, msg):
-        """✅ KORRIGIERT: Verarbeitet CALL_CONFIRMED mit Session-ID"""
+        """🚀 KORRIGIERT: Robuste Session-ID Verarbeitung"""
         try:
             print(f"[CALL] CALL_CONFIRMED received, type: {type(msg)}")
             
-            # ✅ DATENEXTRAKTION
-            if isinstance(msg, dict) and 'custom_data' in msg:
-                data = msg.get('custom_data', {})
-            else:
-                data = msg
+            # ✅ EINHEITLICHE DATENEXTRAKTION
+            data = {}
+            if isinstance(msg, dict):
+                if 'custom_data' in msg:
+                    data = msg.get('custom_data', {})
+                else:
+                    data = msg  # Direktes Dict
             
-            # ✅ WICHTIG: Session-ID extrahieren und speichern
-            if 'SESSION_ID' in data:
-                self.session_id = data['SESSION_ID']
-                print(f"[CALL] ✅ Session ID received: {self.session_id}")
-            else:
-                print("❌ [CALL ERROR] No SESSION_ID in call confirmation - audio will not work!")
-                # Fallback: Generiere eine Session-ID
-                import hashlib
-                self.session_id = hashlib.sha3_256(str(time.time()).encode()).hexdigest()[:16]
-                print(f"[CALL] ⚠️ Using fallback Session-ID: {self.session_id}")
+            # ✅ KRITISCH: Session-ID MUSS vom Server kommen
+            session_id = data.get('SESSION_ID')
+            if not session_id:
+                print("❌ [CALL CRITICAL] No SESSION_ID from server - cannot establish audio!")
+                
+                # ❌ KEIN FALLBACK - Anruf abbrechen
+                if hasattr(self.client, 'after'):
+                    self.client.after(0, lambda: messagebox.showerror(
+                        "Audio Fehler", 
+                        "Keine Audio-Verbindung möglich - Session fehlt"
+                    ))
+                self.cleanup_call_resources()
+                return
+            
+            self.session_id = session_id
+            print(f"[CALL] ✅ Session ID confirmed: {self.session_id}")
             
             # ✅ UDP Relay Konfiguration
             use_relay = data.get('USE_AUDIO_RELAY', False)
             relay_ip = data.get('AUDIO_RELAY_IP')
-            relay_port = data.get('SERVER_RELAY_PORT', 51820)  # ✅ Korrektur: SERVER_RELAY_PORT statt AUDIO_RELAY_PORT
+            relay_port = data.get('SERVER_RELAY_PORT', 51820)
             
             print(f"[CALL] Relay config - use_relay: {use_relay}, ip: {relay_ip}, port: {relay_port}")
             
@@ -5305,15 +5339,14 @@ class CALL:
                 self.relay_server_ip = relay_ip
                 self.relay_server_port = relay_port
                 
-                # ✅ KRITISCH: active_call ZUERST setzen - VOR Audio-Streams!
+                # ✅ KRITISCH: active_call ZUERST setzen
                 self.active_call = True
                 print(f"[CALL] ✅ Active call set to: {self.active_call}")
                 
                 # ✅ Kurze Verzögerung für Thread-Synchronisation
-                import time
-                time.sleep(0.05)  # 50ms für bessere Synchronisation
+                time.sleep(0.05)
                 
-                # ✅ Audio streams MIT current_secret UND Session-ID starten
+                # ✅ Audio streams starten
                 if hasattr(self, 'current_secret') and self.current_secret:
                     print(f"[CALL] Starting audio streams with Session-ID: {self.session_id}")
                     self._start_audio_streams()
@@ -5322,7 +5355,6 @@ class CALL:
                     print("[CALL] ✅ UDP Relay call established successfully")
                 else:
                     print("[CALL ERROR] No session secret available for audio streams")
-                    
             else:
                 print("[CALL ERROR] No relay configuration in confirmation")
                 
