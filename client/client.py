@@ -4336,7 +4336,7 @@ class CALL:
                 pass
 
     def handle_message(self, raw_message):
-        """Zentrale Message-Handling Methode - MIT CALL_REQUEST_ACK SUPPORT"""
+        """Zentrale Message-Handling Methode - VOLLSTÄNDIG KORRIGIERT"""
         try:
             print(f"[CALL] Handling raw message type: {type(raw_message)}")
             
@@ -4366,7 +4366,7 @@ class CALL:
             message_type = self._extract_message_type(msg)
             print(f"[CALL] Handling message type: {message_type}")
             
-            # 3. Custom Data extrahieren (für alle Handler)
+            # 3. ✅ KORREKT: Custom Data extrahieren (für alle Handler)
             custom_data = msg.get('custom_data', {})
             if not custom_data and isinstance(msg, dict):
                 # Fallback: Wenn keine custom_data, verwende msg direkt
@@ -4374,32 +4374,21 @@ class CALL:
             
             print(f"[CALL DEBUG] custom_data keys: {list(custom_data.keys())}")
             
-            # 4. Message Routing MIT CALL_REQUEST_ACK SUPPORT
+            # 4. ✅ KORREKT: Message Routing MIT custom_data für alle Handler
             if message_type == 'INCOMING_CALL':
                 self.handle_incoming_call(custom_data)
             elif message_type == 'SESSION_KEY':
                 self._handle_session_key(custom_data)
             elif message_type == 'CALL_RESPONSE':
-                # ✅ KORREKTUR: RICHTIGE METHODE FÜR CLIENT
-                if hasattr(self, 'handle_call_response'):
-                    import inspect
-                    sig = inspect.signature(self.handle_call_response)
-                    params = list(sig.parameters.keys())
-                    
-                    if len(params) == 1:  # Nur custom_data
-                        self.handle_call_response(custom_data)
-                    elif len(params) == 3:  # custom_data, client_socket, client_name
-                        self.handle_call_response(custom_data, None, "unknown")
-                    else:
-                        print(f"[CALL ERROR] Unsupported handle_call_response signature: {params}")
-                else:
-                    print("[CALL ERROR] No handle_call_response method available")
+                print("[CALL] Received CALL_RESPONSE, processing...")
+                # CALL_RESPONSE wird normalerweise vom Server verarbeitet, nicht vom Client
+                print(f"[CALL DEBUG] CALL_RESPONSE data: {custom_data}")
             elif message_type == 'PUBLIC_KEY_RESPONSE':
                 print("[CALL] Received PUBLIC_KEY_RESPONSE, processing...")
                 self.handle_public_key_response(custom_data)
             elif message_type == 'CALL_CONFIRMED':
+                print("[CALL] Received CALL_CONFIRMED, processing...")
                 self.handle_call_confirmed(custom_data)
-            # ✅ NEU: CALL_REQUEST_ACK HANDLER
             elif message_type == 'CALL_REQUEST_ACK':
                 print("[CALL] Received CALL_REQUEST_ACK, processing...")
                 self.handle_call_request_ack(custom_data)
@@ -4458,23 +4447,30 @@ class CALL:
     def handle_call_request_ack(self, msg):
         """🚀 KORRIGIERT: Caller bekommt beide Session-IDs"""
         try:
-            custom_data = msg.get('custom_data', {})
-            status = custom_data.get('STATUS')
-            target_name = custom_data.get('TARGET_NAME')
-            call_id = custom_data.get('CALL_ID')
+            print(f"[CALL] CALL_REQUEST_ACK received")
+            print(f"[CALL DEBUG] Message keys: {list(msg.keys())}")
             
-            print(f"[CALL] Call request acknowledgment: {status} to {target_name}")
+            # ✅ KORREKT: Extrahiere aus msg direkt (nicht custom_data)
+            status = msg.get('STATUS')
+            target_name = msg.get('TARGET_NAME')
+            call_id = msg.get('CALL_ID')
             
-            # ✅ NEU: BEIDE Session-IDs speichern
-            self.send_session_id = custom_data.get('CALLER_SESSION_ID')   # Für Senden
-            self.recv_session_id = custom_data.get('CALLEE_SESSION_ID')   # Für Empfangen
+            # ✅ KRITISCH: Korrekte Feldnamen für Session-IDs
+            self.send_session_id = msg.get('CALLER_SESSION_ID')   # Für Senden an Callee
+            self.recv_session_id = msg.get('CALLEE_SESSION_ID')   # Für Empfangen von Callee
             
             if self.send_session_id and self.recv_session_id:
                 print(f"[CALL] ✅ Bidirectional Session IDs received:")
                 print(f"[CALL]   SEND Session ID: {self.send_session_id} (for sending to callee)")
                 print(f"[CALL]   RECV Session ID: {self.recv_session_id} (for receiving from callee)")
+                
+                # ✅ WICHTIG: Setze session_id für _start_audio_streams
+                self.session_id = self.send_session_id  # Für Kompatibilität
             else:
                 print(f"[CALL WARNING] Missing Session IDs in acknowledgment")
+                print(f"[CALL DEBUG] CALLER_SESSION_ID: {self.send_session_id}")
+                print(f"[CALL DEBUG] CALLEE_SESSION_ID: {self.recv_session_id}")
+                print(f"[CALL DEBUG] All available keys: {list(msg.keys())}")
                 
             if status == "CALL_FORWARDED":
                 self.status = "pending"
@@ -4485,7 +4481,6 @@ class CALL:
         except Exception as e:
             print(f"[CALL ERROR] Failed to handle call request ack: {e}")
             return False
-
 
 
     def set_connection_state(self, state):
@@ -5332,37 +5327,39 @@ class CALL:
     def handle_call_confirmed(self, msg):
         """🚀 KORRIGIERT: Robuste Session-ID Verarbeitung"""
         try:
-            print(f"[CALL] CALL_CONFIRMED received, type: {type(msg)}")
+            print(f"[CALL] CALL_CONFIRMED received")
+            print(f"[CALL DEBUG] Message keys: {list(msg.keys())}")
             
-            # ✅ EINHEITLICHE DATENEXTRAKTION
-            data = {}
-            if isinstance(msg, dict):
-                if 'custom_data' in msg:
-                    data = msg.get('custom_data', {})
-                else:
-                    data = msg  # Direktes Dict
+            # ✅ KORREKT: Session-IDs aus den richtigen Feldern
+            self.send_session_id = msg.get('CALLER_SESSION_ID')   # Für Senden an Callee  
+            self.recv_session_id = msg.get('CALLEE_SESSION_ID')   # Für Empfangen von Callee
             
-            # ✅ KRITISCH: Session-ID MUSS vom Server kommen
-            session_id = data.get('SESSION_ID')
-            if not session_id:
-                print("❌ [CALL CRITICAL] No SESSION_ID from server - cannot establish audio!")
+            if not self.send_session_id or not self.recv_session_id:
+                print("❌ [CALL CRITICAL] No Session IDs from server!")
+                print(f"[CALL DEBUG] CALLER_SESSION_ID: {self.send_session_id}")
+                print(f"[CALL DEBUG] CALLEE_SESSION_ID: {self.recv_session_id}")
+                print(f"[CALL DEBUG] All available keys: {list(msg.keys())}")
                 
                 # ❌ KEIN FALLBACK - Anruf abbrechen
                 if hasattr(self.client, 'after'):
                     self.client.after(0, lambda: messagebox.showerror(
                         "Audio Fehler", 
-                        "Keine Audio-Verbindung möglich - Session fehlt"
+                        "Keine Audio-Verbindung möglich - Session-IDs fehlen"
                     ))
                 self.cleanup_call_resources()
                 return
             
-            self.session_id = session_id
-            print(f"[CALL] ✅ Session ID confirmed: {self.session_id}")
+            print(f"[CALL] ✅ Session IDs confirmed:")
+            print(f"[CALL]   SEND: {self.send_session_id}")
+            print(f"[CALL]   RECV: {self.recv_session_id}")
+            
+            # ✅ WICHTIG: Setze session_id für _start_audio_streams
+            self.session_id = self.send_session_id  # Für Kompatibilität
             
             # ✅ UDP Relay Konfiguration
-            use_relay = data.get('USE_AUDIO_RELAY', False)
-            relay_ip = data.get('AUDIO_RELAY_IP')
-            relay_port = data.get('SERVER_RELAY_PORT', 51820)
+            use_relay = msg.get('USE_AUDIO_RELAY', False)
+            relay_ip = msg.get('AUDIO_RELAY_IP')
+            relay_port = msg.get('SERVER_RELAY_PORT', 51820)
             
             print(f"[CALL] Relay config - use_relay: {use_relay}, ip: {relay_ip}, port: {relay_port}")
             
@@ -5381,7 +5378,7 @@ class CALL:
                 
                 # ✅ Audio streams starten
                 if hasattr(self, 'current_secret') and self.current_secret:
-                    print(f"[CALL] Starting audio streams with Session-ID: {self.session_id}")
+                    print(f"[CALL] Starting audio streams with Session-IDs")
                     self._start_audio_streams()
                     if hasattr(self, 'pending_call'):
                         self.pending_call['status'] = 'connected'
