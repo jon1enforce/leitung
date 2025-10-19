@@ -1317,9 +1317,9 @@ class CONVEY:
                 continue
 
     def _register_audio_relay(self, call_id, caller_name, callee_name):
-        """🚀 KORRIGIERT: Bidirektionales Session-Routing für Audio"""
+        """🚀 KORRIGIERT: Bidirektionales Session-Routing für Audio MIT KOLLISIONSSICHERHEIT"""
         try:
-            print(f"🎯 [RELAY FIXED] Bidirectional routing: {caller_name} <-> {callee_name}")
+            print(f"🎯 [RELAY SECURE] Bidirectional routing: {caller_name} <-> {callee_name}")
             
             caller_data = None
             callee_data = None
@@ -1346,18 +1346,30 @@ class CONVEY:
                 print(f"[RELAY ERROR] Missing IP addresses")
                 return False
             
-            print(f"[RELAY FIXED] IP Analysis:")
+            print(f"[RELAY SECURE] IP Analysis:")
             print(f"  {caller_name} -> IP: {caller_ip}")
             print(f"  {callee_name} -> IP: {callee_ip}")
             
-            # ✅ BIDIREKTIONALE SESSION-IDs GENERIEREN
+            # ✅ 🔐 KOLLISIONSSICHERE SESSION-IDs GENERIEREN
             import hashlib
             import time
+            import secrets
+            import os
             
-            # Unterschiedliche Session-IDs für jede Richtung
-            caller_to_callee_session = hashlib.sha3_256(f"{call_id}_caller_to_callee".encode()).hexdigest()[:16]
-            callee_to_caller_session = hashlib.sha3_256(f"{call_id}_callee_to_caller".encode()).hexdigest()[:16]
+            # 🔐 KRYPTOGRAFISCH SICHERE Session-IDs
+            # Methode 1: Zufällige Tokens + Zeitstempel + Call-ID für maximale Kollisionssicherheit
+            timestamp_ns = time.time_ns()  # Nanosekunden-Präzision
+            random_component = secrets.token_hex(8)  # 16 Bytes Zufälligkeit
             
+            caller_to_callee_session = hashlib.sha3_256(
+                f"{call_id}_caller_to_callee_{timestamp_ns}_{random_component}_{os.urandom(4).hex()}".encode()
+            ).hexdigest()[:32]  # 32 Zeichen für bessere Sicherheit
+            
+            callee_to_caller_session = hashlib.sha3_256(
+                f"{call_id}_callee_to_caller_{timestamp_ns}_{random_component}_{os.urandom(4).hex()}".encode()
+            ).hexdigest()[:32]  # 32 Zeichen für bessere Sicherheit
+            
+            # 🔐 Session-Bytes (16 Bytes für UDP Paket-Header)
             caller_session_bytes = caller_to_callee_session.encode('utf-8')[:16].ljust(16, b'\0')
             callee_session_bytes = callee_to_caller_session.encode('utf-8')[:16].ljust(16, b'\0')
             
@@ -1365,11 +1377,25 @@ class CONVEY:
             caller_audio_addr = (caller_ip, 51821)
             callee_audio_addr = (callee_ip, 51821)
             
-            print(f"[RELAY FIXED] 🎯 Bidirectional Session Routing:")
-            print(f"  Caller → Callee: {caller_to_callee_session}")
-            print(f"  Callee → Caller: {callee_to_caller_session}")
+            print(f"[RELAY SECURE] 🔐 Kollisionssichere Session Routing:")
+            print(f"  Caller → Callee: {caller_to_callee_session} (32 chars)")
+            print(f"  Callee → Caller: {callee_to_caller_session} (32 chars)")
+            print(f"  Session Bytes: {len(caller_session_bytes)} bytes each")
             print(f"  Caller Audio Addr: {caller_audio_addr}")
             print(f"  Callee Audio Addr: {callee_audio_addr}")
+            
+            # ✅ KOLLISIONSCHECK (Sicherheitsmaßnahme)
+            with self.relay_lock:
+                if caller_session_bytes in self.session_routing:
+                    print(f"⚠️ [RELAY WARNING] Caller session collision detected - regenerating...")
+                    # Fallback: Pure Zufälligkeit
+                    caller_to_callee_session = secrets.token_hex(16)
+                    caller_session_bytes = caller_to_callee_session.encode('utf-8')[:16].ljust(16, b'\0')
+                
+                if callee_session_bytes in self.session_routing:
+                    print(f"⚠️ [RELAY WARNING] Callee session collision detected - regenerating...")
+                    callee_to_caller_session = secrets.token_hex(16)
+                    callee_session_bytes = callee_to_caller_session.encode('utf-8')[:16].ljust(16, b'\0')
             
             # ✅ BIDIREKTIONALES SESSION-ROUTING EINRICHTEN
             with self.relay_lock:
@@ -1378,9 +1404,10 @@ class CONVEY:
                 # Callee → Caller Routing  
                 self.session_routing[callee_session_bytes] = caller_audio_addr
                 
-                print(f"[RELAY FIXED] Routing Table Updated:")
-                print(f"  {caller_to_callee_session}... → {callee_audio_addr}")
-                print(f"  {callee_to_caller_session}... → {caller_audio_addr}")
+                print(f"[RELAY SECURE] Routing Table Updated:")
+                print(f"  {caller_to_callee_session[:16]}... → {callee_audio_addr}")
+                print(f"  {callee_to_caller_session[:16]}... → {caller_audio_addr}")
+                print(f"  Total active sessions: {len(self.session_routing)}")
             
             # ✅ RELAY-INFO SPEICHERN
             with self.relay_lock:
@@ -1393,14 +1420,16 @@ class CONVEY:
                     'callee_session_id': callee_to_caller_session,
                     'caller_session_bytes': caller_session_bytes,
                     'callee_session_bytes': callee_session_bytes,
-                    'timestamp': time.time()
+                    'timestamp': time.time(),
+                    'timestamp_ns': timestamp_ns,  # Für Debugging
+                    'random_component': random_component  # Für Debugging
                 }
             
             # ✅ DEBUG AUSGABE
             self._debug_session_routing()
             
-            print(f"[RELAY FIXED] ✅ Bidirectional session routing established!")
-            print(f"[RELAY FIXED] 🎉 Audio relay SUCCESS for call {call_id}")
+            print(f"[RELAY SECURE] ✅ Kollisionssichere Session-Routing etabliert!")
+            print(f"[RELAY SECURE] 🎉 Audio relay SUCCESS for call {call_id}")
             return {
                 'caller_session_id': caller_to_callee_session,
                 'callee_session_id': callee_to_caller_session
@@ -1732,197 +1761,8 @@ class CONVEY:
                 pass
                 
             return False
-    def handle_call_response(self, msg, client_socket, client_name):
-        """🚀 KORRIGIERT: Mit bidirektionalen Session-IDs für Audio-Routing"""
-        try:
-            custom_data = msg.get('custom_data', {})
-            response = custom_data.get('RESPONSE')
-            caller_id = custom_data.get('CALLER_CLIENT_ID')
-            
-            print(f"[CONVEY] Framed SIP call response from {client_name}: {response}")
-            print(f"[CONVEY DEBUG] Caller ID: {caller_id}")
-
-            if not response or not caller_id:
-                print("[CONVEY ERROR] Missing response or caller_id in framed SIP")
-                return False
-                
-            # ✅ CALL-SUCHE
-            call_id = None
-            call_data = None
-            
-            print(f"[CONVEY DEBUG] Searching through {len(self.active_calls)} active calls")
-            for cid, data in self.active_calls.items():
-                print(f"[CONVEY DEBUG] Call {cid}: caller_id={data.get('caller_id')}, callee_id={data.get('callee_id')}, callee_name={data.get('callee_name')}")
-                
-                callee_matches = str(data['callee_id']) == str(client_name)  # ID-Vergleich
-                caller_matches = str(data['caller_id']) == str(caller_id)    # ID-Vergleich
-                
-                # ✅ FALLBACK: Suche auch nach callee_name falls ID nicht matcht
-                if not callee_matches:
-                    callee_matches = str(data['callee_name']) == str(client_name)  # Name-Vergleich
-                
-                if callee_matches and caller_matches:
-                    call_id = cid
-                    call_data = data
-                    print(f"[CONVEY DEBUG] ✓ Found matching call: {cid}")
-                    break
-            
-            if not call_data:
-                print(f"[CONVEY ERROR] No active call found for client {client_name} -> caller_id {caller_id}")
-                return False
-            
-            print(f"[CONVEY] Processing call response for call {call_id}")
-            
-            # ✅ Server IP ermitteln
-            def get_server_public_ip():
-                try:
-                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-                    s.connect(("8.8.8.8", 80))
-                    local_ip = s.getsockname()[0]
-                    s.close()
-                    return local_ip
-                except:
-                    return self.server.host
-            
-            server_ip = get_server_public_ip()
-            
-            # ✅ FRAME-SIP BEARBEITUNG
-            if response == "accepted":
-                print(f"[CONVEY] Call {call_id} accepted by {client_name}")
-                
-                # ✅ UDP Relay mit Session-ID registrieren (falls nicht schon geschehen)
-                if 'caller_session_id' not in call_data or 'callee_session_id' not in call_data:
-                    relay_result = self._register_audio_relay(call_id, call_data['caller_name'], call_data['callee_name'])
-                    
-                    if not relay_result:
-                        print("[CONVEY ERROR] Failed to setup audio relay")
-                        return False
-                    
-                    # ✅ Session-IDs aus Relay-Daten holen
-                    caller_session_id = relay_result.get('caller_session_id')
-                    callee_session_id = relay_result.get('callee_session_id')
-                    
-                    # ✅ In call_data speichern
-                    call_data['caller_session_id'] = caller_session_id
-                    call_data['callee_session_id'] = callee_session_id
-                else:
-                    # ✅ Verwende vorhandene Session-IDs
-                    caller_session_id = call_data.get('caller_session_id')
-                    callee_session_id = call_data.get('callee_session_id')
-                
-                if not caller_session_id or not callee_session_id:
-                    print("[CONVEY ERROR] Missing session IDs for audio routing")
-                    return False
-                
-                print(f"[CONVEY] ✅ Using Session-IDs - Caller: {caller_session_id}, Callee: {callee_session_id}")
-                
-                # ✅ CALL_RESPONSE MIT CALLER-SESSION-ID
-                response_data = {
-                    "MESSAGE_TYPE": "CALL_RESPONSE",
-                    "RESPONSE": "accepted",
-                    "CALLER_CLIENT_ID": caller_id,
-                    "SESSION_ID": caller_session_id,  # ✅ Caller verwendet diese Session-ID
-                    "TIMESTAMP": int(time.time()),
-                    "USE_AUDIO_RELAY": True,
-                    "AUDIO_RELAY_IP": server_ip,
-                    # ✅ SINGLE-PORT SYSTEM INFORMATIONEN
-                    "SERVER_RELAY_PORT": self.udp_relay_port,
-                    "CLIENT_PORT": 51821
-                }
-                
-                response_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], response_data)
-                send_success = send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
-                
-                if send_success:
-                    call_data['status'] = 'accepted'
-                    print(f"[CONVEY] ✅ Call accepted response sent to {call_data['caller_name']} with Session-ID: {caller_session_id}")
-                    
-                    # ✅ CALL_CONFIRMED an BEIDE CLIENTS mit jeweiligen Session-IDs
-                    
-                    # 1. CALL_CONFIRMED an CALLEE
-                    callee_msg_data = {
-                        "MESSAGE_TYPE": "CALL_CONFIRMED",
-                        "SESSION_ID": callee_session_id,  # ✅ Callee bekommt seine Session-ID
-                        "TIMESTAMP": int(time.time()),
-                        "USE_AUDIO_RELAY": True,
-                        "AUDIO_RELAY_IP": server_ip,
-                        "SERVER_RELAY_PORT": self.udp_relay_port,
-                        "CLIENT_PORT": 51821
-                    }
-                    
-                    callee_msg = self.server.build_sip_message("MESSAGE", client_name, callee_msg_data)
-                    send_frame(client_socket, callee_msg.encode('utf-8'))
-                    print(f"[CONVEY] ✅ CALL_CONFIRMED sent to callee {client_name} with Session-ID: {callee_session_id}")
-                    
-                    # 2. CALL_CONFIRMED an CALLER
-                    caller_confirmed_data = {
-                        "MESSAGE_TYPE": "CALL_CONFIRMED",
-                        "SESSION_ID": caller_session_id,  # ✅ Caller bekommt seine Session-ID
-                        "TIMESTAMP": int(time.time()),
-                        "USE_AUDIO_RELAY": True,
-                        "AUDIO_RELAY_IP": server_ip,
-                        "SERVER_RELAY_PORT": self.udp_relay_port,
-                        "CLIENT_PORT": 51821
-                    }
-                    
-                    caller_confirmed_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], caller_confirmed_data)
-                    send_frame(call_data['caller_socket'], caller_confirmed_msg.encode('utf-8'))
-                    print(f"[CONVEY] ✅ CALL_CONFIRMED sent to caller {call_data['caller_name']} with Session-ID: {caller_session_id}")
-                    
-                    print(f"[CONVEY] ✅ Framed SIP call {call_id} accepted with bidirectional Session-IDs")
-                else:
-                    print(f"[CONVEY ERROR] Failed to send accepted response to caller")
-                    
-            elif response == "rejected":
-                print(f"[CONVEY] Call {call_id} rejected by {client_name}")
-                
-                response_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], {
-                    "MESSAGE_TYPE": "CALL_RESPONSE",
-                    "RESPONSE": "rejected",
-                    "CALLER_CLIENT_ID": caller_id,
-                    "TIMESTAMP": int(time.time())
-                })
-                send_success = send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
-                
-                if send_success:
-                    call_data['status'] = 'rejected'
-                    print(f"[CONVEY] ✅ Call rejected response sent to {call_data['caller_name']}")
-                else:
-                    print(f"[CONVEY ERROR] Failed to send rejected response to caller")
-                    
-            elif response == "error":
-                print(f"[CONVEY] Call {call_id} error from {client_name}")
-                
-                response_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], {
-                    "MESSAGE_TYPE": "CALL_RESPONSE", 
-                    "RESPONSE": "error",
-                    "ERROR": "CALLEE_ERROR",
-                    "CALLER_CLIENT_ID": caller_id,
-                    "TIMESTAMP": int(time.time())
-                })
-                send_success = send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
-                
-                if send_success:
-                    call_data['status'] = 'error'
-                    print(f"[CONVEY] ✅ Call error response sent to {call_data['caller_name']}")
-            
-            # ✅ SAUBERES CLEANUP
-            if response in ['accepted', 'rejected', 'error']:
-                if call_id in self.active_calls:
-                    if response in ['rejected', 'error']:
-                        self._unregister_audio_relay(call_id)
-                    del self.active_calls[call_id]
-                    print(f"[CONVEY] ✅ Call {call_id} cleaned up")
-            
-            return True
-            
-        except Exception as e:
-            print(f"[CONVEY ERROR] Framed SIP call response failed: {str(e)}")
-            import traceback
-            traceback.print_exc()
-            return False
     def handle_call_request(self, msg, client_socket, client_name):
-        """🚀 KORRIGIERT: Single-Port System mit Session-ID Support"""
+        """🚀 KORRIGIERT: Single-Port System mit BIDIREKTIONALEN Session-IDs"""
         try:
             custom_data = msg.get('custom_data', {})
             target_id = custom_data.get('TARGET_CLIENT_ID')
@@ -2002,7 +1842,7 @@ class CONVEY:
             # ✅ CALL REGISTRIERUNG (VOR Audio Setup)
             call_id = f"{caller_client_id}_{target_client_id}_{int(time.time())}"
             
-            # ✅ AUDIO RELAY SETUP MIT SESSION-IDs
+            # ✅ AUDIO RELAY SETUP MIT BIDIREKTIONALEN SESSION-IDs
             relay_result = self._register_audio_relay(call_id, caller_name, target_client_name)
             if not relay_result:
                 print("[CONVEY ERROR] Failed to setup audio relay")
@@ -2028,9 +1868,9 @@ class CONVEY:
                 send_frame(client_socket, error_msg.encode('utf-8'))
                 return False
 
-            print(f"[CONVEY] Session IDs generated - Caller: {caller_session_id}, Callee: {callee_session_id}")
+            print(f"[CONVEY] ✅ Bidirectional Session IDs generated - Caller: {caller_session_id}, Callee: {callee_session_id}")
 
-            # ✅ INCOMING_CALL MIT CALLEE SESSION-ID
+            # ✅ INCOMING_CALL AN CALLEE mit BEIDEN Session-IDs
             incoming_call_data = {
                 "MESSAGE_TYPE": "INCOMING_CALL",
                 "CALLER_NAME": caller_name,
@@ -2038,18 +1878,19 @@ class CONVEY:
                 "ENCRYPTED_CALL_DATA": encrypted_data,
                 "TIMESTAMP": int(time.time()),
                 "TIMEOUT": 120,
-                # ✅ SINGLE-PORT SYSTEM MIT SESSION-ID
+                # ✅ SINGLE-PORT SYSTEM
                 "USE_AUDIO_RELAY": True,
                 "AUDIO_RELAY_IP": server_ip,
                 "SERVER_RELAY_PORT": self.udp_relay_port,
                 "CLIENT_PORT": 51821,
-                # ✅ NEU: Session-ID für Callee
-                "SESSION_ID": callee_session_id  # Callee verwendet diese Session-ID
+                # ✅ NEU: BIDIREKTIONALE SESSION-IDs
+                "CALLER_SESSION_ID": caller_session_id,  # Für Empfangen von Caller
+                "CALLEE_SESSION_ID": callee_session_id   # Für Senden an Caller
             }
             
             incoming_call_msg = self.server.build_sip_message("MESSAGE", target_client_name, incoming_call_data)
             
-            print(f"[CONVEY DEBUG] Outgoing INCOMING_CALL with session ID: {callee_session_id}")
+            print(f"[CONVEY DEBUG] Outgoing INCOMING_CALL with session IDs - Caller: {caller_session_id}, Callee: {callee_session_id}")
             
             send_success = send_frame(target_socket, incoming_call_msg.encode('utf-8'))
             
@@ -2078,14 +1919,14 @@ class CONVEY:
                 'status': 'pending',
                 'timeout': 120,
                 'server_ip': server_ip,
-                # ✅ NEU: Session-IDs speichern
+                # ✅ NEU: Beide Session-IDs speichern
                 'caller_session_id': caller_session_id,
                 'callee_session_id': callee_session_id
             }
 
             print(f"[CONVEY] Call {call_id} registered in active calls")
 
-            # ✅ ACKNOWLEDGMENT AN CALLER
+            # ✅ ACKNOWLEDGMENT AN CALLER mit BEIDEN Session-IDs
             ack_msg = self.server.build_sip_message("MESSAGE", caller_name, {
                 "MESSAGE_TYPE": "CALL_REQUEST_ACK",
                 "STATUS": "CALL_FORWARDED",
@@ -2095,12 +1936,15 @@ class CONVEY:
                 "TIMESTAMP": int(time.time()),
                 # ✅ SINGLE-PORT INFO
                 "SERVER_RELAY_PORT": self.udp_relay_port,
-                "CLIENT_PORT": 51821
+                "CLIENT_PORT": 51821,
+                # ✅ NEU: BIDIREKTIONALE SESSION-IDs
+                "CALLER_SESSION_ID": caller_session_id,  # Für Senden an Callee
+                "CALLEE_SESSION_ID": callee_session_id   # Für Empfangen von Callee
             })
             
             ack_success = send_frame(client_socket, ack_msg.encode('utf-8'))
             if ack_success:
-                print(f"[CONVEY] ✓ Call request acknowledgment sent to caller {caller_name}")
+                print(f"[CONVEY] ✓ Call request acknowledgment sent to caller {caller_name} with both Session-IDs")
             else:
                 print(f"[CONVEY WARNING] Failed to send acknowledgment to caller {caller_name}")
 
@@ -2111,7 +1955,7 @@ class CONVEY:
                 daemon=True
             ).start()
 
-            print(f"[CONVEY] ✓ Framed SIP call request completed for {call_id}")
+            print(f"[CONVEY] ✅ Framed SIP call request completed for {call_id} with bidirectional Session-IDs")
             return True
             
         except Exception as e:
@@ -2129,6 +1973,186 @@ class CONVEY:
             except:
                 print("[CONVEY CRITICAL] Could not send error message")
                 
+            return False
+
+    def handle_call_response(self, msg, client_socket, client_name):
+        """🚀 KORRIGIERT: Mit bidirektionalen Session-IDs für Audio-Routing"""
+        try:
+            custom_data = msg.get('custom_data', {})
+            response = custom_data.get('RESPONSE')
+            caller_id = custom_data.get('CALLER_CLIENT_ID')
+            
+            print(f"[CONVEY] Framed SIP call response from {client_name}: {response}")
+            print(f"[CONVEY DEBUG] Caller ID: {caller_id}")
+
+            if not response or not caller_id:
+                print("[CONVEY ERROR] Missing response or caller_id in framed SIP")
+                return False
+                
+            # ✅ CALL-SUCHE
+            call_id = None
+            call_data = None
+            
+            print(f"[CONVEY DEBUG] Searching through {len(self.active_calls)} active calls")
+            for cid, data in self.active_calls.items():
+                print(f"[CONVEY DEBUG] Call {cid}: caller_id={data.get('caller_id')}, callee_id={data.get('callee_id')}, callee_name={data.get('callee_name')}")
+                
+                callee_matches = str(data['callee_id']) == str(client_name)  # ID-Vergleich
+                caller_matches = str(data['caller_id']) == str(caller_id)    # ID-Vergleich
+                
+                # ✅ FALLBACK: Suche auch nach callee_name falls ID nicht matcht
+                if not callee_matches:
+                    callee_matches = str(data['callee_name']) == str(client_name)  # Name-Vergleich
+                
+                if callee_matches and caller_matches:
+                    call_id = cid
+                    call_data = data
+                    print(f"[CONVEY DEBUG] ✓ Found matching call: {cid}")
+                    break
+            
+            if not call_data:
+                print(f"[CONVEY ERROR] No active call found for client {client_name} -> caller_id {caller_id}")
+                return False
+            
+            print(f"[CONVEY] Processing call response for call {call_id}")
+            
+            # ✅ Server IP ermitteln
+            def get_server_public_ip():
+                try:
+                    s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+                    s.connect(("8.8.8.8", 80))
+                    local_ip = s.getsockname()[0]
+                    s.close()
+                    return local_ip
+                except:
+                    return self.server.host
+            
+            server_ip = get_server_public_ip()
+            
+            # ✅ FRAME-SIP BEARBEITUNG
+            if response == "accepted":
+                print(f"[CONVEY] Call {call_id} accepted by {client_name}")
+                
+                # ✅ Session-IDs aus call_data holen
+                caller_session_id = call_data.get('caller_session_id')
+                callee_session_id = call_data.get('callee_session_id')
+                
+                if not caller_session_id or not callee_session_id:
+                    print("[CONVEY ERROR] Missing session IDs in call data")
+                    return False
+                
+                print(f"[CONVEY] ✅ Using Session-IDs - Caller: {caller_session_id}, Callee: {callee_session_id}")
+                
+                # ✅ CALL_RESPONSE AN CALLER mit BEIDEN Session-IDs
+                response_data = {
+                    "MESSAGE_TYPE": "CALL_RESPONSE",
+                    "RESPONSE": "accepted",
+                    "CALLER_CLIENT_ID": caller_id,
+                    "TIMESTAMP": int(time.time()),
+                    "USE_AUDIO_RELAY": True,
+                    "AUDIO_RELAY_IP": server_ip,
+                    # ✅ SINGLE-PORT SYSTEM INFORMATIONEN
+                    "SERVER_RELAY_PORT": self.udp_relay_port,
+                    "CLIENT_PORT": 51821,
+                    # ✅ NEU: BIDIREKTIONALE SESSION-IDs
+                    "CALLER_SESSION_ID": caller_session_id,  # Für Senden an Callee
+                    "CALLEE_SESSION_ID": callee_session_id   # Für Empfangen von Callee
+                }
+                
+                response_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], response_data)
+                send_success = send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
+                
+                if send_success:
+                    call_data['status'] = 'accepted'
+                    print(f"[CONVEY] ✅ Call accepted response sent to {call_data['caller_name']} with both Session-IDs")
+                    
+                    # ✅ CALL_CONFIRMED an BEIDE CLIENTS mit jeweiligen Session-IDs
+                    
+                    # 1. CALL_CONFIRMED an CALLEE
+                    callee_msg_data = {
+                        "MESSAGE_TYPE": "CALL_CONFIRMED",
+                        "TIMESTAMP": int(time.time()),
+                        "USE_AUDIO_RELAY": True,
+                        "AUDIO_RELAY_IP": server_ip,
+                        "SERVER_RELAY_PORT": self.udp_relay_port,
+                        "CLIENT_PORT": 51821,
+                        # ✅ NEU: BIDIREKTIONALE SESSION-IDs
+                        "CALLER_SESSION_ID": caller_session_id,  # Für Empfangen von Caller
+                        "CALLEE_SESSION_ID": callee_session_id   # Für Senden an Caller
+                    }
+                    
+                    callee_msg = self.server.build_sip_message("MESSAGE", client_name, callee_msg_data)
+                    send_frame(client_socket, callee_msg.encode('utf-8'))
+                    print(f"[CONVEY] ✅ CALL_CONFIRMED sent to callee {client_name} with Session-IDs")
+                    
+                    # 2. CALL_CONFIRMED an CALLER
+                    caller_confirmed_data = {
+                        "MESSAGE_TYPE": "CALL_CONFIRMED",
+                        "TIMESTAMP": int(time.time()),
+                        "USE_AUDIO_RELAY": True,
+                        "AUDIO_RELAY_IP": server_ip,
+                        "SERVER_RELAY_PORT": self.udp_relay_port,
+                        "CLIENT_PORT": 51821,
+                        # ✅ NEU: BIDIREKTIONALE SESSION-IDs
+                        "CALLER_SESSION_ID": caller_session_id,  # Für Senden an Callee
+                        "CALLEE_SESSION_ID": callee_session_id   # Für Empfangen von Callee
+                    }
+                    
+                    caller_confirmed_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], caller_confirmed_data)
+                    send_frame(call_data['caller_socket'], caller_confirmed_msg.encode('utf-8'))
+                    print(f"[CONVEY] ✅ CALL_CONFIRMED sent to caller {call_data['caller_name']} with Session-IDs")
+                    
+                    print(f"[CONVEY] ✅ Framed SIP call {call_id} accepted with bidirectional Session-IDs")
+                else:
+                    print(f"[CONVEY ERROR] Failed to send accepted response to caller")
+                    
+            elif response == "rejected":
+                print(f"[CONVEY] Call {call_id} rejected by {client_name}")
+                
+                response_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], {
+                    "MESSAGE_TYPE": "CALL_RESPONSE",
+                    "RESPONSE": "rejected",
+                    "CALLER_CLIENT_ID": caller_id,
+                    "TIMESTAMP": int(time.time())
+                })
+                send_success = send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
+                
+                if send_success:
+                    call_data['status'] = 'rejected'
+                    print(f"[CONVEY] ✅ Call rejected response sent to {call_data['caller_name']}")
+                else:
+                    print(f"[CONVEY ERROR] Failed to send rejected response to caller")
+                    
+            elif response == "error":
+                print(f"[CONVEY] Call {call_id} error from {client_name}")
+                
+                response_msg = self.server.build_sip_message("MESSAGE", call_data['caller_name'], {
+                    "MESSAGE_TYPE": "CALL_RESPONSE", 
+                    "RESPONSE": "error",
+                    "ERROR": "CALLEE_ERROR",
+                    "CALLER_CLIENT_ID": caller_id,
+                    "TIMESTAMP": int(time.time())
+                })
+                send_success = send_frame(call_data['caller_socket'], response_msg.encode('utf-8'))
+                
+                if send_success:
+                    call_data['status'] = 'error'
+                    print(f"[CONVEY] ✅ Call error response sent to {call_data['caller_name']}")
+            
+            # ✅ SAUBERES CLEANUP
+            if response in ['accepted', 'rejected', 'error']:
+                if call_id in self.active_calls:
+                    if response in ['rejected', 'error']:
+                        self._unregister_audio_relay(call_id)
+                    del self.active_calls[call_id]
+                    print(f"[CONVEY] ✅ Call {call_id} cleaned up")
+            
+            return True
+            
+        except Exception as e:
+            print(f"[CONVEY ERROR] Framed SIP call response failed: {str(e)}")
+            import traceback
+            traceback.print_exc()
             return False
 
     def handle_call_end(self, msg, client_socket, client_name):
