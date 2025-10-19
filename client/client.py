@@ -3468,7 +3468,7 @@ class CALL:
         except Exception as e:
             print(f"[MIC CHECK ERROR] {e}")
             return False
-    def _start_audio_streams_simple(self):
+    def _start_audio_streams(self):
         """🚀 VEREINFACHT: Startet vereinfachte Audio-Streams"""
         try:
             print(f"[AUDIO SIMPLE] Starting simplified audio streams")
