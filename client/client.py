@@ -4336,7 +4336,7 @@ class CALL:
                 pass
 
     def handle_message(self, raw_message):
-        """Zentrale Message-Handling Methode - VOLLSTÄNDIG KORRIGIERT"""
+        """Zentrale Message-Handling Methode - MIT CALL_REQUEST_ACK SUPPORT"""
         try:
             print(f"[CALL] Handling raw message type: {type(raw_message)}")
             
@@ -4374,16 +4374,14 @@ class CALL:
             
             print(f"[CALL DEBUG] custom_data keys: {list(custom_data.keys())}")
             
-            # 4. Message Routing MIT KORREKTEN PARAMETERN
+            # 4. Message Routing MIT CALL_REQUEST_ACK SUPPORT
             if message_type == 'INCOMING_CALL':
                 self.handle_incoming_call(custom_data)
             elif message_type == 'SESSION_KEY':
                 self._handle_session_key(custom_data)
             elif message_type == 'CALL_RESPONSE':
                 # ✅ KORREKTUR: RICHTIGE METHODE FÜR CLIENT
-                # Client benötigt handle_call_response NUR mit custom_data
                 if hasattr(self, 'handle_call_response'):
-                    # Prüfe die Signatur der Methode
                     import inspect
                     sig = inspect.signature(self.handle_call_response)
                     params = list(sig.parameters.keys())
@@ -4391,7 +4389,6 @@ class CALL:
                     if len(params) == 1:  # Nur custom_data
                         self.handle_call_response(custom_data)
                     elif len(params) == 3:  # custom_data, client_socket, client_name
-                        # Verwende Standardwerte für fehlende Parameter
                         self.handle_call_response(custom_data, None, "unknown")
                     else:
                         print(f"[CALL ERROR] Unsupported handle_call_response signature: {params}")
@@ -4399,10 +4396,13 @@ class CALL:
                     print("[CALL ERROR] No handle_call_response method available")
             elif message_type == 'PUBLIC_KEY_RESPONSE':
                 print("[CALL] Received PUBLIC_KEY_RESPONSE, processing...")
-                # ✅ KORREKT: custom_data übergeben, nicht msg!
                 self.handle_public_key_response(custom_data)
             elif message_type == 'CALL_CONFIRMED':
                 self.handle_call_confirmed(custom_data)
+            # ✅ NEU: CALL_REQUEST_ACK HANDLER
+            elif message_type == 'CALL_REQUEST_ACK':
+                print("[CALL] Received CALL_REQUEST_ACK, processing...")
+                self.handle_call_request_ack(custom_data)
             elif message_type == 'CALL_TIMEOUT':
                 self.cleanup_call_resources()
                 if hasattr(self.client, 'after'):
@@ -4454,6 +4454,39 @@ class CALL:
         except Exception as e:
             print(f"[EXTRACT ERROR] {str(e)}")
             return "UNKNOWN"
+
+    def handle_call_request_ack(self, msg):
+        """🚀 KORRIGIERT: Caller bekommt beide Session-IDs"""
+        try:
+            custom_data = msg.get('custom_data', {})
+            status = custom_data.get('STATUS')
+            target_name = custom_data.get('TARGET_NAME')
+            call_id = custom_data.get('CALL_ID')
+            
+            print(f"[CALL] Call request acknowledgment: {status} to {target_name}")
+            
+            # ✅ NEU: BEIDE Session-IDs speichern
+            self.send_session_id = custom_data.get('CALLER_SESSION_ID')   # Für Senden
+            self.recv_session_id = custom_data.get('CALLEE_SESSION_ID')   # Für Empfangen
+            
+            if self.send_session_id and self.recv_session_id:
+                print(f"[CALL] ✅ Bidirectional Session IDs received:")
+                print(f"[CALL]   SEND Session ID: {self.send_session_id} (for sending to callee)")
+                print(f"[CALL]   RECV Session ID: {self.recv_session_id} (for receiving from callee)")
+            else:
+                print(f"[CALL WARNING] Missing Session IDs in acknowledgment")
+                
+            if status == "CALL_FORWARDED":
+                self.status = "pending"
+                print(f"[CALL] Call forwarded to {target_name}, waiting for response...")
+                
+            return True
+            
+        except Exception as e:
+            print(f"[CALL ERROR] Failed to handle call request ack: {e}")
+            return False
+
+
 
     def set_connection_state(self, state):
         """Thread-safe connection state management"""
@@ -5362,6 +5395,7 @@ class CALL:
             print(f"[CALL ERROR] Call confirmation handling failed: {str(e)}")
             import traceback
             traceback.print_exc()
+           
     def _handle_session_key(self, msg):
         """Verarbeitet Session Key vom Server"""
         try:
