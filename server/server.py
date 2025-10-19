@@ -772,7 +772,7 @@ class AccurateRelayManager:
         
         # ✅ NEU: Echte Server-IP für Discovery
         self._real_server_ip = self._get_real_server_ip()
-        
+        self.session_routing = {}  # {session_bytes: target_addr}
         # Rest der Initialisierung...
         self.known_servers = {}  # {server_ip: server_data}
         self.server_load = 0  # Eigene Last in %
@@ -1242,77 +1242,75 @@ class CONVEY:
             print(f"  📞 Clients auf Port 51821")
             
             # Starte Turbo Loop
-            threading.Thread(target=self._turbo_relay_loop, daemon=True, name="TurboLoop").start()
+            threading.Thread(target=self._turbo_relay_loop_simple, daemon=True, name="TurboLoop").start()
             
         except Exception as e:
             print(f"[RELAY ERROR] Failed to start: {e}")
             import traceback
             traceback.print_exc()
 
-    def _turbo_relay_loop(self):
-        """⚡ NAT-COMPATIBLE UDP Relay Loop"""
+    def _turbo_relay_loop_simple(self):
+        """⚡ VEREINFACHT: Session-basiertes UDP Relay"""
         import select
         packet_count = 0
         
-        print("[TURBO RELAY] 🚀 Starting NAT-compatible turbo loop...")
+        print("[TURBO RELAY SIMPLE] 🚀 Starting session-based turbo loop...")
         
         while True:
             try:
-                # ✅ OPTIMIERT: Besseres Timeout für NAT-Umgebungen
+                # ✅ OPTIMIERT: Select für Performance
                 ready, _, _ = select.select([self.udp_socket], [], [], 0.05)
                 
                 if ready:
                     data, src_addr = self.udp_socket.recvfrom(1400)
                     packet_count += 1
-                    src_ip, src_port = src_addr
                     
-                    # ✅ REDUZIERTES LOGGING für Performance
-                    if packet_count % 1000 == 0:
-                        print(f"[TURBO] Packet #{packet_count} from {src_ip}:{src_port}")
+                    # ✅ VEREINFACHT: Mindestens 16 Bytes für Session-ID
+                    if len(data) < 16:
+                        continue
+                        
+                    # ✅ VEREINFACHT: Session-ID sind erste 16 Bytes
+                    session_bytes = data[:16]
                     
-                    # ⚡ SCHNELLER LOOKUP MIT NAT-ADDRESSEN
+                    # ⚡ SCHNELLER SESSION-LOOKUP
                     with self.relay_lock:
-                        target_addr = self.connection_map.get(src_addr)
+                        target_addr = self.session_routing.get(session_bytes)
                     
                     if target_addr:
                         try:
-                            # ⚡ DIREKTES WEITERLEITEN AN NAT-ADDRESSE
-                            sent_bytes = self.udp_socket.sendto(data, target_addr)
+                            # ⚡ DIREKTES WEITERLEITEN
+                            self.udp_socket.sendto(data, target_addr)
                             
+                            # Reduziertes Logging für Performance
                             if packet_count % 1000 == 0:
-                                target_ip, target_port = target_addr
-                                src_name = self.client_names.get(src_addr, 'unknown')
-                                target_name = self.client_names.get(target_addr, 'unknown')
-                                print(f"[TURBO] NAT Routing: {src_name} {src_addr} → {target_name} {target_addr} ({len(data)} bytes)")
+                                print(f"[TURBO SIMPLE] Routed packet #{packet_count} via session {session_bytes.hex()[:8]}...")
+                                print(f"[TURBO SIMPLE] Routing: {src_addr} -> {target_addr}")
                                 
                         except Exception as send_error:
-                            print(f"[TURBO SEND ERROR] Failed to send to {target_addr}: {send_error}")
-                            # ✅ VERBESSERTES ERROR HANDLING: Entferne defekte Verbindungen
+                            print(f"[TURBO SIMPLE SEND ERROR] Failed to send to {target_addr}: {send_error}")
+                            # ✅ CLEANUP: Defekte Verbindungen entfernen
                             if "Connection refused" in str(send_error) or "Host is down" in str(send_error):
-                                print(f"[TURBO CLEANUP] Removing broken connection: {src_addr} -> {target_addr}")
+                                print(f"[TURBO SIMPLE CLEANUP] Removing broken session: {session_bytes.hex()[:8]}")
                                 with self.relay_lock:
-                                    if src_addr in self.connection_map:
-                                        del self.connection_map[src_addr]
-                                    if target_addr in self.connection_map:
-                                        del self.connection_map[target_addr]
+                                    if session_bytes in self.session_routing:
+                                        del self.session_routing[session_bytes]
                     else:
-                        # ❌ Keine Route gefunden - möglicherweise nicht registrierter Client oder NAT-Problem
+                        # ❌ Keine Route für Session-ID
                         if packet_count % 500 == 0:
-                            print(f"[TURBO WARNING] No NAT route for {src_addr}")
-                            print(f"[TURBO DEBUG] Available routes: {list(self.connection_map.keys())}")
+                            print(f"[TURBO SIMPLE WARNING] No route for session {session_bytes.hex()[:8]}")
+                            print(f"[TURBO SIMPLE DEBUG] Available sessions: {len(self.session_routing)}")
                             
             except BlockingIOError:
                 continue
             except Exception as e:
                 if "10054" not in str(e):  # Unterdrücke normale Connection Reset Fehler
-                    print(f"[TURBO ERROR] {e}")
-                time.sleep(0.1)
+                    print(f"[TURBO SIMPLE ERROR] {e}")
                 continue
 
     def _register_audio_relay(self, call_id, caller_name, callee_name):
-        """🚀 INTELLIGENTES NAT-TRAVERSAL: Korrigierte Version die lokale IPs verwendet"""
+        """🚀 VEREINFACHT: Session-basiertes Audio Routing"""
         try:
-            print(f"🎯 [RELAY] Intelligent NAT Detection: {caller_name} <-> {callee_name}")
+            print(f"🎯 [RELAY SIMPLE] Session-based routing: {caller_name} <-> {callee_name}")
             
             caller_data = None
             callee_data = None
@@ -1328,74 +1326,63 @@ class CONVEY:
                         callee_data = client_data
             
             if not caller_data or not callee_data:
-                print(f"[RELAY ERROR] Client data not found")
+                print(f"[RELAY SIMPLE ERROR] Client data not found")
                 return False
             
-            # ✅ IP-DATEN EXTRAHIEREN - LOKALE IP VERWENDEN!
-            caller_local_ip = caller_data.get('ip')  # Das ist 192.168.8.161
-            callee_local_ip = callee_data.get('ip')  # Das ist 192.168.8.166
-            caller_nat_ip = caller_data.get('nat_ip', caller_data.get('ip'))
-            callee_nat_ip = callee_data.get('nat_ip', callee_data.get('ip'))
+            # ✅ IP-DATEN EXTRAHIEREN
+            caller_ip = caller_data.get('ip')
+            callee_ip = callee_data.get('ip')
             
-            print(f"[RELAY] IP Analysis:")
-            print(f"  {caller_name} -> Local IP: {caller_local_ip}, NAT IP: {caller_nat_ip}")
-            print(f"  {callee_name} -> Local IP: {callee_local_ip}, NAT IP: {callee_nat_ip}")
-            
-            # ✅ VEREINFACHTE LOGIK: Wenn Clients im gleichen NAT sind, IMMER lokale IPs verwenden
-            clients_in_same_nat = (caller_nat_ip == callee_nat_ip)
-            
-            print(f"[RELAY] Network Analysis:")
-            print(f"  Clients in same NAT: {clients_in_same_nat}")
-            
-            # ✅ KORRIGIERTE ENTSCHEIDUNGSLOGIK
-            if clients_in_same_nat:
-                # ✅ FALL 1: Clients im gleichen NAT → LOKALE IPs VERWENDEN
-                print(f"[RELAY] ✅ CLIENTS IN SAME NAT - using LOCAL IPs")
-                caller_audio_addr = (caller_local_ip, 51821)  # 192.168.8.161
-                callee_audio_addr = (callee_local_ip, 51821)  # 192.168.8.166
-                routing_type = "LOCAL_SAME_NAT"
-            else:
-                # ✅ FALL 2: Clients in verschiedenen NATs → NAT IPs verwenden
-                print(f"[RELAY] ✅ DIFFERENT NATs - using NAT IPs")
-                caller_audio_addr = (caller_nat_ip, 51821)
-                callee_audio_addr = (callee_nat_ip, 51821)
-                routing_type = "NAT_DIFFERENT"
-            
-            # ✅ VALIDIERUNG
-            if not caller_audio_addr[0] or not callee_audio_addr[0]:
-                print(f"[RELAY ERROR] Could not determine audio addresses")
+            if not caller_ip or not callee_ip:
+                print(f"[RELAY SIMPLE ERROR] Missing IP addresses")
                 return False
             
-            print(f"[RELAY] 🎯 Final Audio Routing [{routing_type}]:")
+            print(f"[RELAY SIMPLE] IP Analysis:")
+            print(f"  {caller_name} -> IP: {caller_ip}")
+            print(f"  {callee_name} -> IP: {callee_ip}")
+            
+            # ✅ SESSION-ID GENERIEREN
+            import hashlib
+            import time
+            session_id = hashlib.sha3_256(f"{call_id}_{int(time.time())}".encode()).hexdigest()[:16]
+            session_bytes = session_id.encode('utf-8')[:16].ljust(16, b'\0')
+            
+            # ✅ AUDIO-ADDRESSEN (Feste Ports)
+            caller_audio_addr = (caller_ip, 51821)
+            callee_audio_addr = (callee_ip, 51821)
+            
+            print(f"[RELAY SIMPLE] 🎯 Session Routing:")
+            print(f"  Session ID: {session_id}")
             print(f"  Caller: {caller_audio_addr}")
             print(f"  Callee: {callee_audio_addr}")
             
-            # ⚡ BIDIREKTIONALE VERBINDUNG EINRICHTEN
+            # ✅ SESSION-ROUTING EINRICHTEN
             with self.relay_lock:
-                self.connection_map[caller_audio_addr] = callee_audio_addr
-                self.connection_map[callee_audio_addr] = caller_audio_addr
+                # Bidirektionales Routing
+                self.session_routing[session_bytes] = callee_audio_addr
                 
-                self.client_names[caller_audio_addr] = caller_name
-                self.client_names[callee_audio_addr] = callee_name
+                # Für umgekehrte Richtung könnten wir einen separaten Session-ID Mechanismus verwenden
+                # ODER: Beide Clients verwenden die gleiche Session-ID für beide Richtungen
             
-            # ✅ Relay-Info speichern
+            # ✅ RELAY-INFO SPEICHERN
             with self.relay_lock:
                 self.audio_relays[call_id] = {
                     'caller_name': caller_name,
                     'callee_name': callee_name,
                     'caller_addr': caller_audio_addr,
                     'callee_addr': callee_audio_addr,
-                    'routing_type': routing_type,
-                    'same_nat': clients_in_same_nat,
+                    'session_id': session_id,
+                    'session_bytes': session_bytes,
                     'timestamp': time.time()
                 }
             
-            self._debug_connection_map()
-            print(f"[RELAY] 🎉 Intelligent Audio relay SUCCESS for call {call_id}")
+            # ✅ DEBUG AUSGABE
+            self._debug_session_routing()
+            print(f"[RELAY SIMPLE] 🎉 Session-based audio relay SUCCESS for call {call_id}")
             return True
             
         except Exception as e:
-            print(f"[RELAY ERROR] Intelligent Registration failed: {e}")
+            print(f"[RELAY SIMPLE ERROR] Session registration failed: {e}")
             import traceback
             traceback.print_exc()
             return False
