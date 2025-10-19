@@ -3271,29 +3271,17 @@ class CALL:
             sock.settimeout(original_timeout)
             
     def audio_stream_out(self, target_ip, port, iv, key, session_id):
-        """🎤 VEREINFACHT: Sendet Audio mit Session-ID (OHNE SIP-Framing)"""
+        """🎤 KORRIGIERT: Sendet Audio mit GRÖSSENBESCHRÄNKUNG"""
         audio_socket = None
         
         if not self.audio_available:
             print("❌ [AUDIO OUT] Kein Audio-Backend verfügbar")
             return False
             
-        print(f"[AUDIO OUT] Starting sender for session {session_id} to {target_ip}:{port}")
+        print(f"[AUDIO OUT] Starting audio to {target_ip}:{port}")
 
-        # Warte auf active_call
-        import time
-        wait_start = time.time()
-        while not self.active_call and (time.time() - wait_start) < 2.0:
-            time.sleep(0.01)
-        
-        if not self.active_call:
-            print("❌ [AUDIO OUT] Timeout waiting for active_call")
-            return False
-            
-        print(f"✅ [AUDIO OUT] Active call confirmed: {self.active_call}")
-        
         try:
-            # Input Stream öffnen (Mikrofon)
+            # Input Stream öffnen
             if self.audio_available and self.audio:
                 self.input_stream = self.audio_config.audio.open(
                     format=self.audio_config.FORMAT,
@@ -3303,15 +3291,16 @@ class CALL:
                     frames_per_buffer=self.audio_config.CHUNK,
                     input_device_index=self.audio_config.input_device_index
                 )
-                print(f"✅ [AUDIO OUT] Input stream opened successfully")
+                print(f"✅ [AUDIO OUT] Input stream opened")
             else:
                 return False
             
-            # Socket für Senden (AUDIO - OHNE SIP)
+            # ✅ UDP-Socket für Audio
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             audio_socket.settimeout(0.1)
             
-            print(f"🎤 [AUDIO OUT] Sender ACTIVE to {target_ip}:{port} (AUDIO-ONLY)")
+            target_addr = (target_ip, port)
+            print(f"🎤 [AUDIO OUT] Sending to {target_ip}:{port}")
             
             packet_counter = 0
             success_packets = 0
@@ -3320,30 +3309,31 @@ class CALL:
                 try:
                     # Audio-Daten vom Mikrofon lesen
                     data = self.input_stream.read(self.audio_config.CHUNK, exception_on_overflow=False)
-                    
                     if not data:
                         continue
                         
                     packet_counter += 1
                     
-                    # ✅ PKCS7 PADDING
-                    padded_data = pkcs7_pad(data)
-                    
                     # ✅ VERSCHLÜSSELUNG
+                    padded_data = pkcs7_pad(data)
                     cipher = EVP.Cipher("aes_256_cbc", key, iv, 1)
                     encrypted_data = cipher.update(padded_data)
                     encrypted_data += cipher.final()
                     
-                    # ✅ NEU: Audio-Paket senden OHNE SIP-Framing
-                    target_addr = (target_ip, port)
-                    send_success = self.send_audio_packet(audio_socket, session_id, encrypted_data, target_addr)
+                    # ✅ GRÖSSENVALIDIERUNG: Max 1400 Bytes gesamt
+                    session_bytes = session_id.encode('utf-8')[:16].ljust(16, b'\0')
+                    packet = session_bytes + encrypted_data
                     
-                    if send_success:
-                        success_packets += 1
+                    if len(packet) > 1400:
+                        print(f"⚠️ [AUDIO OUT] Packet too large: {len(packet)} bytes, truncating")
+                        packet = packet[:1400]  # Sicherheits-Cutoff
                     
-                    # Erfolgsstatistik
+                    # ✅ Sende UDP-Paket
+                    audio_socket.sendto(packet, target_addr)
+                    success_packets += 1
+                    
                     if success_packets % 100 == 0:
-                        print(f"📤 [AUDIO OUT] Successfully sent {success_packets} packets (AUDIO-ONLY)")
+                        print(f"📤 [AUDIO OUT] Sent {success_packets} packets")
                         
                 except socket.timeout:
                     continue
@@ -3372,28 +3362,16 @@ class CALL:
         
         return success_packets > 0
 
-    def audio_stream_in(self, target_ip, listen_port, iv, key, expected_session_id):
-        """🎧 VEREINFACHT: Empfängt Audio mit Session-ID Prüfung (OHNE SIP-Framing)"""
+    def audio_stream_in(self, listen_port, iv, key, expected_session_id):
+        """🎧 KORRIGIERT: Empfängt Audio mit GRÖSSENVALIDIERUNG"""
         audio_socket = None
         
         if not self.audio_available:
             print("❌ [AUDIO IN] Kein Audio-Backend verfügbar")
             return False
                 
-        print(f"[AUDIO IN] Starting listener for session {expected_session_id}")
+        print(f"[AUDIO IN] Starting listener on port {listen_port}")
 
-        # Warte auf active_call
-        import time
-        wait_start = time.time()
-        while not self.active_call and (time.time() - wait_start) < 2.0:
-            time.sleep(0.01)
-        
-        if not self.active_call:
-            print("❌ [AUDIO IN] Timeout waiting for active_call")
-            return False
-            
-        print(f"✅ [AUDIO IN] Active call confirmed: {self.active_call}")
-        
         try:
             # Output Stream öffnen
             if self.audio_available and self.audio:
@@ -3405,17 +3383,17 @@ class CALL:
                     frames_per_buffer=self.audio_config.CHUNK,
                     output_device_index=self.audio_config.output_device_index
                 )
-                print(f"✅ [AUDIO IN] Output stream opened successfully")
+                print(f"✅ [AUDIO IN] Output stream opened")
             else:
                 return False
             
-            # ✅ Socket für Empfang (AUDIO - OHNE SIP)
+            # ✅ UDP-Socket für Audio
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             audio_socket.bind(('0.0.0.0', listen_port))
             audio_socket.settimeout(0.1)
             
-            print(f"🎧 [AUDIO IN] Listener ACTIVE on port {listen_port} (AUDIO-ONLY)")
+            print(f"🎧 [AUDIO IN] Listening on port {listen_port}")
             
             packet_counter = 0
             valid_packets = 0
@@ -3423,28 +3401,37 @@ class CALL:
             
             while self.active_call and self.audio_available:
                 try:
-                    # ✅ NEU: Audio-Paket empfangen OHNE SIP-Framing
-                    session_id, encrypted_data, addr = self.recv_audio_packet(audio_socket, timeout=0.1)
+                    # ✅ EMPFANGE UDP-PAKET MIT GRÖSSENBESCHRÄNKUNG
+                    data, addr = audio_socket.recvfrom(1400)  # Max 1400 Bytes
+                    packet_counter += 1
                     
-                    if session_id and encrypted_data and session_id == expected_session_id:
+                    if len(data) < 16:
+                        continue
+                        
+                    # ✅ EXTRAHIERE SESSION-ID UND AUDIO-DATEN
+                    session_bytes = data[:16]
+                    encrypted_data = data[16:]
+                    
+                    session_id = session_bytes.rstrip(b'\0').decode('utf-8', errors='ignore')
+                    
+                    # ✅ NUR PAKETE MIT KORREKTER SESSION-ID
+                    if session_id == expected_session_id:
                         valid_packets += 1
                         
                         try:
-                            # ✅ ENTSCHELÜSSELUNG
+                            # Entschlüsselung
                             cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
                             decrypted_data = cipher.update(encrypted_data)
                             decrypted_data += cipher.final()
                             
-                            # ✅ PADDING ENTFERNEN
                             unpadded_data = pkcs7_unpad(decrypted_data)
                             
                             if len(unpadded_data) > 0:
                                 self.output_stream.write(unpadded_data)
                                 success_packets += 1
                             
-                            # Erfolgsstatistik
                             if success_packets % 100 == 0:
-                                print(f"🎧 [AUDIO IN] Successfully processed {success_packets} packets (AUDIO-ONLY)")
+                                print(f"🎧 [AUDIO IN] Processed {success_packets} packets")
                                 
                         except Exception as decrypt_error:
                             print(f"🔴 [AUDIO IN DECRYPT ERROR] {str(decrypt_error)}")
@@ -3474,8 +3461,7 @@ class CALL:
             if audio_socket:
                 audio_socket.close()
         
-        return success_packets > 0          
-
+        return success_packets > 0
     def _check_microphone_available(self):
         """Prüft ob ein Mikrofon verfügbar ist"""
         try:
@@ -3505,17 +3491,17 @@ class CALL:
             return False
 
     def _start_audio_streams(self):
-        """🚀 VEREINFACHT: Startet vereinfachte Audio-Streams"""
+        """🚀 KORRIGIERT: Startet Audio-Streams mit korrekter Port-Trennung"""
         try:
-            print(f"[AUDIO] Starting simplified audio streams")
+            print(f"[AUDIO] Starting audio streams with PORT SEPARATION")
             
             if not self.current_secret:
                 print("[AUDIO] No session key available")
                 return
                 
-            # ✅ VEREINFACHT: Session-ID vom Server verwenden
+            # ✅ SESSION-ID PRÜFEN
             if not hasattr(self, 'session_id') or not self.session_id:
-                print("[AUDIO] No session ID available - cannot start audio")
+                print("[AUDIO] No session ID available")
                 return
                 
             session_id = self.session_id
@@ -3523,13 +3509,15 @@ class CALL:
             if self.use_udp_relay and self.relay_server_ip:
                 relay_ip = self.relay_server_ip
                 
-                # ✅ VEREINFACHT: Asymmetrische Ports beibehalten
-                listen_port = 51821    # Empfangen auf Client:51821 (AUDIO-ONLY)
-                send_to_port = 51820   # Senden zu Server:51820 (AUDIO-ONLY)
+                # ✅ KORREKTE PORT-KONFIGURATION:
+                # SIP: 5060/5061 (Framed) | AUDIO: 51820/51821 (Raw UDP)
+                listen_port = 51821    # Client empfängt auf 51821
+                send_to_port = 51820   # Client sendet zu Server 51820
                 
-                print(f"[AUDIO] 🎯 Simplified Asymmetric Configuration:")
-                print(f"  📤 Send to: {relay_ip}:{send_to_port} (AUDIO-ONLY)")
-                print(f"  📡 Listen on: 0.0.0.0:{listen_port} (AUDIO-ONLY)")
+                print(f"[AUDIO] 🎯 CORRECT PORT CONFIGURATION:")
+                print(f"  📡 SIP Control: Port 5060/5061 (Framed mit Verify-Code)")
+                print(f"  🔊 Audio Send: {relay_ip}:{send_to_port} (Raw UDP)")
+                print(f"  🔊 Audio Receive: 0.0.0.0:{listen_port} (Raw UDP)")
                 print(f"  🔑 Session: {session_id}")
                 print(f"  🔒 Encryption: AES-256-CBC")
                 
@@ -3537,9 +3525,9 @@ class CALL:
                 print("[AUDIO] ❌ ERROR: No UDP relay configured!")
                 return
             
-            # ✅ PRÜFE ACTIVE CALL
+            # ✅ ACTIVE CALL PRÜFEN
             if not self.active_call:
-                print("❌ [AUDIO] Active call is not set - cannot start audio streams")
+                print("❌ [AUDIO] Active call is not set")
                 return
                 
             print(f"[AUDIO] ✅ Active call confirmed: {self.active_call}")
@@ -3548,17 +3536,17 @@ class CALL:
             import time
             time.sleep(0.1)
             
-            # Starte Timer-Anzeige
+            # ✅ TIMER STARTEN
             self._start_call_timer()
             
             # ✅ AUDIO-PARAMETER
             iv = self.current_secret[:16]
             key = self.current_secret[16:48]
             
-            # ✅ PRÜFE MIKROFON
+            # ✅ MIKROFON PRÜFEN
             has_microphone = self._check_microphone_available()
             
-            # ✅ STARTE VEREINFACHTE AUDIO-STREAMS
+            # ✅ AUDIO-STREAMS STARTEN
             send_thread = threading.Thread(
                 target=self.audio_stream_out, 
                 args=(relay_ip, send_to_port, iv, key, session_id),
@@ -3568,19 +3556,18 @@ class CALL:
             
             recv_thread = threading.Thread(
                 target=self.audio_stream_in,
-                args=(relay_ip, listen_port, iv, key, session_id),
+                args=(listen_port, iv, key, session_id),
                 daemon=True,
                 name=f"AudioIn_{session_id}"
             )
             
-            # ✅ THREADS STARTEN
             send_thread.start()
             recv_thread.start()
             
             self.audio_threads = [send_thread, recv_thread]
             self.call_start_time = time.time()
             
-            print(f"[AUDIO] ✅ Simplified audio streams started successfully!")
+            print(f"[AUDIO] ✅ Audio streams started successfully!")
             print(f"[AUDIO] ✅ Session: {session_id}")
             print(f"[AUDIO] ✅ Relay: {relay_ip}")
             
