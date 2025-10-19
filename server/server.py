@@ -1259,11 +1259,11 @@ class CONVEY:
 
 
     def _turbo_relay_loop(self):
-        """⚡ VEREINFACHT: Session-basiertes UDP Relay"""
+        """⚡ KORRIGIERT: Session-basiertes UDP Relay MIT GRÖSSENVALIDIERUNG"""
         import select
         packet_count = 0
         
-        print("[TURBO RELAY SIMPLE] 🚀 Starting session-based turbo loop...")
+        print("[TURBO RELAY] 🚀 Starting session-based turbo loop with SIZE VALIDATION...")
         
         while True:
             try:
@@ -1271,11 +1271,16 @@ class CONVEY:
                 ready, _, _ = select.select([self.udp_socket], [], [], 0.05)
                 
                 if ready:
+                    # ✅ GRÖSSENVALIDIERUNG: Max 1400 Bytes für Audio-Pakete
                     data, src_addr = self.udp_socket.recvfrom(1400)
                     packet_count += 1
                     
-                    # ✅ VEREINFACHT: Mindestens 16 Bytes für Session-ID
+                    # ✅ VALIDIERUNG: Mindestens 16 Bytes für Session-ID, maximal 1400 Bytes
                     if len(data) < 16:
+                        continue
+                        
+                    if len(data) > 1400:
+                        print(f"❌ [AUDIO OVERSIZE] {len(data)} bytes from {src_addr} - ignoring")
                         continue
                         
                     # ✅ VEREINFACHT: Session-ID sind erste 16 Bytes
@@ -1292,28 +1297,26 @@ class CONVEY:
                             
                             # Reduziertes Logging für Performance
                             if packet_count % 1000 == 0:
-                                print(f"[TURBO SIMPLE] Routed packet #{packet_count} via session {session_bytes.hex()[:8]}...")
-                                print(f"[TURBO SIMPLE] Routing: {src_addr} -> {target_addr}")
+                                print(f"[TURBO RELAY] Routed packet #{packet_count} via session {session_bytes.hex()[:8]}...")
                                 
                         except Exception as send_error:
-                            print(f"[TURBO SIMPLE SEND ERROR] Failed to send to {target_addr}: {send_error}")
+                            print(f"[TURBO RELAY SEND ERROR] Failed to send to {target_addr}: {send_error}")
                             # ✅ CLEANUP: Defekte Verbindungen entfernen
                             if "Connection refused" in str(send_error) or "Host is down" in str(send_error):
-                                print(f"[TURBO SIMPLE CLEANUP] Removing broken session: {session_bytes.hex()[:8]}")
+                                print(f"[TURBO RELAY CLEANUP] Removing broken session: {session_bytes.hex()[:8]}")
                                 with self.relay_lock:
                                     if session_bytes in self.session_routing:
                                         del self.session_routing[session_bytes]
                     else:
                         # ❌ Keine Route für Session-ID
                         if packet_count % 500 == 0:
-                            print(f"[TURBO SIMPLE WARNING] No route for session {session_bytes.hex()[:8]}")
-                            print(f"[TURBO SIMPLE DEBUG] Available sessions: {len(self.session_routing)}")
+                            print(f"[TURBO RELAY WARNING] No route for session {session_bytes.hex()[:8]}")
                             
             except BlockingIOError:
                 continue
             except Exception as e:
                 if "10054" not in str(e):  # Unterdrücke normale Connection Reset Fehler
-                    print(f"[TURBO SIMPLE ERROR] {e}")
+                    print(f"[TURBO RELAY ERROR] {e}")
                 continue
 
     def _register_audio_relay(self, call_id, caller_name, callee_name):
