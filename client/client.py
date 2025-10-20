@@ -69,7 +69,7 @@ BUFFER_SIZE = 4096
 FORMAT = pyaudio.paInt16  # 16-Bit-Audio
 CHANNELS = 1  # Mono
 RATE = 44100  # Abtastrate (44.1 kHz)
-CHUNK = 256  # Grösse der Audioblöcke in Frames
+CHUNK = 224  # Grösse der Audioblöcke in Frames
 
 # AES-Einstellungen
 ENC_METHOD = "aes_256_cbc"
@@ -999,7 +999,7 @@ class AudioConfig:
         
         # Standard-Qualität
         self.quality_profile = "middle"
-        self.CHUNK = 128
+        self.CHUNK = 112
         
         # Output Format-Check
         self.output_supports_24bit = True
@@ -1145,7 +1145,7 @@ class AudioConfig:
                     self.FORMAT = pyaudio.paInt16
                     self.RATE = 44100
                     self.CHANNELS = 1
-                    self.CHUNK = 256
+                    self.CHUNK = 224
                     self.sample_width = 2
                     self.actual_format = "16-bit"
                     self.sample_format_name = "16-bit @ 44.1kHz (OpenBSD sndio)"
@@ -1209,7 +1209,7 @@ class AudioConfig:
             self.FORMAT = pyaudio.paInt16
             self.RATE = 44100
             self.CHANNELS = 1
-            self.CHUNK = 256
+            self.CHUNK = 224
             self.sample_width = 2
             self.actual_format = "16-bit"
             self.sample_format_name = "16-bit @ 44.1kHz (OpenBSD PyAudio)"
@@ -1233,7 +1233,7 @@ class AudioConfig:
             self.FORMAT = pyaudio.paInt16
             self.RATE = 44100
             self.CHANNELS = 1
-            self.CHUNK = 256
+            self.CHUNK = 224
             self.sample_width = 2
             self.actual_format = "16-bit"
             self.sample_format_name = "16-bit @ 44.1kHz (Basic Fallback)"
@@ -1263,7 +1263,7 @@ class AudioConfig:
         self.FORMAT = pyaudio.paInt16
         self.RATE = 22050  # Noch niedrigere Rate für Stabilität
         self.CHANNELS = 1
-        self.CHUNK = 256
+        self.CHUNK = 224
         self.sample_width = 2
         self.actual_format = "16-bit"
         self.sample_format_name = "16-bit @ 22.05kHz (EMERGENCY FALLBACK)"
@@ -1651,9 +1651,9 @@ class AudioConfig:
             
             # 6. Chunk-Größe anpassen (ohne Qualität zu ändern)
             if self.RATE >= 96000:
-                self.CHUNK = 128
+                self.CHUNK = 112
             else:
-                self.CHUNK = 256
+                self.CHUNK = 224
             
             print(f"[AUDIO] Final configuration (QUALITY PRESERVED):")
             print(f"  Format: {self.FORMAT} ({self.actual_format})")
@@ -1695,9 +1695,9 @@ class AudioConfig:
                 
                 # Chunk-Größe anpassen
                 if self.RATE >= 96000:
-                    self.CHUNK = 128
+                    self.CHUNK = 112
                 else:
-                    self.CHUNK = 256
+                    self.CHUNK = 224
                 
                 # ✅ TESTE OB DIE KONFIGURATION FUNKTIONIERT
                 if self._test_audio_configuration():
@@ -1809,9 +1809,9 @@ class AudioConfig:
         
         # Passe Chunk-Größe basierend auf Sample-Rate an
         if self.RATE >= 96000:
-            self.CHUNK = 128
+            self.CHUNK = 112
         else:
-            self.CHUNK = 256
+            self.CHUNK = 224
             
         self._print_config("Input")
     
@@ -2260,7 +2260,7 @@ Rauschprofil Informationen (180s Clear Room):
             print(f"[AUDIO TEST] Test signal generated ({len(test_signal)} bytes)")
             
             # Signal in Chunks abspielen
-            chunk_size = 128
+            chunk_size = 112
             total_chunks = len(test_signal) // chunk_size
             
             for i in range(total_chunks):
@@ -2317,7 +2317,7 @@ Rauschprofil Informationen (180s Clear Room):
 class OdeToJoyGenerator:
     """🎵 Generator für Beethoven's 'Ode an die Freude' (9. Sinfonie)"""
     
-    def __init__(self, sample_rate=44100, chunk_size=128):
+    def __init__(self, sample_rate=44100, chunk_size=112):
         self.sample_rate = sample_rate
         self.chunk_size = chunk_size
         self.position = 0
@@ -3320,13 +3320,13 @@ class CALL:
                     encrypted_data = cipher.update(padded_data)
                     encrypted_data += cipher.final()
                     
-                    # ✅ GRÖSSENVALIDIERUNG: Max 1400 Bytes gesamt
+                    # ✅ GRÖSSENVALIDIERUNG: Max 1492 Bytes gesamt
                     session_bytes = session_id.encode('utf-8')[:16].ljust(16, b'\0')
                     packet = session_bytes + encrypted_data
                     
-                    if len(packet) > 1400:
+                    if len(packet) > 1492:
                         print(f"⚠️ [AUDIO OUT] Packet too large: {len(packet)} bytes, truncating")
-                        packet = packet[:1400]  # Sicherheits-Cutoff
+                        packet = packet[:1492]  # Sicherheits-Cutoff
                     
                     # ✅ Sende UDP-Paket
                     audio_socket.sendto(packet, target_addr)
@@ -3402,7 +3402,7 @@ class CALL:
             while self.active_call and self.audio_available:
                 try:
                     # ✅ EMPFANGE UDP-PAKET MIT GRÖSSENBESCHRÄNKUNG
-                    data, addr = audio_socket.recvfrom(1400)  # Max 1400 Bytes
+                    data, addr = audio_socket.recvfrom(1492)  # Max 1492 Bytes
                     packet_counter += 1
                     
                     if len(data) < 16:
@@ -5939,9 +5939,9 @@ class PHONEBOOK(ctk.CTk):
                     
                     # Chunk-Größe anpassen
                     if self.audio_config.RATE >= 96000:
-                        self.audio_config.CHUNK = 128
+                        self.audio_config.CHUNK = 112
                     else:
-                        self.audio_config.CHUNK = 256
+                        self.audio_config.CHUNK = 224
                     
                     print(f"[AUDIO] Quality set (safe): {self.audio_config.sample_format_name}")
                 
