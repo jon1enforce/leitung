@@ -3569,7 +3569,30 @@ class CALL:
         except Exception as e:
             print(f"[MIC CHECK ERROR] {e}")
             return False
-
+    def debug_aes_keys(self):
+        """🔐 DEBUG: Prüft ob AES Schlüssel auf beiden Seiten identisch sind"""
+        print("\n" + "="*60)
+        print("🔐 AES KEY DEBUG")
+        print("="*60)
+        
+        if hasattr(self, 'current_secret') and self.current_secret:
+            iv = self.current_secret[:16]
+            key = self.current_secret[16:48]
+            
+            print(f"IV (16 bytes): {iv.hex()}")
+            print(f"Key (32 bytes): {key.hex()}")
+            print(f"Total secret: {len(self.current_secret)} bytes")
+            
+            # Prüfe ob der Schlüssel gültig ist
+            if len(key) != 32:
+                print("❌ KEY LENGTH ERROR: AES key should be 32 bytes!")
+            if len(iv) != 16:
+                print("❌ IV LENGTH ERROR: IV should be 16 bytes!")
+                
+        else:
+            print("❌ NO CURRENT SECRET AVAILABLE")
+        
+        print("="*60)
     def _start_audio_streams(self):
         """🚀 ERWEITERT: Startet Audio-Streams mit erweiterter Diagnose"""
         try:
