@@ -5358,15 +5358,17 @@ class CALL:
             traceback.print_exc()
             return False
     def handle_call_confirmed(self, msg):
-        """🚀 KORRIGIERT: Session-ID Verarbeitung MIT ROLLEN-ERKENNUNG"""
+        """🚀 KORRIGIERT: Rollen-Erkennung basierend auf INCOMING_CALL"""
         try:
             print(f"[CALL] CALL_CONFIRMED received")
             print(f"[CALL DEBUG] Message keys: {list(msg.keys())}")
             
-            # ✅ ROLLEN-ERKENNUNG: Ist dieser Client der Caller oder Callee?
-            is_caller = hasattr(self, 'pending_call') and self.pending_call is not None
-            role = "CALLER" if is_caller else "CALLEE"
-            print(f"[CALL] Role detection: {role}")
+            # ✅ KORREKTE ROLLEN-ERKENNUNG: Prüfe ob wir vorher eine INCOMING_CALL hatten
+            is_callee = hasattr(self, 'incoming_call') and self.incoming_call is not None
+            is_caller = hasattr(self, 'pending_call') and self.pending_call is not None and not is_callee
+            
+            role = "CALLEE" if is_callee else "CALLER" if is_caller else "UNKNOWN"
+            print(f"[CALL] Role detection: {role} (incoming_call: {is_callee}, pending_call: {is_caller})")
             
             # ✅ ROLLEN-BASIERTE SESSION-ZUWEISUNG
             caller_session_id = msg.get('CALLER_SESSION_ID')   # Für Senden von Caller zu Callee
@@ -5379,26 +5381,19 @@ class CALL:
                 print(f"[CALL] ✅ CALLER Session Mapping:")
                 print(f"  SEND (to callee): {self.send_session_id}")
                 print(f"  RECV (from callee): {self.recv_session_id}")
-            else:
+            elif is_callee:
                 # CALLEE: Sendet mit CALLEE_SESSION_ID, empfängt mit CALLER_SESSION_ID
                 self.send_session_id = callee_session_id    # Senden an Caller  
                 self.recv_session_id = caller_session_id    # Empfangen von Caller
                 print(f"[CALL] ✅ CALLEE Session Mapping:")
                 print(f"  SEND (to caller): {self.send_session_id}")
                 print(f"  RECV (from caller): {self.recv_session_id}")
+            else:
+                print("❌ [CALL ERROR] Could not determine role!")
+                return
             
             if not self.send_session_id or not self.recv_session_id:
                 print("❌ [CALL CRITICAL] No Session IDs from server!")
-                print(f"[CALL DEBUG] CALLER_SESSION_ID: {caller_session_id}")
-                print(f"[CALL DEBUG] CALLEE_SESSION_ID: {callee_session_id}")
-                print(f"[CALL DEBUG] All available keys: {list(msg.keys())}")
-                
-                if hasattr(self.client, 'after'):
-                    self.client.after(0, lambda: messagebox.showerror(
-                        "Audio Fehler", 
-                        "Keine Audio-Verbindung möglich - Session-IDs fehlen"
-                    ))
-                self.cleanup_call_resources()
                 return
             
             print(f"[CALL] ✅ Final Session IDs for {role}:")
@@ -5406,7 +5401,7 @@ class CALL:
             print(f"[CALL]   RECV: {self.recv_session_id}")
             
             # ✅ WICHTIG: Setze session_id für _start_audio_streams
-            self.session_id = self.send_session_id  # Für Kompatibilität
+            self.session_id = self.send_session_id
             
             # ✅ UDP Relay Konfiguration
             use_relay = msg.get('USE_AUDIO_RELAY', False)
@@ -5425,28 +5420,23 @@ class CALL:
                 self.active_call = True
                 print(f"[CALL] ✅ Active call set to: {self.active_call}")
                 
-                # ✅ WICHTIG: Audio-Streams VERZÖGERT starten (nicht-blocking)
+                # ✅ Audio-Streams starten
                 if hasattr(self, 'current_secret') and self.current_secret:
                     print(f"[CALL] Scheduling delayed audio streams start...")
                     
-                    # ✅ VERBESSERT: Konsistente Verzögerung von 500ms
                     if hasattr(self.client, 'after') and self.client.after:
-                        # TKinter GUI - nutze after für Thread-Safety
                         self.client.after(500, self._delayed_start_audio_streams)
                     else:
-                        # Console Mode - nutze Thread mit Timer
                         import threading
                         timer = threading.Timer(0.5, self._delayed_start_audio_streams)
                         timer.daemon = True
                         timer.start()
                         
-                    if hasattr(self, 'pending_call'):
-                        self.pending_call['status'] = 'connected'
                     print("[CALL] ✅ UDP Relay call established - audio streams scheduled")
                 else:
-                    print("[CALL ERROR] No session secret available for audio streams")
+                    print("[CALL ERROR] No session secret available")
             else:
-                print("[CALL ERROR] No relay configuration in confirmation")
+                print("[CALL ERROR] No relay configuration")
                 
         except Exception as e:
             print(f"[CALL ERROR] Call confirmation handling failed: {str(e)}")
