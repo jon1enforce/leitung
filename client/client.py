@@ -3363,7 +3363,7 @@ class CALL:
         return success_packets > 0
 
     def audio_stream_in(self, listen_port, iv, key, expected_session_id):
-        """🎧 KORRIGIERT: Empfängt Audio mit DETAILLIERTEM SESSION-DEBUGGING"""
+        """🎧 KORRIGIERT: Empfängt Audio mit 16-CHAR SESSION-ID VERGLEICH"""
         audio_socket = None
         
         if not self.audio_available:
@@ -3371,7 +3371,8 @@ class CALL:
             return False
                 
         print(f"[AUDIO IN] Starting listener on port {listen_port}")
-        print(f"🎧 [AUDIO IN SESSION] Erwarte Session-ID: '{expected_session_id}'")
+        print(f"🎧 [AUDIO IN SESSION] Erwarte 16-char Session-ID: '{expected_session_id}'")
+        print(f"🎧 [AUDIO IN SESSION] Erwarte Länge: {len(expected_session_id)} Zeichen")
 
         try:
             # Output Stream öffnen
@@ -3417,18 +3418,19 @@ class CALL:
                     
                     session_id = session_bytes.rstrip(b'\0').decode('utf-8', errors='ignore')
                     
-                    # ✅ DETAILLIERTES SESSION-LOGGING (nur alle 20 Pakete oder bei Match)
+                    # ✅ DETAILLIERTES 16-CHAR SESSION-LOGGING
                     if packet_counter % 20 == 0 or session_id == expected_session_id:
                         print(f"🔍 [AUDIO IN CHECK] Packet #{packet_counter}")
-                        print(f"   Empfangen: '{session_id}'")
-                        print(f"   Erwartet: '{expected_session_id}'")
+                        print(f"   Empfangen: '{session_id}' (Länge: {len(session_id)})")
+                        print(f"   Erwartet: '{expected_session_id}' (Länge: {len(expected_session_id)})")
                         print(f"   Match: {session_id == expected_session_id}")
                         print(f"   Von: {addr}")
                         print(f"   Datenlänge: {len(encrypted_data)} bytes")
                     
-                    # ✅ NUR PAKETE MIT KORREKTER SESSION-ID
+                    # ✅ NUR PAKETE MIT KORREKTER 16-CHAR SESSION-ID
                     if session_id == expected_session_id:
                         valid_packets += 1
+                        print(f"✅ [AUDIO IN MATCH] Valides Paket #{valid_packets} - Session stimmt überein!")
                         
                         try:
                             # Entschlüsselung
@@ -3441,27 +3443,30 @@ class CALL:
                             if len(unpadded_data) > 0:
                                 self.output_stream.write(unpadded_data)
                                 success_packets += 1
-                            
-                            if success_packets % 10 == 0:  # Häufigeres Logging für Erfolge
-                                print(f"🎧 [AUDIO IN] Processed {success_packets} valid packets")
+                                if success_packets % 5 == 0:  # Häufigeres Logging für Erfolge
+                                    print(f"🎧 [AUDIO IN SUCCESS] Verarbeitet {success_packets} Pakete")
+                                    
+                            else:
+                                print(f"⚠️ [AUDIO IN WARNING] Leere Daten nach Entschlüsselung")
                                 
                         except Exception as decrypt_error:
                             print(f"🔴 [AUDIO IN DECRYPT ERROR] {str(decrypt_error)}")
                             
                     else:
-                        if packet_counter % 30 == 0:  # Reduziertes Logging für Mismatches
-                            print(f"❌ [AUDIO IN MISMATCH] Ignoring packet - wrong session ID")
+                        if packet_counter % 25 == 0:  # Reduziertes Logging für Mismatches
+                            print(f"❌ [AUDIO IN MISMATCH] Ignoriere Paket - falsche Session-ID")
+                            print(f"    Empfangen: '{session_id}' vs Erwartet: '{expected_session_id}'")
                             
                 except socket.timeout:
                     if packet_counter % 100 == 0:  # Seltenes Timeout-Logging
-                        print(f"⏰ [AUDIO IN TIMEOUT] No packets received...")
+                        print(f"⏰ [AUDIO IN TIMEOUT] Keine Pakete empfangen... (bisher {packet_counter} Timeouts)")
                     continue
                 except Exception as e:
                     if self.active_call:
                         print(f"[AUDIO IN ERROR] {str(e)}")
                     break
                             
-            print(f"[AUDIO IN] Session ended. Total: {packet_counter}, Valid: {valid_packets}, Success: {success_packets}")
+            print(f"[AUDIO IN] Session beendet. Gesamt: {packet_counter}, Valide: {valid_packets}, Erfolgreich: {success_packets}")
                                         
         except Exception as e:
             print(f"[AUDIO IN SETUP ERROR] {str(e)}")
@@ -3474,10 +3479,12 @@ class CALL:
                     self.output_stream.stop_stream()
                     self.output_stream.close()
                     self.output_stream = None
+                    print(f"✅ [AUDIO IN] Output stream closed")
                 except Exception as e:
                     print(f"[AUDIO IN CLOSE ERROR] {e}")
             if audio_socket:
                 audio_socket.close()
+                print(f"✅ [AUDIO IN] Socket closed")
         
         return success_packets > 0
     def _check_microphone_available(self):
@@ -3509,9 +3516,9 @@ class CALL:
             return False
 
     def _start_audio_streams(self):
-        """🚀 KORRIGIERT: Startet Audio-Streams mit korrekter Session-ID Trennung"""
+        """🚀 KORRIGIERT: Startet Audio-Streams mit korrekter 16-char Session-ID Trennung"""
         try:
-            print(f"[AUDIO] Starting audio streams with SESSION SEPARATION")
+            print(f"[AUDIO] Starting audio streams with 16-CHAR SESSION SEPARATION")
             
             if not self.current_secret:
                 print("[AUDIO] No session key available")
@@ -3522,8 +3529,9 @@ class CALL:
                 print("[AUDIO] No session IDs available")
                 return
                 
-            send_session_id = self.send_session_id    # Für Senden an Partner
-            recv_session_id = self.recv_session_id    # Für Empfangen vom Partner
+            # ✅ KORREKT: VERWENDE NUR ERSTE 16 ZEICHEN DER SESSION-IDs
+            send_session_short = self.send_session_id[:16] if self.send_session_id else ""
+            recv_session_short = self.recv_session_id[:16] if self.recv_session_id else ""
             
             if self.use_udp_relay and self.relay_server_ip:
                 relay_ip = self.relay_server_ip
@@ -3533,12 +3541,14 @@ class CALL:
                 listen_port = 51821    # Client empfängt auf 51821
                 send_to_port = 51820   # Client sendet zu Server 51820
                 
-                print(f"[AUDIO] 🎯 KORREKTE SESSION-KONFIGURATION:")
+                print(f"[AUDIO] 🎯 KORREKTE 16-CHAR SESSION-KONFIGURATION:")
                 print(f"  📡 SIP Control: Port 5060/5061 (Framed mit Verify-Code)")
                 print(f"  🔊 Audio SEND: {relay_ip}:{send_to_port}")
-                print(f"    SEND Session: {send_session_id}")
+                print(f"    SEND Session: '{send_session_short}' (16 chars)")
+                print(f"    SEND Session Full: {self.send_session_id} (32 chars)")
                 print(f"  🔊 Audio RECEIVE: 0.0.0.0:{listen_port}")  
-                print(f"    RECV Session: {recv_session_id}")
+                print(f"    RECV Session: '{recv_session_short}' (16 chars)")
+                print(f"    RECV Session Full: {self.recv_session_id} (32 chars)")
                 print(f"  🔒 Encryption: AES-256-CBC")
                 
             else:
@@ -3566,19 +3576,19 @@ class CALL:
             # ✅ MIKROFON PRÜFEN
             has_microphone = self._check_microphone_available()
             
-            # ✅ AUDIO-STREAMS STARTEN MIT KORREKTEN SESSION-IDs
+            # ✅ AUDIO-STREAMS STARTEN MIT KORREKTEN 16-CHAR SESSION-IDs
             send_thread = threading.Thread(
                 target=self.audio_stream_out, 
-                args=(relay_ip, send_to_port, iv, key, send_session_id),  # SEND Session
+                args=(relay_ip, send_to_port, iv, key, send_session_short),  # ✅ 16 chars SEND Session
                 daemon=True,
-                name=f"AudioOut_{send_session_id}"
+                name=f"AudioOut_{send_session_short}"
             )
             
             recv_thread = threading.Thread(
                 target=self.audio_stream_in,
-                args=(listen_port, iv, key, recv_session_id),  # ✅ RECEIVE Session!
+                args=(listen_port, iv, key, recv_session_short),  # ✅ 16 chars RECEIVE Session!
                 daemon=True,
-                name=f"AudioIn_{recv_session_id}"
+                name=f"AudioIn_{recv_session_short}"
             )
             
             send_thread.start()
@@ -3587,9 +3597,9 @@ class CALL:
             self.audio_threads = [send_thread, recv_thread]
             self.call_start_time = time.time()
             
-            print(f"[AUDIO] ✅ Audio streams started successfully!")
-            print(f"[AUDIO] ✅ SEND Session: {send_session_id}")
-            print(f"[AUDIO] ✅ RECV Session: {recv_session_id}")
+            print(f"[AUDIO] ✅ Audio streams started successfully with 16-char Session-IDs!")
+            print(f"[AUDIO] ✅ SEND Session: '{send_session_short}'")
+            print(f"[AUDIO] ✅ RECV Session: '{recv_session_short}'")
             print(f"[AUDIO] ✅ Relay: {relay_ip}")
             
         except Exception as e:
