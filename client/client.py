@@ -6912,7 +6912,7 @@ class PHONEBOOK(ctk.CTk):
             elif message_type == 'PHONEBOOK_UPDATE':
                 self._process_phonebook_update(msg)
             elif message_type == 'PONG':
-                self._send_ping_message()
+                print("PONG")
             else:
                 print(f"[PROCESS WARNING] Unknown message type: {message_type}")
                 
@@ -7731,7 +7731,7 @@ class PHONEBOOK(ctk.CTk):
             
             elif message_type == 'PONG':
                 print("[PONG] Vom Server empfangen")
-                self._send_ping_message()
+
             
             else:
                 print(f"[FRAME WARN] Unbekannter Nachrichtentyp: {message_type}")
