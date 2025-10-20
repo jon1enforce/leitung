@@ -3269,9 +3269,39 @@ class CALL:
             return None, None, None
         finally:
             sock.settimeout(original_timeout)
+       
+    def _delayed_start_audio_streams(self):
+        """Startet Audio-Streams mit Verzögerung nach CALL_CONFIRMED"""
+        try:
+            print("🚀 [DELAYED AUDIO] Starting audio streams after delay...")
+            
+            # ✅ Prüfe ob Call noch aktiv ist
+            if not self.active_call:
+                print("❌ [DELAYED AUDIO] Call not active anymore")
+                return
+                
+            if not self.current_secret:
+                print("❌ [DELAYED AUDIO] No session secret available")
+                return
+                
+            # ✅ Finale Prüfung vor Start
+            print(f"[DELAYED AUDIO] Final check - Active: {self.active_call}, Secret: {bool(self.current_secret)}")
+            print(f"[DELAYED AUDIO] Send Session: {getattr(self, 'send_session_id', 'None')}")
+            print(f"[DELAYED AUDIO] Recv Session: {getattr(self, 'recv_session_id', 'None')}")
+            
+            # ✅ Starte Audio-Streams
+            self._start_audio_streams()
+            
+            print("✅ [DELAYED AUDIO] Audio streams started successfully")
+            
+        except Exception as e:
+            print(f"❌ [DELAYED AUDIO ERROR] Failed to start audio: {e}")
+            import traceback
+            traceback.print_exc()
+           
             
     def audio_stream_out(self, target_ip, port, iv, key, session_id):
-        """🎤 KORRIGIERT: Sendet Audio mit GRÖSSENBESCHRÄNKUNG"""
+        """🎤 KORRIGIERT: Sendet Audio mit KORREKTER 16-char Session-ID"""
         audio_socket = None
         
         if not self.audio_available:
@@ -3281,7 +3311,7 @@ class CALL:
         print(f"[AUDIO OUT] Starting audio to {target_ip}:{port}")
 
         try:
-            # Input Stream öffnen
+            # Input Stream öffnen (UNVERÄNDERT)
             if self.audio_available and self.audio:
                 self.input_stream = self.audio_config.audio.open(
                     format=self.audio_config.FORMAT,
@@ -3295,7 +3325,7 @@ class CALL:
             else:
                 return False
             
-            # ✅ UDP-Socket für Audio
+            # ✅ UDP-Socket für Audio (UNVERÄNDERT)
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             audio_socket.settimeout(0.1)
             
@@ -3307,28 +3337,29 @@ class CALL:
             
             while self.active_call and self.audio_available:
                 try:
-                    # Audio-Daten vom Mikrofon lesen
+                    # Audio-Daten vom Mikrofon lesen (UNVERÄNDERT)
                     data = self.input_stream.read(self.audio_config.CHUNK, exception_on_overflow=False)
                     if not data:
                         continue
                         
                     packet_counter += 1
                     
-                    # ✅ VERSCHLÜSSELUNG
+                    # ✅ VERSCHLÜSSELUNG (UNVERÄNDERT)
                     padded_data = pkcs7_pad(data)
                     cipher = EVP.Cipher("aes_256_cbc", key, iv, 1)
                     encrypted_data = cipher.update(padded_data)
                     encrypted_data += cipher.final()
                     
-                    # ✅ GRÖSSENVALIDIERUNG: Max 1492 Bytes gesamt
-                    session_bytes = session_id.encode('utf-8')[:16].ljust(16, b'\0')
+                    # ✅ MINIMALINVASIV: VERWENDE NUR ERSTE 16 ZEICHEN DER SESSION-ID
+                    session_short = session_id[:16] if session_id else ""
+                    session_bytes = session_short.encode('utf-8')[:16].ljust(16, b'\0')
                     packet = session_bytes + encrypted_data
                     
                     if len(packet) > 1492:
                         print(f"⚠️ [AUDIO OUT] Packet too large: {len(packet)} bytes, truncating")
-                        packet = packet[:1492]  # Sicherheits-Cutoff
+                        packet = packet[:1492]
                     
-                    # ✅ Sende UDP-Paket
+                    # ✅ Sende UDP-Paket (UNVERÄNDERT)
                     audio_socket.sendto(packet, target_addr)
                     success_packets += 1
                     
@@ -3371,11 +3402,14 @@ class CALL:
             return False
                 
         print(f"[AUDIO IN] Starting listener on port {listen_port}")
-        print(f"🎧 [AUDIO IN SESSION] Erwarte 16-char Session-ID: '{expected_session_id}'")
-        print(f"🎧 [AUDIO IN SESSION] Erwarte Länge: {len(expected_session_id)} Zeichen")
+        
+        # ✅ MINIMALINVASIV: Erwarte 32-char Session-ID, vergleiche aber nur 16 chars
+        expected_session_short = expected_session_id[:16] if expected_session_id else ""
+        print(f"🎧 [AUDIO IN SESSION] Erwarte Session: '{expected_session_id}'")
+        print(f"🎧 [AUDIO IN SESSION] Vergleich mit: '{expected_session_short}' (erste 16 chars)")
 
         try:
-            # Output Stream öffnen
+            # Output Stream öffnen (UNVERÄNDERT)
             if self.audio_available and self.audio:
                 self.output_stream = self.audio_config.audio.open(
                     format=self.audio_config.FORMAT,
@@ -3389,7 +3423,7 @@ class CALL:
             else:
                 return False
             
-            # ✅ UDP-Socket für Audio
+            # ✅ UDP-Socket für Audio (UNVERÄNDERT)
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             audio_socket.bind(('0.0.0.0', listen_port))
@@ -3403,37 +3437,25 @@ class CALL:
             
             while self.active_call and self.audio_available:
                 try:
-                    # ✅ EMPFANGE UDP-PAKET MIT GRÖSSENBESCHRÄNKUNG
-                    data, addr = audio_socket.recvfrom(1492)  # Max 1492 Bytes
+                    # ✅ EMPFANGE UDP-PAKET (UNVERÄNDERT)
+                    data, addr = audio_socket.recvfrom(1492)
                     packet_counter += 1
                     
                     if len(data) < 16:
-                        if packet_counter % 50 == 0:  # Reduziertes Logging
-                            print(f"📥 [AUDIO IN RAW] Packet too short: {len(data)} bytes")
                         continue
                         
-                    # ✅ EXTRAHIERE SESSION-ID UND AUDIO-DATEN
+                    # ✅ EXTRAHIERE SESSION-ID (UNVERÄNDERT)
                     session_bytes = data[:16]
                     encrypted_data = data[16:]
                     
-                    session_id = session_bytes.rstrip(b'\0').decode('utf-8', errors='ignore')
+                    received_session = session_bytes.rstrip(b'\0').decode('utf-8', errors='ignore')
                     
-                    # ✅ DETAILLIERTES 16-CHAR SESSION-LOGGING
-                    if packet_counter % 20 == 0 or session_id == expected_session_id:
-                        print(f"🔍 [AUDIO IN CHECK] Packet #{packet_counter}")
-                        print(f"   Empfangen: '{session_id}' (Länge: {len(session_id)})")
-                        print(f"   Erwartet: '{expected_session_id}' (Länge: {len(expected_session_id)})")
-                        print(f"   Match: {session_id == expected_session_id}")
-                        print(f"   Von: {addr}")
-                        print(f"   Datenlänge: {len(encrypted_data)} bytes")
-                    
-                    # ✅ NUR PAKETE MIT KORREKTER 16-CHAR SESSION-ID
-                    if session_id == expected_session_id:
+                    # ✅ MINIMALINVASIV: VERGLEICHE NUR ERSTE 16 ZEICHEN
+                    if received_session == expected_session_short:
                         valid_packets += 1
-                        print(f"✅ [AUDIO IN MATCH] Valides Paket #{valid_packets} - Session stimmt überein!")
                         
                         try:
-                            # Entschlüsselung
+                            # Entschlüsselung (UNVERÄNDERT)
                             cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
                             decrypted_data = cipher.update(encrypted_data)
                             decrypted_data += cipher.final()
@@ -3443,30 +3465,25 @@ class CALL:
                             if len(unpadded_data) > 0:
                                 self.output_stream.write(unpadded_data)
                                 success_packets += 1
-                                if success_packets % 5 == 0:  # Häufigeres Logging für Erfolge
-                                    print(f"🎧 [AUDIO IN SUCCESS] Verarbeitet {success_packets} Pakete")
-                                    
-                            else:
-                                print(f"⚠️ [AUDIO IN WARNING] Leere Daten nach Entschlüsselung")
+                                
+                            if success_packets % 50 == 0:
+                                print(f"🎧 [AUDIO IN] Processed {success_packets} packets")
                                 
                         except Exception as decrypt_error:
                             print(f"🔴 [AUDIO IN DECRYPT ERROR] {str(decrypt_error)}")
                             
                     else:
-                        if packet_counter % 25 == 0:  # Reduziertes Logging für Mismatches
-                            print(f"❌ [AUDIO IN MISMATCH] Ignoriere Paket - falsche Session-ID")
-                            print(f"    Empfangen: '{session_id}' vs Erwartet: '{expected_session_id}'")
+                        if packet_counter % 100 == 0:
+                            print(f"🔍 [AUDIO IN] Packet #{packet_counter}: '{received_session}' != '{expected_session_short}'")
                             
                 except socket.timeout:
-                    if packet_counter % 100 == 0:  # Seltenes Timeout-Logging
-                        print(f"⏰ [AUDIO IN TIMEOUT] Keine Pakete empfangen... (bisher {packet_counter} Timeouts)")
                     continue
                 except Exception as e:
                     if self.active_call:
                         print(f"[AUDIO IN ERROR] {str(e)}")
                     break
                             
-            print(f"[AUDIO IN] Session beendet. Gesamt: {packet_counter}, Valide: {valid_packets}, Erfolgreich: {success_packets}")
+            print(f"[AUDIO IN] Session ended. Total: {packet_counter}, Valid: {valid_packets}, Success: {success_packets}")
                                         
         except Exception as e:
             print(f"[AUDIO IN SETUP ERROR] {str(e)}")
@@ -3479,12 +3496,10 @@ class CALL:
                     self.output_stream.stop_stream()
                     self.output_stream.close()
                     self.output_stream = None
-                    print(f"✅ [AUDIO IN] Output stream closed")
                 except Exception as e:
                     print(f"[AUDIO IN CLOSE ERROR] {e}")
             if audio_socket:
                 audio_socket.close()
-                print(f"✅ [AUDIO IN] Socket closed")
         
         return success_packets > 0
     def _check_microphone_available(self):
@@ -5343,7 +5358,7 @@ class CALL:
             traceback.print_exc()
             return False
     def handle_call_confirmed(self, msg):
-        """🚀 KORRIGIERT: Robuste Session-ID Verarbeitung"""
+        """🚀 KORRIGIERT: Robuste Session-ID Verarbeitung MIT VERZÖGERTEM AUDIO-START"""
         try:
             print(f"[CALL] CALL_CONFIRMED received")
             print(f"[CALL DEBUG] Message keys: {list(msg.keys())}")
@@ -5391,16 +5406,24 @@ class CALL:
                 self.active_call = True
                 print(f"[CALL] ✅ Active call set to: {self.active_call}")
                 
-                # ✅ Kurze Verzögerung für Thread-Synchronisation
-                time.sleep(0.05)
-                
-                # ✅ Audio streams starten
+                # ✅ WICHTIG: Audio-Streams VERZÖGERT starten (nicht-blocking)
                 if hasattr(self, 'current_secret') and self.current_secret:
-                    print(f"[CALL] Starting audio streams with Session-IDs")
-                    self._start_audio_streams()
+                    print(f"[CALL] Scheduling delayed audio streams start...")
+                    
+                    # ✅ VERBESSERT: Konsistente Verzögerung von 500ms
+                    if hasattr(self.client, 'after') and self.client.after:
+                        # TKinter GUI - nutze after für Thread-Safety
+                        self.client.after(500, self._delayed_start_audio_streams)
+                    else:
+                        # Console Mode - nutze Thread mit Timer
+                        import threading
+                        timer = threading.Timer(0.5, self._delayed_start_audio_streams)
+                        timer.daemon = True
+                        timer.start()
+                        
                     if hasattr(self, 'pending_call'):
                         self.pending_call['status'] = 'connected'
-                    print("[CALL] ✅ UDP Relay call established successfully")
+                    print("[CALL] ✅ UDP Relay call established - audio streams scheduled")
                 else:
                     print("[CALL ERROR] No session secret available for audio streams")
             else:
@@ -5410,7 +5433,6 @@ class CALL:
             print(f"[CALL ERROR] Call confirmation handling failed: {str(e)}")
             import traceback
             traceback.print_exc()
-           
     def _handle_session_key(self, msg):
         """Verarbeitet Session Key vom Server"""
         try:
