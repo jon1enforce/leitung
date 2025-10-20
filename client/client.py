@@ -6858,10 +6858,8 @@ class PHONEBOOK(ctk.CTk):
                 self._handle_identity_verified(msg)
             elif message_type == 'PHONEBOOK_UPDATE':
                 self._process_phonebook_update(msg)
-            elif message_type == 'PING':
-                self._handle_ping_message()
             elif message_type == 'PONG':
-                print("[PONG] Received from server")
+                self._send_ping_message()
             else:
                 print(f"[PROCESS WARNING] Unknown message type: {message_type}")
                 
@@ -7417,42 +7415,51 @@ class PHONEBOOK(ctk.CTk):
             except:
                 pass
 
-    def _handle_ping_message(self):
-        """Handle PING messages by responding with PONG"""
+    def _send_ping_message(self):
+        """✅ KORRIGIERT: Sendet PING an Server (nicht PONG!)"""
         try:
             if hasattr(self, 'client_socket') and self.client_socket:
-                # ✅ VERIFY-CODE FÜR PONG-NACHRICHT GENERIEREN
+                # ✅ VERIFY-CODE FÜR PING-NACHRICHT GENERIEREN
                 if hasattr(self, 'client_generator'):
                     verify_code = self.client_generator.generate_verify_code()
-                    print(f"🔐 [PING] PONG Verify-Code: {verify_code}")
+                    print(f"🔐 [PING] Ping Verify-Code: {verify_code}")
                 else:
                     client_name = getattr(self, '_client_name', 'ping_client')
                     generator = init_verify_generator(client_name, client_name)
                     verify_code = generator.generate_verify_code()
-                    print(f"🔐 [PING] PONG Verify-Code (Fallback): {verify_code}")
+                    print(f"🔐 [PING] Ping Verify-Code (Fallback): {verify_code}")
                 
-                # ✅ CUSTOM_DATA FÜR PONG-NACHRICHT
+                # ✅ CUSTOM_DATA FÜR PING-NACHRICHT (nicht PONG!)
                 custom_data = {
-                    "MESSAGE_TYPE": "PONG",  # ✅ Expliziter Message-Type
+                    "MESSAGE_TYPE": "PING",  # ✅ PING nicht PONG!
                     "VERIFY_CODE": verify_code,
-                    "TIMESTAMP": int(time.time())
+                    "TIMESTAMP": int(time.time()),
+                    "CLIENT_NAME": getattr(self, '_client_name', 'unknown'),
+                    "CLIENT_ID": getattr(self, '_find_my_client_id', lambda: 'unknown')()
                 }
                 
-                # ✅ BUILD_SIP_MESSAGE OHNE ADDITIONAL_HEADERS AUFRUFEN
-                pong_msg = self.build_sip_message(
-                    method="MESSAGE",  # oder "RESPONSE" je nach Bedarf
+                # ✅ BUILD_SIP_MESSAGE FÜR PING
+                ping_msg = self.build_sip_message(
+                    method="MESSAGE",
                     recipient="server",
                     custom_data=custom_data,
                     from_server=False,
                     client_name=getattr(self, '_client_name', 'unknown')
                 )
                 
-                self.client_socket.sendall(pong_msg.encode('utf-8'))
-                print("[DEBUG] Sent PONG response with verify-code")
-                return True
+                # ✅ PING SENDEN
+                success = send_frame(self.client_socket, ping_msg.encode('utf-8'))
+                
+                if success:
+                    print("[PING] ✅ Framed SIP PING sent successfully")
+                    return True
+                else:
+                    print("[PING] ❌ Failed to send framed SIP PING")
+                    return False
+                    
             return False
         except Exception as e:
-            print(f"[ERROR] Failed to send PONG: {str(e)}")
+            print(f"[PING ERROR] Failed to send PING: {str(e)}")
             return False
 
 
@@ -7668,13 +7675,10 @@ class PHONEBOOK(ctk.CTk):
                 print("[PHONEBOOK] Update empfangen")
                 self._process_phonebook_update(msg)
             
-            elif message_type == 'PING':
-                print("[PING] Vom Server empfangen")
-                self._handle_ping_message()
             
             elif message_type == 'PONG':
                 print("[PONG] Vom Server empfangen")
-                # Einfach bestätigen
+                self._send_ping_message()
             
             else:
                 print(f"[FRAME WARN] Unbekannter Nachrichtentyp: {message_type}")
