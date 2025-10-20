@@ -5358,22 +5358,41 @@ class CALL:
             traceback.print_exc()
             return False
     def handle_call_confirmed(self, msg):
-        """🚀 KORRIGIERT: Robuste Session-ID Verarbeitung MIT VERZÖGERTEM AUDIO-START"""
+        """🚀 KORRIGIERT: Session-ID Verarbeitung MIT ROLLEN-ERKENNUNG"""
         try:
             print(f"[CALL] CALL_CONFIRMED received")
             print(f"[CALL DEBUG] Message keys: {list(msg.keys())}")
             
-            # ✅ KORREKT: Session-IDs aus den richtigen Feldern
-            self.send_session_id = msg.get('CALLER_SESSION_ID')   # Für Senden an Callee  
-            self.recv_session_id = msg.get('CALLEE_SESSION_ID')   # Für Empfangen von Callee
+            # ✅ ROLLEN-ERKENNUNG: Ist dieser Client der Caller oder Callee?
+            is_caller = hasattr(self, 'pending_call') and self.pending_call is not None
+            role = "CALLER" if is_caller else "CALLEE"
+            print(f"[CALL] Role detection: {role}")
+            
+            # ✅ ROLLEN-BASIERTE SESSION-ZUWEISUNG
+            caller_session_id = msg.get('CALLER_SESSION_ID')   # Für Senden von Caller zu Callee
+            callee_session_id = msg.get('CALLEE_SESSION_ID')   # Für Senden von Callee zu Caller
+            
+            if is_caller:
+                # CALLER: Sendet mit CALLER_SESSION_ID, empfängt mit CALLEE_SESSION_ID
+                self.send_session_id = caller_session_id    # Senden an Callee
+                self.recv_session_id = callee_session_id    # Empfangen von Callee
+                print(f"[CALL] ✅ CALLER Session Mapping:")
+                print(f"  SEND (to callee): {self.send_session_id}")
+                print(f"  RECV (from callee): {self.recv_session_id}")
+            else:
+                # CALLEE: Sendet mit CALLEE_SESSION_ID, empfängt mit CALLER_SESSION_ID
+                self.send_session_id = callee_session_id    # Senden an Caller  
+                self.recv_session_id = caller_session_id    # Empfangen von Caller
+                print(f"[CALL] ✅ CALLEE Session Mapping:")
+                print(f"  SEND (to caller): {self.send_session_id}")
+                print(f"  RECV (from caller): {self.recv_session_id}")
             
             if not self.send_session_id or not self.recv_session_id:
                 print("❌ [CALL CRITICAL] No Session IDs from server!")
-                print(f"[CALL DEBUG] CALLER_SESSION_ID: {self.send_session_id}")
-                print(f"[CALL DEBUG] CALLEE_SESSION_ID: {self.recv_session_id}")
+                print(f"[CALL DEBUG] CALLER_SESSION_ID: {caller_session_id}")
+                print(f"[CALL DEBUG] CALLEE_SESSION_ID: {callee_session_id}")
                 print(f"[CALL DEBUG] All available keys: {list(msg.keys())}")
                 
-                # ❌ KEIN FALLBACK - Anruf abbrechen
                 if hasattr(self.client, 'after'):
                     self.client.after(0, lambda: messagebox.showerror(
                         "Audio Fehler", 
@@ -5382,7 +5401,7 @@ class CALL:
                 self.cleanup_call_resources()
                 return
             
-            print(f"[CALL] ✅ Session IDs confirmed:")
+            print(f"[CALL] ✅ Final Session IDs for {role}:")
             print(f"[CALL]   SEND: {self.send_session_id}")
             print(f"[CALL]   RECV: {self.recv_session_id}")
             
