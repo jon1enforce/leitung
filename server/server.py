@@ -1319,134 +1319,134 @@ class CONVEY:
                     print(f"[TURBO RELAY ERROR] {e}")
                 continue
 
-def _register_audio_relay(self, call_id, caller_name, callee_name):
-    """🚀 KORRIGIERT: Bidirektionales Session-Routing mit KONSISTENTER Session-ID Kodierung"""
-    try:
-        print(f"🎯 [RELAY SECURE] Bidirectional routing: {caller_name} <-> {callee_name}")
-        
-        caller_data = None
-        callee_data = None
-        
-        # ✅ CLIENT-DATEN SAMMELN
-        with self.server.clients_lock:
-            for client_id, client_data in self.server.clients.items():
-                client_name = client_data.get('name', 'unknown')
+    def _register_audio_relay(self, call_id, caller_name, callee_name):
+        """🚀 KORRIGIERT: Bidirektionales Session-Routing mit KONSISTENTER Session-ID Kodierung"""
+        try:
+            print(f"🎯 [RELAY SECURE] Bidirectional routing: {caller_name} <-> {callee_name}")
+            
+            caller_data = None
+            callee_data = None
+            
+            # ✅ CLIENT-DATEN SAMMELN
+            with self.server.clients_lock:
+                for client_id, client_data in self.server.clients.items():
+                    client_name = client_data.get('name', 'unknown')
+                    
+                    if client_name.lower() == caller_name.lower():
+                        caller_data = client_data
+                    elif client_name.lower() == callee_name.lower():
+                        callee_data = client_data
+            
+            if not caller_data or not callee_data:
+                print(f"[RELAY ERROR] Client data not found")
+                return False
+            
+            # ✅ IP-DATEN EXTRAHIEREN
+            caller_ip = caller_data.get('ip')
+            callee_ip = callee_data.get('ip')
+            
+            if not caller_ip or not callee_ip:
+                print(f"[RELAY ERROR] Missing IP addresses")
+                return False
+            
+            print(f"[RELAY SECURE] IP Analysis:")
+            print(f"  {caller_name} -> IP: {caller_ip}")
+            print(f"  {callee_name} -> IP: {callee_ip}")
+            
+            # ✅ 🔐 KOLLISIONSSICHERE SESSION-IDs GENERIEREN
+            import hashlib
+            import time
+            import secrets
+            import os
+            
+            # 🔐 KRYPTOGRAFISCH SICHERE Session-IDs (32 Zeichen)
+            timestamp_ns = time.time_ns()  # Nanosekunden-Präzision
+            random_component = secrets.token_hex(8)  # 16 Bytes Zufälligkeit
+            
+            caller_to_callee_session = hashlib.sha3_256(
+                f"{call_id}_caller_to_callee_{timestamp_ns}_{random_component}_{os.urandom(4).hex()}".encode()
+            ).hexdigest()[:32]  # 32 Zeichen
+            
+            callee_to_caller_session = hashlib.sha3_256(
+                f"{call_id}_callee_to_caller_{timestamp_ns}_{random_component}_{os.urandom(4).hex()}".encode()
+            ).hexdigest()[:32]  # 32 Zeichen
+            
+            # ✅ KORREKT: Session-Bytes aus den ersten 16 ZEICHEN (nicht Bytes!)
+            caller_session_bytes = caller_to_callee_session[:16].encode('utf-8').ljust(16, b'\0')
+            callee_session_bytes = callee_to_caller_session[:16].encode('utf-8').ljust(16, b'\0')
+            
+            # ✅ AUDIO-ADDRESSEN (Feste Ports)
+            caller_audio_addr = (caller_ip, 51821)
+            callee_audio_addr = (callee_ip, 51821)
+            
+            print(f"[RELAY SECURE] 🔐 KORRIGIERTE Session Routing:")
+            print(f"  Caller → Callee Session: {caller_to_callee_session} (32 chars)")
+            print(f"    UDP Session Bytes: {caller_session_bytes.hex()} (16 bytes)")
+            print(f"    Decoded as String: '{caller_to_callee_session[:16]}'")
+            print(f"  Callee → Caller Session: {callee_to_caller_session} (32 chars)")
+            print(f"    UDP Session Bytes: {callee_session_bytes.hex()} (16 bytes)") 
+            print(f"    Decoded as String: '{callee_to_caller_session[:16]}'")
+            print(f"  Caller Audio Addr: {caller_audio_addr}")
+            print(f"  Callee Audio Addr: {callee_audio_addr}")
+            
+            # ✅ KOLLISIONSCHECK (Sicherheitsmaßnahme)
+            with self.relay_lock:
+                if caller_session_bytes in self.session_routing:
+                    print(f"⚠️ [RELAY WARNING] Caller session collision detected - regenerating...")
+                    # Fallback: Pure Zufälligkeit
+                    caller_to_callee_session = secrets.token_hex(16)
+                    caller_session_bytes = caller_to_callee_session[:16].encode('utf-8').ljust(16, b'\0')
                 
-                if client_name.lower() == caller_name.lower():
-                    caller_data = client_data
-                elif client_name.lower() == callee_name.lower():
-                    callee_data = client_data
-        
-        if not caller_data or not callee_data:
-            print(f"[RELAY ERROR] Client data not found")
-            return False
-        
-        # ✅ IP-DATEN EXTRAHIEREN
-        caller_ip = caller_data.get('ip')
-        callee_ip = callee_data.get('ip')
-        
-        if not caller_ip or not callee_ip:
-            print(f"[RELAY ERROR] Missing IP addresses")
-            return False
-        
-        print(f"[RELAY SECURE] IP Analysis:")
-        print(f"  {caller_name} -> IP: {caller_ip}")
-        print(f"  {callee_name} -> IP: {callee_ip}")
-        
-        # ✅ 🔐 KOLLISIONSSICHERE SESSION-IDs GENERIEREN
-        import hashlib
-        import time
-        import secrets
-        import os
-        
-        # 🔐 KRYPTOGRAFISCH SICHERE Session-IDs (32 Zeichen)
-        timestamp_ns = time.time_ns()  # Nanosekunden-Präzision
-        random_component = secrets.token_hex(8)  # 16 Bytes Zufälligkeit
-        
-        caller_to_callee_session = hashlib.sha3_256(
-            f"{call_id}_caller_to_callee_{timestamp_ns}_{random_component}_{os.urandom(4).hex()}".encode()
-        ).hexdigest()[:32]  # 32 Zeichen
-        
-        callee_to_caller_session = hashlib.sha3_256(
-            f"{call_id}_callee_to_caller_{timestamp_ns}_{random_component}_{os.urandom(4).hex()}".encode()
-        ).hexdigest()[:32]  # 32 Zeichen
-        
-        # ✅ KORREKT: Session-Bytes aus den ersten 16 ZEICHEN (nicht Bytes!)
-        caller_session_bytes = caller_to_callee_session[:16].encode('utf-8').ljust(16, b'\0')
-        callee_session_bytes = callee_to_caller_session[:16].encode('utf-8').ljust(16, b'\0')
-        
-        # ✅ AUDIO-ADDRESSEN (Feste Ports)
-        caller_audio_addr = (caller_ip, 51821)
-        callee_audio_addr = (callee_ip, 51821)
-        
-        print(f"[RELAY SECURE] 🔐 KORRIGIERTE Session Routing:")
-        print(f"  Caller → Callee Session: {caller_to_callee_session} (32 chars)")
-        print(f"    UDP Session Bytes: {caller_session_bytes.hex()} (16 bytes)")
-        print(f"    Decoded as String: '{caller_to_callee_session[:16]}'")
-        print(f"  Callee → Caller Session: {callee_to_caller_session} (32 chars)")
-        print(f"    UDP Session Bytes: {callee_session_bytes.hex()} (16 bytes)") 
-        print(f"    Decoded as String: '{callee_to_caller_session[:16]}'")
-        print(f"  Caller Audio Addr: {caller_audio_addr}")
-        print(f"  Callee Audio Addr: {callee_audio_addr}")
-        
-        # ✅ KOLLISIONSCHECK (Sicherheitsmaßnahme)
-        with self.relay_lock:
-            if caller_session_bytes in self.session_routing:
-                print(f"⚠️ [RELAY WARNING] Caller session collision detected - regenerating...")
-                # Fallback: Pure Zufälligkeit
-                caller_to_callee_session = secrets.token_hex(16)
-                caller_session_bytes = caller_to_callee_session[:16].encode('utf-8').ljust(16, b'\0')
+                if callee_session_bytes in self.session_routing:
+                    print(f"⚠️ [RELAY WARNING] Callee session collision detected - regenerating...")
+                    callee_to_caller_session = secrets.token_hex(16)
+                    callee_session_bytes = callee_to_caller_session[:16].encode('utf-8').ljust(16, b'\0')
             
-            if callee_session_bytes in self.session_routing:
-                print(f"⚠️ [RELAY WARNING] Callee session collision detected - regenerating...")
-                callee_to_caller_session = secrets.token_hex(16)
-                callee_session_bytes = callee_to_caller_session[:16].encode('utf-8').ljust(16, b'\0')
-        
-        # ✅ BIDIREKTIONALES SESSION-ROUTING EINRICHTEN
-        with self.relay_lock:
-            # Caller → Callee Routing
-            self.session_routing[caller_session_bytes] = callee_audio_addr
-            # Callee → Caller Routing  
-            self.session_routing[callee_session_bytes] = caller_audio_addr
+            # ✅ BIDIREKTIONALES SESSION-ROUTING EINRICHTEN
+            with self.relay_lock:
+                # Caller → Callee Routing
+                self.session_routing[caller_session_bytes] = callee_audio_addr
+                # Callee → Caller Routing  
+                self.session_routing[callee_session_bytes] = caller_audio_addr
+                
+                print(f"[RELAY SECURE] Routing Table Updated:")
+                print(f"  Session '{caller_to_callee_session[:16]}' -> {callee_audio_addr}")
+                print(f"  Session '{callee_to_caller_session[:16]}' -> {caller_audio_addr}")
+                print(f"  Total active sessions: {len(self.session_routing)}")
             
-            print(f"[RELAY SECURE] Routing Table Updated:")
-            print(f"  Session '{caller_to_callee_session[:16]}' -> {callee_audio_addr}")
-            print(f"  Session '{callee_to_caller_session[:16]}' -> {caller_audio_addr}")
-            print(f"  Total active sessions: {len(self.session_routing)}")
-        
-        # ✅ RELAY-INFO SPEICHERN
-        with self.relay_lock:
-            self.audio_relays[call_id] = {
-                'caller_name': caller_name,
-                'callee_name': callee_name,
-                'caller_addr': caller_audio_addr,
-                'callee_addr': callee_audio_addr,
-                'caller_session_id': caller_to_callee_session,      # 32 chars für Nachrichten
-                'callee_session_id': callee_to_caller_session,      # 32 chars für Nachrichten
-                'caller_session_bytes': caller_session_bytes,       # 16 bytes für UDP
-                'callee_session_bytes': callee_session_bytes,       # 16 bytes für UDP
-                'caller_session_short': caller_to_callee_session[:16],  # 16 chars für Vergleich
-                'callee_session_short': callee_to_caller_session[:16],  # 16 chars für Vergleich
-                'timestamp': time.time(),
-                'timestamp_ns': timestamp_ns,
-                'random_component': random_component
+            # ✅ RELAY-INFO SPEICHERN
+            with self.relay_lock:
+                self.audio_relays[call_id] = {
+                    'caller_name': caller_name,
+                    'callee_name': callee_name,
+                    'caller_addr': caller_audio_addr,
+                    'callee_addr': callee_audio_addr,
+                    'caller_session_id': caller_to_callee_session,      # 32 chars für Nachrichten
+                    'callee_session_id': callee_to_caller_session,      # 32 chars für Nachrichten
+                    'caller_session_bytes': caller_session_bytes,       # 16 bytes für UDP
+                    'callee_session_bytes': callee_session_bytes,       # 16 bytes für UDP
+                    'caller_session_short': caller_to_callee_session[:16],  # 16 chars für Vergleich
+                    'callee_session_short': callee_to_caller_session[:16],  # 16 chars für Vergleich
+                    'timestamp': time.time(),
+                    'timestamp_ns': timestamp_ns,
+                    'random_component': random_component
+                }
+            
+            # ✅ DEBUG AUSGABE
+            self._debug_session_routing()
+            
+            print(f"[RELAY SECURE] ✅ KORRIGIERTES Session-Routing etabliert!")
+            print(f"[RELAY SECURE] 🎉 Audio relay SUCCESS for call {call_id}")
+            return {
+                'caller_session_id': caller_to_callee_session,      # 32 chars an Client senden
+                'callee_session_id': callee_to_caller_session       # 32 chars an Client senden
             }
-        
-        # ✅ DEBUG AUSGABE
-        self._debug_session_routing()
-        
-        print(f"[RELAY SECURE] ✅ KORRIGIERTES Session-Routing etabliert!")
-        print(f"[RELAY SECURE] 🎉 Audio relay SUCCESS for call {call_id}")
-        return {
-            'caller_session_id': caller_to_callee_session,      # 32 chars an Client senden
-            'callee_session_id': callee_to_caller_session       # 32 chars an Client senden
-        }
-        
-    except Exception as e:
-        print(f"[RELAY ERROR] Session registration failed: {e}")
-        import traceback
-        traceback.print_exc()
-        return False
+            
+        except Exception as e:
+            print(f"[RELAY ERROR] Session registration failed: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
         
     def _debug_session_routing(self):
         """Debug-Ausgabe der Session Routing Table mit erweiterter Info"""
@@ -2336,6 +2336,7 @@ class Server:
         
         print(f"Server configured with: {self.host}:{self.port}")
         print(f"🔧 Relay Manager: {'SEED-SERVER' if self.relay_manager.is_seed_server else 'Regular Server'}")
+        
     def store_client_secret(self, client_id, encrypted_secret):
         """Speichert das entschlüsselte AES-Geheimnis für einen Client"""
         try:
