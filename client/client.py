@@ -3302,22 +3302,23 @@ class CALL:
             traceback.print_exc()
            
     def audio_stream_out(self, target_ip, port, iv, key, session_id):
-        """🎤 OPTIMIERT: Sendet Audio mit sinnvollem Logging"""
+        """🎤 OPTIMIERT: OpenBSD kompatibles Audio Senden"""
+        
+        print(f"🔴 [GODZILLA OPENBSD AUDIO OUT] Starting audio stream on OpenBSD")
+        
         audio_socket = None
         
         if not self.audio_available:
-            print("❌ [AUDIO OUT] Kein Audio-Backend verfügbar")
+            print("❌ [GODZILLA OPENBSD] Kein Audio-Backend verfügbar")
             return False
             
-        print(f"[AUDIO OUT] Starting audio to {target_ip}:{port}")
-
         try:
             # ✅ ODE AN DIE FREUDE FÜR TEST
             ode_generator = OdeToJoyGenerator(
                 sample_rate=self.audio_config.RATE,
                 chunk_size=self.audio_config.CHUNK
             )
-            print("🎵 [AUDIO OUT] Ode an die Freude Generator gestartet!")
+            print("🎵 [GODZILLA OPENBSD] Ode Generator gestartet!")
             
             # Input Stream öffnen
             if self.audio_available and self.audio:
@@ -3329,27 +3330,36 @@ class CALL:
                     frames_per_buffer=self.audio_config.CHUNK,
                     input_device_index=self.audio_config.input_device_index
                 )
-                print(f"✅ [AUDIO OUT] Input stream opened")
+                print(f"✅ [GODZILLA OPENBSD] Input stream opened")
             else:
                 return False
             
-            # ✅ UDP-Socket für Audio
+            # ✅ OPENBSD OPTIMIERTER SOCKET
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            
+            # ✅ OPENBSD SPEZIFISCHE OPTIMIERUNGEN
+            try:
+                # Größere Buffer für OpenBSD
+                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 64 * 1024)  # 64KB
+                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 64 * 1024)  # 64KB
+            except:
+                print("⚠️ [GODZILLA OPENBSD] Could not set socket buffers")
+                
             audio_socket.settimeout(0.1)
             
             target_addr = (target_ip, port)
-            print(f"🎤 [AUDIO OUT] Sending to {target_ip}:{port}")
+            print(f"🎤 [GODZILLA OPENBSD] Sending to {target_ip}:{port}")
             
             packet_counter = 0
             success_packets = 0
             last_log_time = time.time()
-            log_interval = 100000  # ✅ Nur alle 100.000 Pakete loggen
+            
+            print("🚀 [GODZILLA OPENBSD] Entering main audio loop...")
             
             while self.active_call and self.audio_available:
                 try:
                     # ✅ TEST: Ode an die Freude statt Mikrofon
                     audio_data = ode_generator.generate_chunk()
-                            
                     packet_counter += 1
                     
                     # ✅ AES VERSCHLÜSSELUNG
@@ -3358,38 +3368,50 @@ class CALL:
                     encrypted_data = cipher.update(padded_data)
                     encrypted_data += cipher.final()
                     
-                    # ✅ KONSISTENT: Nur erste 16 Zeichen, KEIN Null-Padding
+                    # ✅ SESSION-ID
                     session_short = session_id[:16] if session_id else ""
-                    session_bytes = session_short.encode('utf-8')  # ✅ KEIN ljust()!
+                    session_bytes = session_short.encode('utf-8')
                     packet = session_bytes + encrypted_data
                     
-                    if len(packet) > 1492:
-                        packet = packet[:1492]
+                    # ✅ OPENBSD: Konservativere Paketgröße
+                    if len(packet) > 1400:  # Konservativer für OpenBSD
+                        packet = packet[:1400]
                     
-                    # ✅ Sende UDP-Paket
-                    audio_socket.sendto(packet, target_addr)
-                    success_packets += 1
+                    # ✅ KRITISCH: Sende UDP-Paket mit Error Handling
+                    try:
+                        audio_socket.sendto(packet, target_addr)
+                        success_packets += 1
+                        
+                        # ✅ ERSTE 10 PAKETE LOGGEN für Debugging
+                        if packet_counter <= 10:
+                            print(f"📤 [GODZILLA OPENBSD] Successfully sent packet #{packet_counter}")
+                            
+                    except socket.error as e:
+                        print(f"🔴 [GODZILLA OPENBSD SEND ERROR] {e}")
+                        # Kurze Pause bei Fehler
+                        time.sleep(0.01)
+                        continue
                     
-                    # ✅ OPTIMIERTES LOGGING: Nur alle 100.000 Pakete
-                    if success_packets % log_interval == 0:
+                    # ✅ REDUZIERTES LOGGING (alle 1000 statt 100000 Pakete)
+                    if success_packets % 1000 == 0:
                         current_time = time.time()
                         elapsed = current_time - last_log_time
-                        packets_per_sec = log_interval / elapsed if elapsed > 0 else 0
+                        packets_per_sec = 1000 / elapsed if elapsed > 0 else 0
                         
-                        print(f"📤 [AUDIO OUT] Sent {success_packets:,} packets ({packets_per_sec:.1f} pkt/s)")
+                        print(f"📤 [GODZILLA OPENBSD] Sent {success_packets:,} packets ({packets_per_sec:.1f} pkt/s)")
                         last_log_time = current_time
                         
                 except socket.timeout:
                     continue
                 except Exception as e:
                     if self.active_call:
-                        print(f"[AUDIO OUT ERROR] {str(e)}")
+                        print(f"[GODZILLA OPENBSD ERROR] {str(e)}")
                     break
-                            
-            print(f"[AUDIO OUT] Session ended. Total: {packet_counter:,}, Success: {success_packets:,}")
-                                        
+                                    
+            print(f"[GODZILLA OPENBSD] Session ended. Total: {packet_counter:,}, Success: {success_packets:,}")
+                                                
         except Exception as e:
-            print(f"[AUDIO OUT SETUP ERROR] {str(e)}")
+            print(f"[GODZILLA OPENBSD SETUP ERROR] {str(e)}")
             import traceback
             traceback.print_exc()
             return False
@@ -3400,11 +3422,11 @@ class CALL:
                     self.input_stream.close()
                     self.input_stream = None
                 except Exception as e:
-                    print(f"[AUDIO OUT CLOSE ERROR] {e}")
+                    print(f"[GODZILLA OPENBSD CLOSE ERROR] {e}")
             if audio_socket:
                 audio_socket.close()
         
-        return success_packets > 0    
+        return success_packets > 0
     def audio_stream_in(self, listen_port, iv, key, expected_session_id):
         """🎧 DIAGNOSE: Prüft ob Audio In überhaupt startet"""
         audio_socket = None
