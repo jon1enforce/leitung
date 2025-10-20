@@ -3299,9 +3299,8 @@ class CALL:
             import traceback
             traceback.print_exc()
            
-            
     def audio_stream_out(self, target_ip, port, iv, key, session_id):
-        """🎤 KORRIGIERT: Sendet Audio mit KORREKTER 16-char Session-ID"""
+        """🎤 OPTIMIERT: Sendet Audio mit AES-Debugging nur bei Problemen"""
         audio_socket = None
         
         if not self.audio_available:
@@ -3311,7 +3310,14 @@ class CALL:
         print(f"[AUDIO OUT] Starting audio to {target_ip}:{port}")
 
         try:
-            # Input Stream öffnen (UNVERÄNDERT)
+            # ✅ ODE AN DIE FREUDE FÜR TEST (statt Mikrofon)
+            ode_generator = OdeToJoyGenerator(
+                sample_rate=self.audio_config.RATE,
+                chunk_size=self.audio_config.CHUNK
+            )
+            print("🎵 [AUDIO OUT] Ode an die Freude Generator gestartet!")
+            
+            # Input Stream trotzdem öffnen (falls Sie später Mikrofon testen wollen)
             if self.audio_available and self.audio:
                 self.input_stream = self.audio_config.audio.open(
                     format=self.audio_config.FORMAT,
@@ -3325,7 +3331,7 @@ class CALL:
             else:
                 return False
             
-            # ✅ UDP-Socket für Audio (UNVERÄNDERT)
+            # ✅ UDP-Socket für Audio
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             audio_socket.settimeout(0.1)
             
@@ -3334,23 +3340,37 @@ class CALL:
             
             packet_counter = 0
             success_packets = 0
+            debug_counter = 0  # Für kontrolliertes Debugging
             
             while self.active_call and self.audio_available:
                 try:
-                    # Audio-Daten vom Mikrofon lesen (UNVERÄNDERT)
-                    data = self.input_stream.read(self.audio_config.CHUNK, exception_on_overflow=False)
-                    if not data:
-                        continue
-                        
+                    # ✅ TEST: Ode an die Freude statt Mikrofon
+                    audio_data = ode_generator.generate_chunk()
+                    
+                    # Alternative: Mikrofon (kommentieren Sie die obige Zeile aus und diese ein)
+                    # audio_data = self.input_stream.read(self.audio_config.CHUNK, exception_on_overflow=False)
+                    # if not audio_data:
+                    #     continue
+                            
                     packet_counter += 1
                     
-                    # ✅ VERSCHLÜSSELUNG (UNVERÄNDERT)
-                    padded_data = pkcs7_pad(data)
+                    # ✅ AES VERSCHLÜSSELUNG MIT SELEKTIVEM DEBUGGING
+                    debug_counter += 1
+                    if debug_counter <= 3:  # Nur erste 3 Pakete debuggen
+                        print(f"🔐 [AUDIO OUT DEBUG #{debug_counter}] Pre-encryption: {len(audio_data)} bytes")
+                    
+                    # Padding für AES
+                    padded_data = pkcs7_pad(audio_data)
+                    
+                    # Verschlüsselung
                     cipher = EVP.Cipher("aes_256_cbc", key, iv, 1)
                     encrypted_data = cipher.update(padded_data)
                     encrypted_data += cipher.final()
                     
-                    # ✅ MINIMALINVASIV: VERWENDE NUR ERSTE 16 ZEICHEN DER SESSION-ID
+                    if debug_counter <= 3:
+                        print(f"🔐 [AUDIO OUT DEBUG #{debug_counter}] After encryption: {len(encrypted_data)} bytes")
+                    
+                    # ✅ SESSION-ID
                     session_short = session_id[:16] if session_id else ""
                     session_bytes = session_short.encode('utf-8')[:16].ljust(16, b'\0')
                     packet = session_bytes + encrypted_data
@@ -3359,11 +3379,11 @@ class CALL:
                         print(f"⚠️ [AUDIO OUT] Packet too large: {len(packet)} bytes, truncating")
                         packet = packet[:1492]
                     
-                    # ✅ Sende UDP-Paket (UNVERÄNDERT)
+                    # ✅ Sende UDP-Paket
                     audio_socket.sendto(packet, target_addr)
                     success_packets += 1
                     
-                    if success_packets % 100 == 0:
+                    if success_packets % 50 == 0:
                         print(f"📤 [AUDIO OUT] Sent {success_packets} packets")
                         
                 except socket.timeout:
@@ -3372,9 +3392,9 @@ class CALL:
                     if self.active_call:
                         print(f"[AUDIO OUT ERROR] {str(e)}")
                     break
-                            
+                                
             print(f"[AUDIO OUT] Session ended. Total: {packet_counter}, Success: {success_packets}")
-                                        
+                                            
         except Exception as e:
             print(f"[AUDIO OUT SETUP ERROR] {str(e)}")
             import traceback
@@ -3391,25 +3411,22 @@ class CALL:
             if audio_socket:
                 audio_socket.close()
         
-        return success_packets > 0
-
+        return success_packets > 0            
     def audio_stream_in(self, listen_port, iv, key, expected_session_id):
-        """🎧 KORRIGIERT: Empfängt Audio mit 16-CHAR SESSION-ID VERGLEICH"""
+        """🎧 OPTIMIERT: Empfängt Audio mit intelligentem Debugging"""
         audio_socket = None
         
         if not self.audio_available:
             print("❌ [AUDIO IN] Kein Audio-Backend verfügbar")
             return False
-                
+                    
         print(f"[AUDIO IN] Starting listener on port {listen_port}")
         
-        # ✅ MINIMALINVASIV: Erwarte 32-char Session-ID, vergleiche aber nur 16 chars
         expected_session_short = expected_session_id[:16] if expected_session_id else ""
-        print(f"🎧 [AUDIO IN SESSION] Erwarte Session: '{expected_session_id}'")
-        print(f"🎧 [AUDIO IN SESSION] Vergleich mit: '{expected_session_short}' (erste 16 chars)")
+        print(f"🎧 [AUDIO IN SESSION] Erwarte Session: '{expected_session_short}'")
 
         try:
-            # Output Stream öffnen (UNVERÄNDERT)
+            # Output Stream öffnen
             if self.audio_available and self.audio:
                 self.output_stream = self.audio_config.audio.open(
                     format=self.audio_config.FORMAT,
@@ -3423,7 +3440,7 @@ class CALL:
             else:
                 return False
             
-            # ✅ UDP-Socket für Audio (UNVERÄNDERT)
+            # ✅ UDP-Socket für Audio
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             audio_socket.bind(('0.0.0.0', listen_port))
@@ -3434,47 +3451,64 @@ class CALL:
             packet_counter = 0
             valid_packets = 0
             success_packets = 0
+            debug_counter = 0
+            consecutive_errors = 0
             
             while self.active_call and self.audio_available:
                 try:
-                    # ✅ EMPFANGE UDP-PAKET (UNVERÄNDERT)
+                    # ✅ EMPFANGE UDP-PAKET
                     data, addr = audio_socket.recvfrom(1492)
                     packet_counter += 1
                     
                     if len(data) < 16:
                         continue
-                        
-                    # ✅ EXTRAHIERE SESSION-ID (UNVERÄNDERT)
+                            
+                    # ✅ EXTRAHIERE SESSION-ID
                     session_bytes = data[:16]
                     encrypted_data = data[16:]
                     
                     received_session = session_bytes.rstrip(b'\0').decode('utf-8', errors='ignore')
                     
-                    # ✅ MINIMALINVASIV: VERGLEICHE NUR ERSTE 16 ZEICHEN
+                    # ✅ SESSION-VERGLEICH
                     if received_session == expected_session_short:
                         valid_packets += 1
+                        consecutive_errors = 0  # Reset error counter
                         
                         try:
-                            # Entschlüsselung (UNVERÄNDERT)
+                            # ✅ AES ENTSCHLÜSSELUNG MIT FEHLER-DEBUGGING
+                            debug_counter += 1
+                            
                             cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
                             decrypted_data = cipher.update(encrypted_data)
                             decrypted_data += cipher.final()
                             
                             unpadded_data = pkcs7_unpad(decrypted_data)
                             
+                            # ✅ NUR BEI PROBLEMEN DEBUGGEN
+                            if debug_counter <= 5:  # Erste 5 erfolgreiche Pakete
+                                print(f"🔓 [AUDIO IN DEBUG #{debug_counter}] Success: {len(unpadded_data)} bytes audio")
+                            
                             if len(unpadded_data) > 0:
+                                # Schreibe zu Stream
                                 self.output_stream.write(unpadded_data)
                                 success_packets += 1
                                 
-                            if success_packets % 50 == 0:
-                                print(f"🎧 [AUDIO IN] Processed {success_packets} packets")
-                                
+                                if success_packets % 25 == 0:
+                                    print(f"🎧 [AUDIO IN] Successfully played {success_packets} packets")
+                                    
                         except Exception as decrypt_error:
-                            print(f"🔴 [AUDIO IN DECRYPT ERROR] {str(decrypt_error)}")
+                            consecutive_errors += 1
+                            # ✅ NUR BEI MEHREREN FEHLERN HINTEREINANDER DEBUGGEN
+                            if consecutive_errors <= 3:
+                                print(f"🔴 [AUDIO IN DECRYPT ERROR #{consecutive_errors}] {str(decrypt_error)}")
+                                if consecutive_errors == 1:  # Beim ersten Fehler mehr Details
+                                    print(f"    Encrypted data: {len(encrypted_data)} bytes")
+                                    print(f"    IV: {iv.hex()[:16]}...")
+                                    print(f"    Key: {key.hex()[:16]}...")
                             
                     else:
                         if packet_counter % 100 == 0:
-                            print(f"🔍 [AUDIO IN] Packet #{packet_counter}: '{received_session}' != '{expected_session_short}'")
+                            print(f"🔍 [AUDIO IN] Packet #{packet_counter}: Session mismatch")
                             
                 except socket.timeout:
                     continue
@@ -3482,9 +3516,9 @@ class CALL:
                     if self.active_call:
                         print(f"[AUDIO IN ERROR] {str(e)}")
                     break
-                            
+                                
             print(f"[AUDIO IN] Session ended. Total: {packet_counter}, Valid: {valid_packets}, Success: {success_packets}")
-                                        
+                                            
         except Exception as e:
             print(f"[AUDIO IN SETUP ERROR] {str(e)}")
             import traceback
