@@ -3302,25 +3302,44 @@ class CALL:
             traceback.print_exc()
            
     def audio_stream_out(self, target_ip, port, iv, key, session_id):
-        """🎤 OPTIMIERT: OpenBSD kompatibles Audio Senden"""
+        """🎤 OPENBSD OPTIMIERT: Audio Senden mit Buffer-Management gegen Errno 55"""
         
-        print(f"🔴 [GODZILLA OPENBSD AUDIO OUT] Starting audio stream on OpenBSD")
+        print(f"🔴 [OPENBSD BUFFER FIX] Starting audio stream to {target_ip}:{port}")
+        print(f"🔴 [OPENBSD] Session ID: {session_id}")
+        print(f"🔴 [OPENBSD] Chunk Size: {self.audio_config.CHUNK}")
+        print(f"🔴 [OPENBSD] Sample Rate: {self.audio_config.RATE}")
         
         audio_socket = None
         
+        # ✅ GRUNDVALIDIERUNG
         if not self.audio_available:
-            print("❌ [GODZILLA OPENBSD] Kein Audio-Backend verfügbar")
+            print("❌ [OPENBSD] Kein Audio-Backend verfügbar")
             return False
             
+        if not self.active_call:
+            print("❌ [OPENBSD] Kein aktiver Call")
+            return False
+
         try:
-            # ✅ ODE AN DIE FREUDE FÜR TEST
+            # ✅ ODE AN DIE FREUDE GENERATOR
+            print("🎵 [OPENBSD] Initialisiere Ode Generator...")
             ode_generator = OdeToJoyGenerator(
                 sample_rate=self.audio_config.RATE,
                 chunk_size=self.audio_config.CHUNK
             )
-            print("🎵 [GODZILLA OPENBSD] Ode Generator gestartet!")
             
-            # Input Stream öffnen
+            # ✅ TEST: Ersten Chunk validieren
+            test_chunk = ode_generator.generate_chunk()
+            test_audio = np.frombuffer(test_chunk, dtype=np.int16)
+            print(f"🎵 [OPENBSD] Test Chunk: {len(test_chunk)} bytes, {len(test_audio)} samples")
+            print(f"🎵 [OPENBSD] Audio Range: {np.min(test_audio)} to {np.max(test_audio)}")
+            
+            if np.all(test_audio == 0):
+                print("❌ [OPENBSD] TEST FEHLER: Stille Audio!")
+                return False
+
+            # ✅ INPUT STREAM ÖFFNEN
+            print("🎤 [OPENBSD] Öffne Input Stream...")
             if self.audio_available and self.audio:
                 self.input_stream = self.audio_config.audio.open(
                     format=self.audio_config.FORMAT,
@@ -3330,37 +3349,67 @@ class CALL:
                     frames_per_buffer=self.audio_config.CHUNK,
                     input_device_index=self.audio_config.input_device_index
                 )
-                print(f"✅ [GODZILLA OPENBSD] Input stream opened")
+                print(f"✅ [OPENBSD] Input stream geöffnet")
             else:
+                print("❌ [OPENBSD] Audio-Backend nicht verfügbar")
                 return False
             
-            # ✅ OPENBSD OPTIMIERTER SOCKET
+            # ✅ OPENBSD SOCKET MIT BUFFER-MANAGEMENT
+            print("🔌 [OPENBSD] Erstelle optimierten Socket...")
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             
-            # ✅ OPENBSD SPEZIFISCHE OPTIMIERUNGEN
+            # ✅ KRITISCHE OPENBSD OPTIMIERUNGEN
             try:
-                # Größere Buffer für OpenBSD
-                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 64 * 1024)  # 64KB
-                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 64 * 1024)  # 64KB
-            except:
-                print("⚠️ [GODZILLA OPENBSD] Could not set socket buffers")
+                # 🔥 OPENBSD FIX: Kleinere Buffer um Errno 55 zu vermeiden
+                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32 * 1024)  # 32KB statt 64KB
+                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 32 * 1024)  # 32KB statt 64KB
                 
-            audio_socket.settimeout(0.1)
+                # 🔥 OPENBSD FIX: Non-blocking mode für besseres Buffer-Management
+                audio_socket.setblocking(False)
+                
+                print("✅ [OPENBSD] Socket Buffer optimiert (32KB, non-blocking)")
+                
+            except Exception as e:
+                print(f"⚠️ [OPENBSD] Socket options fehlgeschlagen: {e}")
+                
+            audio_socket.settimeout(0.05)  # 🔥 Kürzeres Timeout für OpenBSD
             
             target_addr = (target_ip, port)
-            print(f"🎤 [GODZILLA OPENBSD] Sending to {target_ip}:{port}")
+            print(f"🎤 [OPENBSD] Sende an {target_ip}:{port}")
             
+            # ✅ OPENBSD PERFORMANCE VARIABLEN
             packet_counter = 0
             success_packets = 0
-            last_log_time = time.time()
+            buffer_errors = 0
+            max_buffer_errors = 30  # 🔥 Weniger Fehler bevor gestoppt wird
             
-            print("🚀 [GODZILLA OPENBSD] Entering main audio loop...")
+            # 🔥 OPENBSD RATE LIMITING
+            PACKETS_PER_SECOND = 6000  # 🔥 Konservativ: 6000 packets/sec
+            PACKET_INTERVAL = 1.0 / PACKETS_PER_SECOND
+            last_send_time = time.time()
             
-            while self.active_call and self.audio_available:
+            print(f"🚀 [OPENBSD] Starte Audio-Loop mit Rate Limiting ({PACKETS_PER_SECOND} pkt/sec)...")
+            
+            # ✅ HAUPT AUDIO LOOP
+            while self.active_call and self.audio_available and buffer_errors < max_buffer_errors:
                 try:
-                    # ✅ TEST: Ode an die Freude statt Mikrofon
+                    current_time = time.time()
+                    elapsed = current_time - last_send_time
+                    
+                    # 🔥 RATE LIMITING: Warte falls nötig
+                    if elapsed < PACKET_INTERVAL:
+                        time.sleep(PACKET_INTERVAL - elapsed)
+                    
+                    # ✅ AUDIO DATEN GENERIEREN
                     audio_data = ode_generator.generate_chunk()
                     packet_counter += 1
+                    
+                    # ✅ VALIDIERE AUDIO DATEN
+                    audio_samples = np.frombuffer(audio_data, dtype=np.int16)
+                    if len(audio_samples) == 0 or np.all(audio_samples == 0):
+                        if packet_counter % 100 == 0:  # Nicht zu oft loggen
+                            print(f"⚠️ [OPENBSD] Ungültige Audio-Daten in Paket {packet_counter}")
+                        continue
                     
                     # ✅ AES VERSCHLÜSSELUNG
                     padded_data = pkcs7_pad(audio_data)
@@ -3368,65 +3417,106 @@ class CALL:
                     encrypted_data = cipher.update(padded_data)
                     encrypted_data += cipher.final()
                     
-                    # ✅ SESSION-ID
-                    session_short = session_id[:16] if session_id else ""
+                    # ✅ PAKET AUFBAU
+                    session_short = session_id[:16] if session_id else "NO_SESSION"
                     session_bytes = session_short.encode('utf-8')
                     packet = session_bytes + encrypted_data
                     
-                    # ✅ OPENBSD: Konservativere Paketgröße
-                    if len(packet) > 1400:  # Konservativer für OpenBSD
-                        packet = packet[:1400]
+                    # 🔥 OPENBSD FIX: NOCH KLEINERE PAKETE
+                    if len(packet) > 1000:  # 🔥 Sehr konservativ für OpenBSD
+                        packet = packet[:1000]
+                        if packet_counter <= 5:
+                            print(f"📦 [OPENBSD] Paket gekürzt auf {len(packet)} bytes")
                     
-                    # ✅ KRITISCH: Sende UDP-Paket mit Error Handling
+                    # ✅ VERSUCHE ZU SENDEN MIT BUFFER-MANAGEMENT
                     try:
-                        audio_socket.sendto(packet, target_addr)
+                        bytes_sent = audio_socket.sendto(packet, target_addr)
                         success_packets += 1
+                        buffer_errors = 0  # 🔥 Reset error count on success
+                        last_send_time = time.time()
                         
-                        # ✅ ERSTE 10 PAKETE LOGGEN für Debugging
+                        # ✅ DETAILLIERTES DEBUGGING FÜR ERSTE PAKETE
                         if packet_counter <= 10:
-                            print(f"📤 [GODZILLA OPENBSD] Successfully sent packet #{packet_counter}")
+                            print(f"📤 [OPENBSD] Paket {packet_counter} gesendet: {bytes_sent} bytes")
+                            print(f"   Session: {session_short}")
+                            print(f"   Audio: {len(audio_data)} bytes")
+                            print(f"   Encrypted: {len(encrypted_data)} bytes")
+                            print(f"   Total: {len(packet)} bytes")
+                            print(f"   Buffer Errors: {buffer_errors}")
+                        
+                        # ✅ PERFORMANCE LOGGING
+                        if success_packets % 200 == 0:
+                            current_rate = 200 / (time.time() - last_send_time + PACKET_INTERVAL * 200)
+                            print(f"📊 [OPENBSD] {success_packets} Pakete, Rate: {current_rate:.1f} pkt/sec")
                             
                     except socket.error as e:
-                        print(f"🔴 [GODZILLA OPENBSD SEND ERROR] {e}")
-                        # Kurze Pause bei Fehler
-                        time.sleep(0.01)
-                        continue
+                        # 🔥 OPENBSD FIX: Spezifische Behandlung von Errno 55
+                        if e.errno == 55:  # "No buffer space available"
+                            buffer_errors += 1
+                            print(f"🔴 [OPENBSD BUFFER ERROR #{buffer_errors}] {e}")
+                            
+                            # 🔥 PROGRESSIVE BACKOFF: Längere Pause bei mehr Fehlern
+                            backoff_time = 0.02 * buffer_errors  # Bis zu 0.6 Sekunden
+                            time.sleep(min(backoff_time, 0.6))
+                            
+                            if buffer_errors % 5 == 0:
+                                print(f"⚠️ [OPENBSD] Buffer Probleme - {buffer_errors} Fehler, Backoff: {backoff_time:.3f}s")
+                                
+                        else:
+                            # Andere Socket-Fehler
+                            print(f"🔴 [OPENBSD SEND ERROR] {e}")
+                            time.sleep(0.01)
+                            buffer_errors += 1
                     
-                    # ✅ REDUZIERTES LOGGING (alle 1000 statt 100000 Pakete)
-                    if success_packets % 1000 == 0:
-                        current_time = time.time()
-                        elapsed = current_time - last_log_time
-                        packets_per_sec = 1000 / elapsed if elapsed > 0 else 0
-                        
-                        print(f"📤 [GODZILLA OPENBSD] Sent {success_packets:,} packets ({packets_per_sec:.1f} pkt/s)")
-                        last_log_time = current_time
+                    # ✅ VERMEIDE ZU HOHES TEMPO
+                    if success_packets % 500 == 0:
+                        time.sleep(0.002)  # Kurze Pause alle 500 Pakete
                         
                 except socket.timeout:
                     continue
                 except Exception as e:
                     if self.active_call:
-                        print(f"[GODZILLA OPENBSD ERROR] {str(e)}")
-                    break
-                                    
-            print(f"[GODZILLA OPENBSD] Session ended. Total: {packet_counter:,}, Success: {success_packets:,}")
+                        print(f"🔴 [OPENBSD PROCESSING ERROR] {str(e)}")
+                        buffer_errors += 1
+                        time.sleep(0.01)
+                    else:
+                        break
+            
+            # ✅ ZUSAMMENFASSUNG
+            print(f"🏁 [OPENBSD] Session beendet:")
+            print(f"   Gesamt Pakete: {packet_counter:,}")
+            print(f"   Erfolgreich: {success_packets:,}")
+            print(f"   Buffer Fehler: {buffer_errors}")
+            print(f"   Erfolgsrate: {(success_packets/max(packet_counter,1))*100:.1f}%")
+            
+            if buffer_errors >= max_buffer_errors:
+                print("❌ [OPENBSD] Zu viele Buffer Fehler - gestoppt")
+            elif not self.active_call:
+                print("ℹ️ [OPENBSD] Call beendet")
+            else:
+                print("ℹ️ [OPENBSD] Audio nicht verfügbar")
+            
+            return success_packets > 0
                                                 
         except Exception as e:
-            print(f"[GODZILLA OPENBSD SETUP ERROR] {str(e)}")
+            print(f"🔴 [OPENBSD SETUP ERROR] {str(e)}")
             import traceback
             traceback.print_exc()
             return False
         finally:
+            # ✅ SAUBERES CLEANUP
             if hasattr(self, 'input_stream') and self.input_stream:
                 try:
                     self.input_stream.stop_stream()
                     self.input_stream.close()
                     self.input_stream = None
+                    print("✅ [OPENBSD] Input stream geschlossen")
                 except Exception as e:
-                    print(f"[GODZILLA OPENBSD CLOSE ERROR] {e}")
+                    print(f"⚠️ [OPENBSD CLOSE ERROR] {e}")
             if audio_socket:
                 audio_socket.close()
-        
-        return success_packets > 0
+                print("🔌 [OPENBSD] Socket geschlossen")
+            
     def audio_stream_in(self, listen_port, iv, key, expected_session_id):
         """🎧 DIAGNOSE: Prüft ob Audio In überhaupt startet"""
         audio_socket = None
