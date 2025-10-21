@@ -1207,48 +1207,45 @@ class CONVEY:
         self.active_calls = {}
         self.call_lock = threading.RLock()
         
-        # ✅ VEREINFACHT: NUR EIN SERVER-PORT
+        # ✅ KRITISCH: SESSION_ID_LENGTH DEFINIEREN (muss mit CALL Klasse übereinstimmen)
+        self.SESSION_ID_LENGTH = 8  # 8 Bytes für Session-ID
+        
+        # ✅ KONSISTENTE INITIALISIERUNG ALLER VARIABLEN
         self.udp_relay_port = 51820  # Einziger Server-Port
-        self.audio_relays = {}  # {call_id: {caller_addr: (ip, port), callee_addr: (ip, port)}}
+        self.audio_relays = {}  
         self.relay_lock = threading.Lock()
-        self.udp_socket = None  # Nur ein Socket
+        self.udp_socket = None
         
-        # ⚡ FAST LOOKUP: {client_addr: partner_addr}
-        self.connection_map = {}  # O(1) Lookups!
-        self.client_names = {}    # {client_addr: client_name}
-        
-        # ✅ WICHTIG: Session-Routing hinzufügen
+        # ✅ SESSION-ROUTING HIER INITIALISIEREN
         self.session_routing = {}  # {session_bytes: target_addr}
+        
+        # ⚡ Legacy Connection Map (für Kompatibilität)
+        self.connection_map = {}  
+        self.client_names = {}    
         
         # Starte UDP Relay Server
         self._start_udp_relay()
 
     def _start_udp_relay(self):
-        """🚀 STARTET UDP RELAY MIT SESSION-BASIERTEM ROUTING"""
+        """🚀 KORRIGIERT: Konsistente Initialisierung"""
         try:
-            # ⚡ TURBO-LOOP (Haupt-Performance)
-            self.udp_relay_port = 51820  # Single Port für maximale Performance
             self.udp_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            
             self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             self.udp_socket.setblocking(False)
-            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 512 * 1024)  # Optimiert
-            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 512 * 1024)  # Optimiert
+            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 512 * 1024)
+            self.udp_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 512 * 1024)
             self.udp_socket.bind(('0.0.0.0', self.udp_relay_port))
             
-            # ⚡ FAST LOOKUP: {client_addr: partner_addr}
-            self.connection_map = {}  # O(1) Lookups!
-            self.client_names = {}    # {client_addr: client_name}
+            # ✅ SESSION-ROUTING SICHER INITIALISIEREN
+            if not hasattr(self, 'session_routing'):
+                self.session_routing = {}
             
-            # ✅ WICHTIG: Session-Routing initialisieren
-            self.session_routing = {}  # {session_bytes: target_addr}
+            print(f"[TURBO RELAY] 🚀 Session-Based System gestartet:")
+            print(f"  ⚡ Server Port: {self.udp_relay_port} (Session-Routing)")
+            print(f"  📞 Client Port: 51821")
+            print(f"  🔑 Session Routing entries: {len(self.session_routing)}")
             
-            print(f"[TURBO RELAY] 🚀 Session-based System gestartet:")
-            print(f"  ⚡ Turbo-Loop: Port {self.udp_relay_port} (Performance)")
-            print(f"  📞 Clients auf Port 51821")
-            print(f"  🔑 Session-based routing aktiviert")
-            
-            # Starte Session-basierte Turbo Loop
+            # Starte Turbo Loop
             threading.Thread(target=self._turbo_relay_loop, daemon=True, name="SessionTurboLoop").start()
             
         except Exception as e:
@@ -1256,35 +1253,33 @@ class CONVEY:
             import traceback
             traceback.print_exc()
 
-
-
     def _turbo_relay_loop(self):
-        """⚡ KORRIGIERT: Session-basiertes UDP Relay MIT GRÖSSENVALIDIERUNG"""
+        """⚡ KORRIGIERT: Session-basiertes UDP Relay mit 8-Byte Session-IDs"""
         import select
         packet_count = 0
         
-        print("[TURBO RELAY] 🚀 Starting session-based turbo loop with SIZE VALIDATION...")
+        print(f"[TURBO RELAY CLEAN] 🚀 Starting clean session-based turbo loop ({self.SESSION_ID_LENGTH} bytes)...")
         
         while True:
             try:
-                # ✅ OPTIMIERT: Select für Performance
                 ready, _, _ = select.select([self.udp_socket], [], [], 0.05)
                 
                 if ready:
-                    # ✅ GRÖSSENVALIDIERUNG: Max 1400 Bytes für Audio-Pakete
+                    # ✅ GRÖSSENVALIDIERUNG: Max 1400 Bytes
                     data, src_addr = self.udp_socket.recvfrom(1400)
                     packet_count += 1
                     
-                    # ✅ VALIDIERUNG: Mindestens 16 Bytes für Session-ID, maximal 1400 Bytes
-                    if len(data) < 16:
+                    # ✅ VALIDIERUNG: Mindestens 8 Bytes für Session-ID
+                    if len(data) < self.SESSION_ID_LENGTH:
                         continue
                         
                     if len(data) > 1400:
-                        print(f"❌ [AUDIO OVERSIZE] {len(data)} bytes from {src_addr} - ignoring")
+                        if packet_count % 1000 == 0:
+                            print(f"❌ [AUDIO OVERSIZE] {len(data)} bytes from {src_addr}")
                         continue
                         
-                    # ✅ VEREINFACHT: Session-ID sind erste 16 Bytes
-                    session_bytes = data[:16]
+                    # ✅ NUR HIER: Session-ID Extraktion für Routing
+                    session_bytes = data[:self.SESSION_ID_LENGTH]
                     
                     # ⚡ SCHNELLER SESSION-LOOKUP
                     with self.relay_lock:
@@ -1295,158 +1290,122 @@ class CONVEY:
                             # ⚡ DIREKTES WEITERLEITEN
                             self.udp_socket.sendto(data, target_addr)
                             
-                            # Reduziertes Logging für Performance
-                            if packet_count % 1000 == 0:
-                                print(f"[TURBO RELAY] Routed packet #{packet_count} via session {session_bytes.hex()[:8]}...")
+                            # ✅ REDUZIERTES DEBUGGING
+                            if packet_count % 50000 == 0:
+                                session_hex = session_bytes.hex()
+                                session_str = session_bytes.decode('utf-8', errors='ignore').rstrip('\0')
+                                print(f"📤 [TURBO RELAY] Packet #{packet_count:,} via '{session_str}'")
                                 
                         except Exception as send_error:
-                            print(f"[TURBO RELAY SEND ERROR] Failed to send to {target_addr}: {send_error}")
-                            # ✅ CLEANUP: Defekte Verbindungen entfernen
-                            if "Connection refused" in str(send_error) or "Host is down" in str(send_error):
-                                print(f"[TURBO RELAY CLEANUP] Removing broken session: {session_bytes.hex()[:8]}")
+                            print(f"[TURBO RELAY SEND ERROR] {send_error}")
+                            # ✅ CLEANUP: Defekte Verbindungen
+                            if "Connection refused" in str(send_error):
                                 with self.relay_lock:
                                     if session_bytes in self.session_routing:
                                         del self.session_routing[session_bytes]
+                                        print(f"[TURBO RELAY] Removed broken session")
                     else:
                         # ❌ Keine Route für Session-ID
-                        if packet_count % 500 == 0:
-                            print(f"[TURBO RELAY WARNING] No route for session {session_bytes.hex()[:8]}")
+                        if packet_count % 1000 == 0:
+                            session_hex = session_bytes.hex()
+                            session_str = session_bytes.decode('utf-8', errors='ignore').rstrip('\0')
+                            print(f"[TURBO RELAY WARNING] No route for session '{session_str}' from {src_addr}")
                             
             except BlockingIOError:
                 continue
             except Exception as e:
-                if "10054" not in str(e):  # Unterdrücke normale Connection Reset Fehler
+                if "10054" not in str(e):
                     print(f"[TURBO RELAY ERROR] {e}")
                 continue
 
     def _register_audio_relay(self, call_id, caller_name, callee_name):
-        """🚀 KORRIGIERT: Bidirektionales Session-Routing mit KONSISTENTER Session-ID Kodierung"""
+        """🎯 EXKLUSIV: Generiert Session-IDs und richtet Routing ein"""
         try:
-            print(f"🎯 [RELAY SECURE] Bidirectional routing: {caller_name} <-> {callee_name}")
-            
-            caller_data = None
-            callee_data = None
-            
-            # ✅ CLIENT-DATEN SAMMELN
-            with self.server.clients_lock:
-                for client_id, client_data in self.server.clients.items():
-                    client_name = client_data.get('name', 'unknown')
-                    
-                    if client_name.lower() == caller_name.lower():
-                        caller_data = client_data
-                    elif client_name.lower() == callee_name.lower():
-                        callee_data = client_data
-            
-            if not caller_data or not callee_data:
-                print(f"[RELAY ERROR] Client data not found")
-                return False
-            
-            # ✅ IP-DATEN EXTRAHIEREN
-            caller_ip = caller_data.get('ip')
-            callee_ip = callee_data.get('ip')
-            
-            if not caller_ip or not callee_ip:
-                print(f"[RELAY ERROR] Missing IP addresses")
-                return False
-            
-            print(f"[RELAY SECURE] IP Analysis:")
-            print(f"  {caller_name} -> IP: {caller_ip}")
-            print(f"  {callee_name} -> IP: {callee_ip}")
-            
-            # ✅ 🔐 KOLLISIONSSICHERE SESSION-IDs GENERIEREN
             import hashlib
             import time
             import secrets
-            import os
             
-            # 🔐 KRYPTOGRAFISCH SICHERE Session-IDs (32 Zeichen)
-            timestamp_ns = time.time_ns()  # Nanosekunden-Präzision
-            random_component = secrets.token_hex(8)  # 16 Bytes Zufälligkeit
-            
+            # ✅ NUR HIER: Session-ID Generierung
             caller_to_callee_session = hashlib.sha3_256(
-                f"{call_id}_caller_to_callee_{timestamp_ns}_{random_component}_{os.urandom(4).hex()}".encode()
-            ).hexdigest()[:32]  # 32 Zeichen
+                f"{call_id}_caller_{time.time_ns()}_{secrets.token_hex(4)}".encode()
+            ).hexdigest()[:self.SESSION_ID_LENGTH]
             
             callee_to_caller_session = hashlib.sha3_256(
-                f"{call_id}_callee_to_caller_{timestamp_ns}_{random_component}_{os.urandom(4).hex()}".encode()
-            ).hexdigest()[:32]  # 32 Zeichen
+                f"{call_id}_callee_{time.time_ns()}_{secrets.token_hex(4)}".encode()
+            ).hexdigest()[:self.SESSION_ID_LENGTH]
             
-            # ✅ KORREKT: Session-Bytes aus den ersten 16 ZEICHEN (nicht Bytes!)
-            caller_session_bytes = caller_to_callee_session[:16].encode('utf-8').ljust(16, b'\0')
-            callee_session_bytes = callee_to_caller_session[:16].encode('utf-8').ljust(16, b'\0')
+            # ✅ Konvertiere zu Bytes
+            caller_session_bytes = caller_to_callee_session.encode('utf-8')[:self.SESSION_ID_LENGTH]
+            callee_session_bytes = callee_to_caller_session.encode('utf-8')[:self.SESSION_ID_LENGTH]
             
-            # ✅ AUDIO-ADDRESSEN (Feste Ports)
-            caller_audio_addr = (caller_ip, 51821)
-            callee_audio_addr = (callee_ip, 51821)
+            # ✅ Stelle sicher dass genau 8 Bytes
+            caller_session_bytes = caller_session_bytes.ljust(self.SESSION_ID_LENGTH, b'\0')
+            callee_session_bytes = callee_session_bytes.ljust(self.SESSION_ID_LENGTH, b'\0')
             
-            print(f"[RELAY SECURE] 🔐 KORRIGIERTE Session Routing:")
-            print(f"  Caller → Callee Session: {caller_to_callee_session} (32 chars)")
-            print(f"    UDP Session Bytes: {caller_session_bytes.hex()} (16 bytes)")
-            print(f"    Decoded as String: '{caller_to_callee_session[:16]}'")
-            print(f"  Callee → Caller Session: {callee_to_caller_session} (32 chars)")
-            print(f"    UDP Session Bytes: {callee_session_bytes.hex()} (16 bytes)") 
-            print(f"    Decoded as String: '{callee_to_caller_session[:16]}'")
-            print(f"  Caller Audio Addr: {caller_audio_addr}")
-            print(f"  Callee Audio Addr: {callee_audio_addr}")
+            print(f"[RELAY CLEAN] {self.SESSION_ID_LENGTH}-Byte Session-IDs generiert:")
+            print(f"  Caller → Callee: {caller_to_callee_session} -> {caller_session_bytes.hex()}")
+            print(f"  Callee → Caller: {callee_to_caller_session} -> {callee_session_bytes.hex()}")
+
+            # ✅ IP-Adressen ermitteln
+            caller_ip = None
+            callee_ip = None
             
-            # ✅ KOLLISIONSCHECK (Sicherheitsmaßnahme)
+            with self.server.clients_lock:
+                for client_id, client_info in self.server.clients.items():
+                    client_name = client_info.get('name', '')
+                    if client_name == caller_name:
+                        caller_ip = client_info.get('ip')
+                    elif client_name == callee_name:
+                        callee_ip = client_info.get('ip')
+            
+            if not caller_ip or not callee_ip:
+                print(f"[RELAY ERROR] Could not find IP addresses for clients")
+                return False
+
+            # ✅ ROUTING EINRICHTEN (NUR HIER!)
             with self.relay_lock:
-                if caller_session_bytes in self.session_routing:
-                    print(f"⚠️ [RELAY WARNING] Caller session collision detected - regenerating...")
-                    # Fallback: Pure Zufälligkeit
-                    caller_to_callee_session = secrets.token_hex(16)
-                    caller_session_bytes = caller_to_callee_session[:16].encode('utf-8').ljust(16, b'\0')
+                # Alte Sessions bereinigen
+                self._cleanup_existing_sessions(call_id)
                 
-                if callee_session_bytes in self.session_routing:
-                    print(f"⚠️ [RELAY WARNING] Callee session collision detected - regenerating...")
-                    callee_to_caller_session = secrets.token_hex(16)
-                    callee_session_bytes = callee_to_caller_session[:16].encode('utf-8').ljust(16, b'\0')
-            
-            # ✅ BIDIREKTIONALES SESSION-ROUTING EINRICHTEN
-            with self.relay_lock:
-                # Caller → Callee Routing
-                self.session_routing[caller_session_bytes] = callee_audio_addr
-                # Callee → Caller Routing  
-                self.session_routing[callee_session_bytes] = caller_audio_addr
+                # Neues Routing einrichten
+                self.session_routing[caller_session_bytes] = (callee_ip, 51821)
+                self.session_routing[callee_session_bytes] = (caller_ip, 51821)
                 
-                print(f"[RELAY SECURE] Routing Table Updated:")
-                print(f"  Session '{caller_to_callee_session[:16]}' -> {callee_audio_addr}")
-                print(f"  Session '{callee_to_caller_session[:16]}' -> {caller_audio_addr}")
-                print(f"  Total active sessions: {len(self.session_routing)}")
+                print(f"[RELAY CLEAN] Routing eingerichtet:")
+                print(f"  {caller_session_bytes.hex()} -> {callee_ip}:51821")
+                print(f"  {callee_session_bytes.hex()} -> {caller_ip}:51821")
+
+            # ✅ Relay-Info speichern
+            self.audio_relays[call_id] = {
+                'caller_name': caller_name,
+                'callee_name': callee_name,
+                'caller_addr': (caller_ip, 51821),
+                'callee_addr': (callee_ip, 51821),
+                'caller_session_id': caller_to_callee_session,
+                'callee_session_id': callee_to_caller_session,
+                'caller_session_bytes': caller_session_bytes,
+                'callee_session_bytes': callee_session_bytes,
+                'timestamp': time.time(),
+            }
             
-            # ✅ RELAY-INFO SPEICHERN
-            with self.relay_lock:
-                self.audio_relays[call_id] = {
-                    'caller_name': caller_name,
-                    'callee_name': callee_name,
-                    'caller_addr': caller_audio_addr,
-                    'callee_addr': callee_audio_addr,
-                    'caller_session_id': caller_to_callee_session,      # 32 chars für Nachrichten
-                    'callee_session_id': callee_to_caller_session,      # 32 chars für Nachrichten
-                    'caller_session_bytes': caller_session_bytes,       # 16 bytes für UDP
-                    'callee_session_bytes': callee_session_bytes,       # 16 bytes für UDP
-                    'caller_session_short': caller_to_callee_session[:16],  # 16 chars für Vergleich
-                    'callee_session_short': callee_to_caller_session[:16],  # 16 chars für Vergleich
-                    'timestamp': time.time(),
-                    'timestamp_ns': timestamp_ns,
-                    'random_component': random_component
-                }
-            
-            # ✅ DEBUG AUSGABE
-            self._debug_session_routing()
-            
-            print(f"[RELAY SECURE] ✅ KORRIGIERTES Session-Routing etabliert!")
-            print(f"[RELAY SECURE] 🎉 Audio relay SUCCESS for call {call_id}")
             return {
-                'caller_session_id': caller_to_callee_session,      # 32 chars an Client senden
-                'callee_session_id': callee_to_caller_session       # 32 chars an Client senden
+                'caller_session_id': caller_to_callee_session,
+                'callee_session_id': callee_to_caller_session
             }
             
         except Exception as e:
-            print(f"[RELAY ERROR] Session registration failed: {e}")
+            print(f"[RELAY ERROR] Failed: {e}")
             import traceback
             traceback.print_exc()
             return False
+    def _cleanup_existing_sessions(self, call_id):
+        """Bereinige alte Sessions für diesen Call"""
+        if call_id in self.audio_relays:
+            old_relay = self.audio_relays[call_id]
+            if 'caller_session_bytes' in old_relay:
+                self.session_routing.pop(old_relay['caller_session_bytes'], None)
+            if 'callee_session_bytes' in old_relay:  
+                self.session_routing.pop(old_relay['callee_session_bytes'], None)
         
     def _debug_session_routing(self):
         """Debug-Ausgabe der Session Routing Table mit erweiterter Info"""
