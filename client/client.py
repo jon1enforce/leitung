@@ -3271,35 +3271,7 @@ class CALL:
         finally:
             sock.settimeout(original_timeout)
 
-       
-    def _delayed_start_audio_streams(self):
-        """Startet Audio-Streams mit Verzögerung nach CALL_CONFIRMED"""
-        try:
-            print("🚀 [DELAYED AUDIO] Starting audio streams after delay...")
-            
-            # ✅ Prüfe ob Call noch aktiv ist
-            if not self.active_call:
-                print("❌ [DELAYED AUDIO] Call not active anymore")
-                return
-                
-            if not self.current_secret:
-                print("❌ [DELAYED AUDIO] No session secret available")
-                return
-                
-            # ✅ Finale Prüfung vor Start
-            print(f"[DELAYED AUDIO] Final check - Active: {self.active_call}, Secret: {bool(self.current_secret)}")
-            print(f"[DELAYED AUDIO] Send Session: {getattr(self, 'send_session_id', 'None')}")
-            print(f"[DELAYED AUDIO] Recv Session: {getattr(self, 'recv_session_id', 'None')}")
-            
-            # ✅ Starte Audio-Streams
-            self._start_audio_streams()
-            
-            print("✅ [DELAYED AUDIO] Audio streams started successfully")
-            
-        except Exception as e:
-            print(f"❌ [DELAYED AUDIO ERROR] Failed to start audio: {e}")
-            import traceback
-            traceback.print_exc()
+
            
     def audio_stream_out(self, target_ip, port, iv, key, session_id):
         """🎤 OPENBSD OPTIMIERT: Audio Senden mit Buffer-Management gegen Errno 55"""
@@ -3699,13 +3671,57 @@ class CALL:
             print("❌ NO CURRENT SECRET AVAILABLE")
         
         print("="*60)
-    def _start_audio_streams(self):
-        """🚀 ERWEITERT: Startet Audio-Streams mit erweiterter Diagnose"""
+    def _delayed_start_audio_streams(self):
+        """Startet Audio-Streams mit Verzögerung nach CALL_CONFIRMED - MIT SAFETY CHECK"""
         try:
-            print(f"\n🎯 [AUDIO START] Starting audio streams with FULL DIAGNOSTICS")
+            print("🚀 [DELAYED AUDIO] Starting audio streams after delay...")
+            
+            # ✅ Prüfe ob Call noch aktiv ist
+            if not self.active_call:
+                print("❌ [DELAYED AUDIO] Call not active anymore")
+                return
+                
+            if not self.current_secret:
+                print("❌ [DELAYED AUDIO] No session secret available")
+                return
+                
+            # ✅ SAFETY CHECK: Verhindere doppelten Start
+            if hasattr(self, 'audio_streams_running') and self.audio_streams_running:
+                print("⚠️ [DELAYED AUDIO SAFETY] Audio streams already running - skipping delayed start")
+                return
+                
+            # ✅ Finale Prüfung vor Start
+            print(f"[DELAYED AUDIO] Final check - Active: {self.active_call}, Secret: {bool(self.current_secret)}")
+            print(f"[DELAYED AUDIO] Send Session: {getattr(self, 'send_session_id', 'None')}")
+            print(f"[DELAYED AUDIO] Recv Session: {getattr(self, 'recv_session_id', 'None')}")
+            
+            # ✅ Starte Audio-Streams
+            self._start_audio_streams()
+            
+            print("✅ [DELAYED AUDIO] Audio streams started successfully")
+            
+        except Exception as e:
+            print(f"❌ [DELAYED AUDIO ERROR] Failed to start audio: {e}")
+            import traceback
+            traceback.print_exc()
+
+    def _start_audio_streams(self):
+        """🚀 GESICHERT: Startet Audio-Streams NUR EINMAL mit Thread-Safety"""
+        try:
+            print(f"\n🎯 [AUDIO START] Starting audio streams with THREAD SAFETY")
+            
+            # ✅ KRITISCHE SAFETY PRÜFUNG: Verhindere doppelten Start
+            if hasattr(self, 'audio_streams_running') and self.audio_streams_running:
+                print("⚠️ [AUDIO SAFETY] Audio streams already running - skipping")
+                return
+                
+            # ✅ MARKIERE ALS GESTARTET
+            self.audio_streams_running = True
+            print("🔒 [AUDIO SAFETY] Audio streams marked as running")
             
             if not self.current_secret:
                 print("❌ [AUDIO] No session key available")
+                self.audio_streams_running = False
                 return
                 
             # ✅ AES KEY DEBUGGING
@@ -3714,6 +3730,7 @@ class CALL:
             # ✅ SESSION ID DIAGNOSE
             if not hasattr(self, 'send_session_id') or not hasattr(self, 'recv_session_id'):
                 print("❌ [AUDIO] No session IDs available")
+                self.audio_streams_running = False
                 return
                 
             send_session_short = self.send_session_id[:16] if self.send_session_id else ""
@@ -3736,6 +3753,7 @@ class CALL:
                 # ✅ ACTIVE CALL PRÜFEN
                 if not self.active_call:
                     print("❌ [AUDIO] Active call is not set")
+                    self.audio_streams_running = False
                     return
                     
                 print(f"✅ [AUDIO] Active call confirmed: {self.active_call}")
@@ -3781,10 +3799,12 @@ class CALL:
                 
             else:
                 print("[AUDIO] ❌ ERROR: No UDP relay configured!")
+                self.audio_streams_running = False
                 
         except Exception as e:
             print(f"🔴 [AUDIO ERROR] Failed to start streams: {e}")
             self.active_call = False
+            self.audio_streams_running = False
             import traceback
             traceback.print_exc()
             
