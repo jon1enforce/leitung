@@ -3268,7 +3268,7 @@ class CALL:
             return False
 
     def recv_audio_packet(self, sock, timeout=0.1):
-        """🎯 KORRIGIERT: Robuste Session-ID Validierung"""
+        """🎯 KORRIGIERT: WENIGER STRENGE Session-ID Validierung FÜR DEBUG"""
         try:
             sock.settimeout(timeout)
             data, addr = sock.recvfrom(4096)
@@ -3283,7 +3283,7 @@ class CALL:
             # Session-ID dekodieren
             session_id = session_bytes.decode('utf-8', errors='ignore').rstrip('\0')
             
-            # ✅ ROBUSTE VALIDIERUNG: Nur prüfen wenn recv_session_id gesetzt ist
+            # ✅ WENIGER STRENGE VALIDIERUNG: Nur prüfen, aber nicht blockieren
             if hasattr(self, 'recv_session_id') and self.recv_session_id:
                 expected_short = self.recv_session_id[:self.SESSION_ID_LENGTH]
                 if session_id != expected_short:
@@ -3292,9 +3292,10 @@ class CALL:
                     else:
                         self.session_validation_errors = 1
                     
-                    if self.session_validation_errors % 50 == 0:  # Reduziertes Logging
-                        print(f"🔍 [SESSION MISMATCH #{self.session_validation_errors}] Received: '{session_id}' vs Expected: '{expected_short}'")
-                    return None, None, None
+                    # ✅ WICHTIG: NUR LOGGEN, NICHT BLOCKIEREN!
+                    if self.session_validation_errors <= 10 or self.session_validation_errors % 20 == 0:
+                        print(f"🔍 [SESSION MISMATCH #{self.session_validation_errors}] Received: '{session_id}' vs Expected: '{expected_short}' - BUT ACCEPTING FOR DEBUG")
+                    # return None, None, None  # ❌ DIESE ZEILE AUSKOMMENTIEREN!
             else:
                 # ✅ ERSTE PAKETE: Session-ID noch nicht bekannt
                 if not hasattr(self, 'early_packets_received'):
@@ -3317,7 +3318,8 @@ class CALL:
     def audio_stream_out(self, target_ip, port, iv, key):
         """🎤 KORRIGIERT: Sendet NUR verschlüsselte Audio-Daten ohne Session-ID"""
         
-        print(f"🔴 [AUDIO OUT CLEAN] Starting RAW audio stream to {target_ip}:{port}")
+
+        print(f"🔴 [AUDIO OUT CORRECTED] Starting RAW audio stream to {target_ip}:51820")
         print(f"🔴 [AUDIO OUT] Chunk Size: {self.audio_config.CHUNK}")
         print(f"🔴 [AUDIO OUT] Sample Rate: {self.audio_config.RATE}")
         
@@ -3381,7 +3383,7 @@ class CALL:
                 
             audio_socket.settimeout(0.05)
             
-            target_addr = (target_ip, port)
+            target_addr = (target_ip, 51820)
             print(f"🎤 [AUDIO OUT] Sende RAW AES Audio an {target_ip}:{port}")
             
             # ✅ PERFORMANCE VARIABLEN
