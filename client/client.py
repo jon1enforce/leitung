@@ -3188,6 +3188,19 @@ class CALL:
         self.relay_server_ip = None
         self.relay_server_port = None  # Wird vom Server zugewiesen
         
+        # ✅ KORREKTUR: Session-ID Variablen initialisieren
+        self.SESSION_ID_LENGTH = 8  # 8 Bytes für Session-ID
+        self.send_session_id = None  # Für Senden an Partner
+        self.recv_session_id = None  # Für Empfangen von Partner
+        self.session_id = None       # Legacy Kompatibilität
+        
+        # ✅ KORREKTUR: Session-Validation Tracking
+        self.session_validation_errors = 0
+        self.early_packets_received = 0
+        
+        # ✅ KORREKTUR: Audio Stream State
+        self.audio_streams_running = False
+        
         # ✅ KORREKTUR: Audio Device Management mit Fallback
         try:
             import pyaudio
@@ -3222,19 +3235,31 @@ class CALL:
         # Lock für Thread-Safety
         self.connection_lock = threading.Lock()
         self.connection_state = "disconnected"
-
+        
+        print(f"[CALL] ✅ Initialized with session support (SESSION_ID_LENGTH={self.SESSION_ID_LENGTH})")
 
     def send_audio_packet(self, sock, session_id, encrypted_data, target_addr):
-        """Sendet Audio-Paket OHNE SIP-Framing - KONSISTENTE Session-ID"""
+        """🎯 KORRIGIERT: Konsistente Session-ID Handhabung"""
         try:
-            # ✅ KONSISTENT: Nur erste 16 Zeichen, KEIN Null-Padding
-            session_short = session_id[:16] if session_id else ""
-            session_bytes = session_short.encode('utf-8')  # ✅ KEIN ljust()!
+            # ✅ KONSISTENTE LÄNGENVERWENDUNG
+            session_short = session_id[:self.SESSION_ID_LENGTH] if session_id else ""
+            session_bytes = session_short.encode('utf-8')[:self.SESSION_ID_LENGTH]
             
-            # ✅ Paket = [16 Bytes Session-ID] + [Verschlüsselte Audio-Daten]
+            # ✅ Sicherstellen dass genau 8 Bytes
+            if len(session_bytes) < self.SESSION_ID_LENGTH:
+                session_bytes = session_bytes.ljust(self.SESSION_ID_LENGTH, b'\0')
+            
             packet = session_bytes + encrypted_data
             
-            # ✅ Direktes Senden OHNE Framing-Header
+            # ✅ VALIDIERUNG vor Senden
+            if not session_id:
+                print("❌ [AUDIO SEND] No session ID provided!")
+                return False
+                
+            if len(session_bytes) != self.SESSION_ID_LENGTH:
+                print(f"❌ [AUDIO SEND] Invalid session bytes length: {len(session_bytes)}")
+                return False
+                
             sock.sendto(packet, target_addr)
             return True
             
@@ -3243,23 +3268,41 @@ class CALL:
             return False
 
     def recv_audio_packet(self, sock, timeout=0.1):
-        """Empfängt Audio-Paket OHNE SIP-Framing - KONSISTENTE Session-ID"""
-        original_timeout = sock.gettimeout()
-        sock.settimeout(timeout)
-        
+        """🎯 KORRIGIERT: Robuste Session-ID Validierung"""
         try:
-            # ✅ Direktes Empfangen OHNE Framing-Header
+            sock.settimeout(timeout)
             data, addr = sock.recvfrom(4096)
             
-            if len(data) < 16:
+            # ✅ MINDESTLÄNGE PRÜFEN
+            if len(data) < self.SESSION_ID_LENGTH:
                 return None, None, None
                 
-            # ✅ Extrahiere Session-ID (erste 16 Bytes) und Audio-Daten
-            session_bytes = data[:16]
-            encrypted_data = data[16:]
+            session_bytes = data[:self.SESSION_ID_LENGTH]
+            encrypted_data = data[self.SESSION_ID_LENGTH:]
             
-            # ✅ KONSISTENT: Kein rstrip() - verwende die Bytes direkt
-            session_id = session_bytes.decode('utf-8', errors='ignore')
+            # Session-ID dekodieren
+            session_id = session_bytes.decode('utf-8', errors='ignore').rstrip('\0')
+            
+            # ✅ ROBUSTE VALIDIERUNG: Nur prüfen wenn recv_session_id gesetzt ist
+            if hasattr(self, 'recv_session_id') and self.recv_session_id:
+                expected_short = self.recv_session_id[:self.SESSION_ID_LENGTH]
+                if session_id != expected_short:
+                    if hasattr(self, 'session_validation_errors'):
+                        self.session_validation_errors += 1
+                    else:
+                        self.session_validation_errors = 1
+                    
+                    if self.session_validation_errors % 50 == 0:  # Reduziertes Logging
+                        print(f"🔍 [SESSION MISMATCH #{self.session_validation_errors}] Received: '{session_id}' vs Expected: '{expected_short}'")
+                    return None, None, None
+            else:
+                # ✅ ERSTE PAKETE: Session-ID noch nicht bekannt
+                if not hasattr(self, 'early_packets_received'):
+                    self.early_packets_received = 0
+                self.early_packets_received += 1
+                
+                if self.early_packets_received <= 5:
+                    print(f"🎯 [AUDIO IN EARLY] Received packet with session '{session_id}' before validation setup")
             
             return session_id, encrypted_data, addr
             
@@ -3268,33 +3311,30 @@ class CALL:
         except Exception as e:
             print(f"[AUDIO RECV ERROR] {e}")
             return None, None, None
-        finally:
-            sock.settimeout(original_timeout)
 
 
            
-    def audio_stream_out(self, target_ip, port, iv, key, session_id):
-        """🎤 OPENBSD OPTIMIERT: Audio Senden mit Buffer-Management gegen Errno 55"""
+    def audio_stream_out(self, target_ip, port, iv, key):
+        """🎤 KORRIGIERT: Sendet NUR verschlüsselte Audio-Daten ohne Session-ID"""
         
-        print(f"🔴 [OPENBSD BUFFER FIX] Starting audio stream to {target_ip}:{port}")
-        print(f"🔴 [OPENBSD] Session ID: {session_id}")
-        print(f"🔴 [OPENBSD] Chunk Size: {self.audio_config.CHUNK}")
-        print(f"🔴 [OPENBSD] Sample Rate: {self.audio_config.RATE}")
+        print(f"🔴 [AUDIO OUT CLEAN] Starting RAW audio stream to {target_ip}:{port}")
+        print(f"🔴 [AUDIO OUT] Chunk Size: {self.audio_config.CHUNK}")
+        print(f"🔴 [AUDIO OUT] Sample Rate: {self.audio_config.RATE}")
         
         audio_socket = None
         
         # ✅ GRUNDVALIDIERUNG
         if not self.audio_available:
-            print("❌ [OPENBSD] Kein Audio-Backend verfügbar")
+            print("❌ [AUDIO OUT] Kein Audio-Backend verfügbar")
             return False
             
         if not self.active_call:
-            print("❌ [OPENBSD] Kein aktiver Call")
+            print("❌ [AUDIO OUT] Kein aktiver Call")
             return False
 
         try:
             # ✅ ODE AN DIE FREUDE GENERATOR
-            print("🎵 [OPENBSD] Initialisiere Ode Generator...")
+            print("🎵 [AUDIO OUT] Initialisiere Ode Generator...")
             ode_generator = OdeToJoyGenerator(
                 sample_rate=self.audio_config.RATE,
                 chunk_size=self.audio_config.CHUNK
@@ -3303,15 +3343,15 @@ class CALL:
             # ✅ TEST: Ersten Chunk validieren
             test_chunk = ode_generator.generate_chunk()
             test_audio = np.frombuffer(test_chunk, dtype=np.int16)
-            print(f"🎵 [OPENBSD] Test Chunk: {len(test_chunk)} bytes, {len(test_audio)} samples")
-            print(f"🎵 [OPENBSD] Audio Range: {np.min(test_audio)} to {np.max(test_audio)}")
+            print(f"🎵 [AUDIO OUT] Test Chunk: {len(test_chunk)} bytes, {len(test_audio)} samples")
+            print(f"🎵 [AUDIO OUT] Audio Range: {np.min(test_audio)} to {np.max(test_audio)}")
             
             if np.all(test_audio == 0):
-                print("❌ [OPENBSD] TEST FEHLER: Stille Audio!")
+                print("❌ [AUDIO OUT] TEST FEHLER: Stille Audio!")
                 return False
 
             # ✅ INPUT STREAM ÖFFNEN
-            print("🎤 [OPENBSD] Öffne Input Stream...")
+            print("🎤 [AUDIO OUT] Öffne Input Stream...")
             if self.audio_available and self.audio:
                 self.input_stream = self.audio_config.audio.open(
                     format=self.audio_config.FORMAT,
@@ -3321,48 +3361,43 @@ class CALL:
                     frames_per_buffer=self.audio_config.CHUNK,
                     input_device_index=self.audio_config.input_device_index
                 )
-                print(f"✅ [OPENBSD] Input stream geöffnet")
+                print(f"✅ [AUDIO OUT] Input stream geöffnet")
             else:
-                print("❌ [OPENBSD] Audio-Backend nicht verfügbar")
+                print("❌ [AUDIO OUT] Audio-Backend nicht verfügbar")
                 return False
             
-            # ✅ OPENBSD SOCKET MIT BUFFER-MANAGEMENT
-            print("🔌 [OPENBSD] Erstelle optimierten Socket...")
+            # ✅ SOCKET MIT BUFFER-MANAGEMENT
+            print("🔌 [AUDIO OUT] Erstelle optimierten Socket...")
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             
-            # ✅ KRITISCHE OPENBSD OPTIMIERUNGEN
+            # ✅ OPTIMIERUNGEN
             try:
-                # 🔥 OPENBSD FIX: Kleinere Buffer um Errno 55 zu vermeiden
-                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32 * 1024)  # 32KB statt 64KB
-                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 32 * 1024)  # 32KB statt 64KB
-                
-                # 🔥 OPENBSD FIX: Non-blocking mode für besseres Buffer-Management
+                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32 * 1024)
+                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 32 * 1024)
                 audio_socket.setblocking(False)
-                
-                print("✅ [OPENBSD] Socket Buffer optimiert (32KB, non-blocking)")
-                
+                print("✅ [AUDIO OUT] Socket Buffer optimiert (32KB, non-blocking)")
             except Exception as e:
-                print(f"⚠️ [OPENBSD] Socket options fehlgeschlagen: {e}")
+                print(f"⚠️ [AUDIO OUT] Socket options fehlgeschlagen: {e}")
                 
-            audio_socket.settimeout(0.05)  # 🔥 Kürzeres Timeout für OpenBSD
+            audio_socket.settimeout(0.05)
             
             target_addr = (target_ip, port)
-            print(f"🎤 [OPENBSD] Sende an {target_ip}:{port}")
+            print(f"🎤 [AUDIO OUT] Sende RAW AES Audio an {target_ip}:{port}")
             
-            # ✅ OPENBSD PERFORMANCE VARIABLEN
+            # ✅ PERFORMANCE VARIABLEN
             packet_counter = 0
             success_packets = 0
             buffer_errors = 0
-            max_buffer_errors = 30  # 🔥 Weniger Fehler bevor gestoppt wird
+            max_buffer_errors = 30
             
-            # 🔥 OPENBSD RATE LIMITING
-            PACKETS_PER_SECOND = 6000  # 🔥 Konservativ: 6000 packets/sec
+            # 🔥 RATE LIMITING
+            PACKETS_PER_SECOND = 6000
             PACKET_INTERVAL = 1.0 / PACKETS_PER_SECOND
             last_send_time = time.time()
             
-            print(f"🚀 [OPENBSD] Starte Audio-Loop mit Rate Limiting ({PACKETS_PER_SECOND} pkt/sec)...")
+            print(f"🚀 [AUDIO OUT] Starte RAW Audio-Loop ({PACKETS_PER_SECOND} pkt/sec)...")
             
-            # ✅ HAUPT AUDIO LOOP
+            # ✅ HAUPT AUDIO LOOP - NUR VERSCHLÜSSELTE AUDIO-DATEN
             while self.active_call and self.audio_available and buffer_errors < max_buffer_errors:
                 try:
                     current_time = time.time()
@@ -3379,8 +3414,8 @@ class CALL:
                     # ✅ VALIDIERE AUDIO DATEN
                     audio_samples = np.frombuffer(audio_data, dtype=np.int16)
                     if len(audio_samples) == 0 or np.all(audio_samples == 0):
-                        if packet_counter % 100 == 0:  # Nicht zu oft loggen
-                            print(f"⚠️ [OPENBSD] Ungültige Audio-Daten in Paket {packet_counter}")
+                        if packet_counter % 100 == 0:
+                            print(f"⚠️ [AUDIO OUT] Ungültige Audio-Daten in Paket {packet_counter}")
                         continue
                     
                     # ✅ AES VERSCHLÜSSELUNG
@@ -3389,89 +3424,85 @@ class CALL:
                     encrypted_data = cipher.update(padded_data)
                     encrypted_data += cipher.final()
                     
-                    # ✅ PAKET AUFBAU
-                    session_short = session_id[:16] if session_id else "NO_SESSION"
-                    session_bytes = session_short.encode('utf-8')
-                    packet = session_bytes + encrypted_data
+                    # ✅ WICHTIG: NUR VERSCHLÜSSELTE AUDIO-DATEN SENDEN - KEINE SESSION-ID!
+                    # Die Session-ID wird erst in send_audio_packet hinzugefügt
+                    packet = encrypted_data
                     
-                    # 🔥 OPENBSD FIX: NOCH KLEINERE PAKETE
-                    if len(packet) > 1000:  # 🔥 Sehr konservativ für OpenBSD
+                    # 🔥 GRÖSSENOPTIMIERUNG
+                    if len(packet) > 1000:
                         packet = packet[:1000]
                         if packet_counter <= 5:
-                            print(f"📦 [OPENBSD] Paket gekürzt auf {len(packet)} bytes")
+                            print(f"📦 [AUDIO OUT] Paket gekürzt auf {len(packet)} bytes")
                     
                     # ✅ VERSUCHE ZU SENDEN MIT BUFFER-MANAGEMENT
                     try:
-                        bytes_sent = audio_socket.sendto(packet, target_addr)
-                        success_packets += 1
-                        buffer_errors = 0  # 🔥 Reset error count on success
-                        last_send_time = time.time()
-                        
-                        # ✅ DETAILLIERTES DEBUGGING FÜR ERSTE PAKETE
-                        if packet_counter <= 10:
-                            print(f"📤 [OPENBSD] Paket {packet_counter} gesendet: {bytes_sent} bytes")
-                            print(f"   Session: {session_short}")
-                            print(f"   Audio: {len(audio_data)} bytes")
-                            print(f"   Encrypted: {len(encrypted_data)} bytes")
-                            print(f"   Total: {len(packet)} bytes")
-                            print(f"   Buffer Errors: {buffer_errors}")
-                        
-                        # ✅ PERFORMANCE LOGGING
-                        if success_packets % 200 == 0:
-                            current_rate = 200 / (time.time() - last_send_time + PACKET_INTERVAL * 200)
-                            print(f"📊 [OPENBSD] {success_packets} Pakete, Rate: {current_rate:.1f} pkt/sec")
+                        # ✅ HIER: send_audio_packet aufrufen, das die Session-ID hinzufügt
+                        if self.send_audio_packet(audio_socket, self.send_session_id, packet, target_addr):
+                            success_packets += 1
+                            buffer_errors = 0
+                            last_send_time = time.time()
                             
+                            # ✅ DETAILLIERTES DEBUGGING FÜR ERSTE PAKETE
+                            if packet_counter <= 10:
+                                print(f"📤 [AUDIO OUT] Paket {packet_counter} gesendet")
+                                print(f"   Audio: {len(audio_data)} bytes")
+                                print(f"   Encrypted: {len(encrypted_data)} bytes")
+                                print(f"   Buffer Errors: {buffer_errors}")
+                            
+                            # ✅ PERFORMANCE LOGGING
+                            if success_packets % 200 == 0:
+                                current_rate = 200 / (time.time() - last_send_time + PACKET_INTERVAL * 200)
+                                print(f"📊 [AUDIO OUT] {success_packets} Pakete, Rate: {current_rate:.1f} pkt/sec")
+                                
                     except socket.error as e:
-                        # 🔥 OPENBSD FIX: Spezifische Behandlung von Errno 55
+                        # 🔥 BUFFER ERROR HANDLING
                         if e.errno == 55:  # "No buffer space available"
                             buffer_errors += 1
-                            print(f"🔴 [OPENBSD BUFFER ERROR #{buffer_errors}] {e}")
+                            print(f"🔴 [AUDIO OUT BUFFER ERROR #{buffer_errors}] {e}")
                             
-                            # 🔥 PROGRESSIVE BACKOFF: Längere Pause bei mehr Fehlern
-                            backoff_time = 0.02 * buffer_errors  # Bis zu 0.6 Sekunden
+                            backoff_time = 0.02 * buffer_errors
                             time.sleep(min(backoff_time, 0.6))
                             
                             if buffer_errors % 5 == 0:
-                                print(f"⚠️ [OPENBSD] Buffer Probleme - {buffer_errors} Fehler, Backoff: {backoff_time:.3f}s")
+                                print(f"⚠️ [AUDIO OUT] Buffer Probleme - {buffer_errors} Fehler, Backoff: {backoff_time:.3f}s")
                                 
                         else:
-                            # Andere Socket-Fehler
-                            print(f"🔴 [OPENBSD SEND ERROR] {e}")
+                            print(f"🔴 [AUDIO OUT SEND ERROR] {e}")
                             time.sleep(0.01)
                             buffer_errors += 1
                     
                     # ✅ VERMEIDE ZU HOHES TEMPO
                     if success_packets % 500 == 0:
-                        time.sleep(0.002)  # Kurze Pause alle 500 Pakete
+                        time.sleep(0.002)
                         
                 except socket.timeout:
                     continue
                 except Exception as e:
                     if self.active_call:
-                        print(f"🔴 [OPENBSD PROCESSING ERROR] {str(e)}")
+                        print(f"🔴 [AUDIO OUT PROCESSING ERROR] {str(e)}")
                         buffer_errors += 1
                         time.sleep(0.01)
                     else:
                         break
             
             # ✅ ZUSAMMENFASSUNG
-            print(f"🏁 [OPENBSD] Session beendet:")
+            print(f"🏁 [AUDIO OUT] Session beendet:")
             print(f"   Gesamt Pakete: {packet_counter:,}")
             print(f"   Erfolgreich: {success_packets:,}")
             print(f"   Buffer Fehler: {buffer_errors}")
             print(f"   Erfolgsrate: {(success_packets/max(packet_counter,1))*100:.1f}%")
             
             if buffer_errors >= max_buffer_errors:
-                print("❌ [OPENBSD] Zu viele Buffer Fehler - gestoppt")
+                print("❌ [AUDIO OUT] Zu viele Buffer Fehler - gestoppt")
             elif not self.active_call:
-                print("ℹ️ [OPENBSD] Call beendet")
+                print("ℹ️ [AUDIO OUT] Call beendet")
             else:
-                print("ℹ️ [OPENBSD] Audio nicht verfügbar")
+                print("ℹ️ [AUDIO OUT] Audio nicht verfügbar")
             
             return success_packets > 0
                                                 
         except Exception as e:
-            print(f"🔴 [OPENBSD SETUP ERROR] {str(e)}")
+            print(f"🔴 [AUDIO OUT SETUP ERROR] {str(e)}")
             import traceback
             traceback.print_exc()
             return False
@@ -3482,25 +3513,22 @@ class CALL:
                     self.input_stream.stop_stream()
                     self.input_stream.close()
                     self.input_stream = None
-                    print("✅ [OPENBSD] Input stream geschlossen")
+                    print("✅ [AUDIO OUT] Input stream geschlossen")
                 except Exception as e:
-                    print(f"⚠️ [OPENBSD CLOSE ERROR] {e}")
+                    print(f"⚠️ [AUDIO OUT CLOSE ERROR] {e}")
             if audio_socket:
                 audio_socket.close()
-                print("🔌 [OPENBSD] Socket geschlossen")
-            
-    def audio_stream_in(self, listen_port, iv, key, expected_session_id):
-        """🎧 DIAGNOSE: Prüft ob Audio In überhaupt startet"""
+                print("🔌 [AUDIO OUT] Socket geschlossen")
+
+    def audio_stream_in(self, listen_port, iv, key):
+        """🎧 KORRIGIERT: Empfängt NUR verschlüsselte Audio-Daten ohne Session-ID"""
         audio_socket = None
         
         if not self.audio_available:
             print("❌ [AUDIO IN] Kein Audio-Backend verfügbar")
             return False
                     
-        print(f"🎧 [AUDIO IN] ⚡ STARTING LISTENER on port {listen_port}")
-        
-        expected_session_short = expected_session_id[:16] if expected_session_id else ""
-        print(f"🎧 [AUDIO IN SESSION] Erwarte Session: '{expected_session_short}'")
+        print(f"🎧 [AUDIO IN] ⚡ STARTING RAW AUDIO LISTENER on port {listen_port}")
         
         # ✅ SOFORTIGE AES KEY PRÜFUNG
         print(f"🎧 [AUDIO IN AES] IV: {iv.hex() if iv else 'NONE'}")
@@ -3530,7 +3558,7 @@ class CALL:
             audio_socket.bind(('0.0.0.0', listen_port))
             audio_socket.settimeout(0.1)
             
-            print(f"🎧 [AUDIO IN] ✅ LISTENING READY on port {listen_port}")
+            print(f"🎧 [AUDIO IN] ✅ RAW AUDIO LISTENING READY on port {listen_port}")
             
             packet_counter = 0
             valid_packets = 0
@@ -3538,61 +3566,42 @@ class CALL:
             
             while self.active_call and self.audio_available:
                 try:
-                    data, addr = audio_socket.recvfrom(1492)
+                    # ✅ HIER: recv_audio_packet aufrufen, das die Session-ID extrahiert und validiert
+                    session_id, encrypted_data, addr = self.recv_audio_packet(audio_socket)
                     packet_counter += 1
                     
-                    # ✅ JEDES PAKET LOGGEN (für Diagnose)
-                    if packet_counter <= 10 or packet_counter % 100 == 0:
-                        print(f"📦 [AUDIO IN] Packet #{packet_counter} from {addr}, size: {len(data)} bytes")
-                    
-                    if len(data) < 16:
-                        if packet_counter <= 10:
-                            print(f"⚠️ [AUDIO IN] Packet too small: {len(data)} bytes")
+                    if encrypted_data is None:
                         continue
-                            
-                    # ✅ EXTRAHIERE SESSION-ID
-                    session_bytes = data[:16]
-                    encrypted_data = data[16:]
-                    
-                    # ✅ KONSISTENT: Kein rstrip() - verwende die Bytes direkt
-                    received_session = session_bytes.decode('utf-8', errors='ignore')
-                    
-                    if packet_counter <= 10:
-                        print(f"🔍 [AUDIO IN] Session: '{received_session}' vs expected: '{expected_session_short}'")
-                    
-                    # ✅ SESSION-VERGLEICH
-                    if received_session == expected_session_short:
-                        valid_packets += 1
                         
-                        if valid_packets <= 10 or valid_packets % 50 == 0:
-                            print(f"✅ [AUDIO IN] Valid packet #{valid_packets}, decrypting...")
+                    # ✅ JETZT: Session-ID wurde bereits in recv_audio_packet validiert
+                    # Wir haben hier nur noch die verschlüsselten Audio-Daten
+                    valid_packets += 1
+                    
+                    if valid_packets <= 10 or valid_packets % 50 == 0:
+                        print(f"✅ [AUDIO IN] Valid packet #{valid_packets}, decrypting...")
+                    
+                    try:
+                        # ✅ AES ENTSCHLÜSSELUNG
+                        cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
+                        decrypted_data = cipher.update(encrypted_data)
+                        decrypted_data += cipher.final()
                         
-                        try:
-                            # ✅ AES ENTSCHLÜSSELUNG
-                            cipher = EVP.Cipher("aes_256_cbc", key, iv, 0)
-                            decrypted_data = cipher.update(encrypted_data)
-                            decrypted_data += cipher.final()
+                        unpadded_data = pkcs7_unpad(decrypted_data)
+                        
+                        if valid_packets <= 5:
+                            print(f"🔓 [AUDIO IN] Decryption successful: {len(unpadded_data)} bytes audio")
+                        
+                        if len(unpadded_data) > 0:
+                            # Schreibe zu Stream
+                            self.output_stream.write(unpadded_data)
+                            success_packets += 1
                             
-                            unpadded_data = pkcs7_unpad(decrypted_data)
-                            
-                            if valid_packets <= 5:
-                                print(f"🔓 [AUDIO IN] Decryption successful: {len(unpadded_data)} bytes audio")
-                            
-                            if len(unpadded_data) > 0:
-                                # Schreibe zu Stream
-                                self.output_stream.write(unpadded_data)
-                                success_packets += 1
+                            if success_packets <= 10 or success_packets % 25 == 0:
+                                print(f"🎧 [AUDIO IN] ✅ SUCCESS! Played {success_packets} packets")
                                 
-                                if success_packets <= 10 or success_packets % 25 == 0:
-                                    print(f"🎧 [AUDIO IN] ✅ SUCCESS! Played {success_packets} packets")
-                                    
-                        except Exception as decrypt_error:
-                            print(f"🔴 [AUDIO IN DECRYPT ERROR] {str(decrypt_error)}")
-                            print(f"    Encrypted data size: {len(encrypted_data)} bytes")
-                            
-                    else:
-                        if packet_counter <= 10 or packet_counter % 100 == 0:
-                            print(f"🔍 [AUDIO IN] Session mismatch: '{received_session}' != '{expected_session_short}'")
+                    except Exception as decrypt_error:
+                        print(f"🔴 [AUDIO IN DECRYPT ERROR] {str(decrypt_error)}")
+                        print(f"    Encrypted data size: {len(encrypted_data)} bytes")
                             
                 except socket.timeout:
                     continue
@@ -3620,6 +3629,96 @@ class CALL:
                 audio_socket.close()
         
         return success_packets > 0
+
+    def _start_audio_streams(self):
+        """🚀 KORRIGIERT: Startet Audio-Streams ohne Session-ID Parameter"""
+        try:
+            print(f"\n🎯 [AUDIO START CLEAN] Starting clean audio streams")
+            
+            # ✅ KRITISCHE SAFETY PRÜFUNG
+            if hasattr(self, 'audio_streams_running') and self.audio_streams_running:
+                print("⚠️ [AUDIO SAFETY] Audio streams already running - skipping")
+                return
+                
+            # ✅ MARKIERE ALS GESTARTET
+            self.audio_streams_running = True
+            print("🔒 [AUDIO SAFETY] Audio streams marked as running")
+            
+            if not self.current_secret:
+                print("❌ [AUDIO] No session key available")
+                self.audio_streams_running = False
+                return
+                
+            # ✅ AES KEY DEBUGGING
+            self.debug_aes_keys()
+            
+            if self.use_udp_relay and self.relay_server_ip:
+                relay_ip = self.relay_server_ip
+                listen_port = 51821
+                send_to_port = 51820
+                
+                print(f"🎯 [AUDIO CONFIG CLEAN]")
+                print(f"  🔊 SEND: {relay_ip}:{send_to_port}")
+                print(f"  🔊 RECV: 0.0.0.0:{listen_port}")
+                print(f"  🔑 AES: {len(self.current_secret)} bytes secret")
+                
+                # ✅ ACTIVE CALL PRÜFEN
+                if not self.active_call:
+                    print("❌ [AUDIO] Active call is not set")
+                    self.audio_streams_running = False
+                    return
+                    
+                print(f"✅ [AUDIO] Active call confirmed: {self.active_call}")
+                
+                # ✅ SYNCHRONISATION
+                import time
+                time.sleep(0.1)
+                
+                # ✅ TIMER STARTEN
+                self._start_call_timer()
+                
+                # ✅ AUDIO-PARAMETER
+                iv = self.current_secret[:16]
+                key = self.current_secret[16:48]
+                
+                print(f"🎯 [AUDIO THREADS CLEAN] Starting clean threads...")
+                
+                # ✅ KORRIGIERT: Audio-Streams OHNE Session-ID Parameter starten
+                send_thread = threading.Thread(
+                    target=self.audio_stream_out, 
+                    args=(relay_ip, send_to_port, iv, key),  # KEINE session_id mehr!
+                    daemon=True,
+                    name="AudioOut_Clean"
+                )
+                
+                recv_thread = threading.Thread(
+                    target=self.audio_stream_in,
+                    args=(listen_port, iv, key),  # KEINE session_id mehr!
+                    daemon=True,
+                    name="AudioIn_Clean"
+                )
+                
+                send_thread.start()
+                print(f"✅ [AUDIO] Clean send thread started")
+                
+                recv_thread.start() 
+                print(f"✅ [AUDIO] Clean receive thread started")
+                
+                self.audio_threads = [send_thread, recv_thread]
+                self.call_start_time = time.time()
+                
+                print(f"🎯 [AUDIO] ✅ Both clean audio streams started successfully!")
+                
+            else:
+                print("[AUDIO] ❌ ERROR: No UDP relay configured!")
+                self.audio_streams_running = False
+                
+        except Exception as e:
+            print(f"🔴 [AUDIO ERROR] Failed to start streams: {e}")
+            self.active_call = False
+            self.audio_streams_running = False
+            import traceback
+            traceback.print_exc()
     def _check_microphone_available(self):
         """Prüft ob ein Mikrofon verfügbar ist"""
         try:
@@ -3705,109 +3804,7 @@ class CALL:
             import traceback
             traceback.print_exc()
 
-    def _start_audio_streams(self):
-        """🚀 GESICHERT: Startet Audio-Streams NUR EINMAL mit Thread-Safety"""
-        try:
-            print(f"\n🎯 [AUDIO START] Starting audio streams with THREAD SAFETY")
-            
-            # ✅ KRITISCHE SAFETY PRÜFUNG: Verhindere doppelten Start
-            if hasattr(self, 'audio_streams_running') and self.audio_streams_running:
-                print("⚠️ [AUDIO SAFETY] Audio streams already running - skipping")
-                return
-                
-            # ✅ MARKIERE ALS GESTARTET
-            self.audio_streams_running = True
-            print("🔒 [AUDIO SAFETY] Audio streams marked as running")
-            
-            if not self.current_secret:
-                print("❌ [AUDIO] No session key available")
-                self.audio_streams_running = False
-                return
-                
-            # ✅ AES KEY DEBUGGING
-            self.debug_aes_keys()
-            
-            # ✅ SESSION ID DIAGNOSE
-            if not hasattr(self, 'send_session_id') or not hasattr(self, 'recv_session_id'):
-                print("❌ [AUDIO] No session IDs available")
-                self.audio_streams_running = False
-                return
-                
-            send_session_short = self.send_session_id[:16] if self.send_session_id else ""
-            recv_session_short = self.recv_session_id[:16] if self.recv_session_id else ""
-            
-            print(f"🎯 [AUDIO SESSION MAPPING]")
-            print(f"  📤 SEND Session: '{send_session_short}' (full: {self.send_session_id})")
-            print(f"  📥 RECV Session: '{recv_session_short}' (full: {self.recv_session_id})")
-            
-            if self.use_udp_relay and self.relay_server_ip:
-                relay_ip = self.relay_server_ip
-                listen_port = 51821
-                send_to_port = 51820
-                
-                print(f"🎯 [AUDIO CONFIG]")
-                print(f"  🔊 SEND: {relay_ip}:{send_to_port}")
-                print(f"  🔊 RECV: 0.0.0.0:{listen_port}")
-                print(f"  🔑 AES: {len(self.current_secret)} bytes secret")
-                
-                # ✅ ACTIVE CALL PRÜFEN
-                if not self.active_call:
-                    print("❌ [AUDIO] Active call is not set")
-                    self.audio_streams_running = False
-                    return
-                    
-                print(f"✅ [AUDIO] Active call confirmed: {self.active_call}")
-                
-                # ✅ SYNCHRONISATION
-                import time
-                time.sleep(0.1)
-                
-                # ✅ TIMER STARTEN
-                self._start_call_timer()
-                
-                # ✅ AUDIO-PARAMETER
-                iv = self.current_secret[:16]
-                key = self.current_secret[16:48]
-                
-                print(f"🎯 [AUDIO THREADS] Starting threads...")
-                
-                # ✅ AUDIO-STREAMS STARTEN
-                send_thread = threading.Thread(
-                    target=self.audio_stream_out, 
-                    args=(relay_ip, send_to_port, iv, key, send_session_short),
-                    daemon=True,
-                    name=f"AudioOut_{send_session_short}"
-                )
-                
-                recv_thread = threading.Thread(
-                    target=self.audio_stream_in,
-                    args=(listen_port, iv, key, recv_session_short),
-                    daemon=True,
-                    name=f"AudioIn_{recv_session_short}"
-                )
-                
-                send_thread.start()
-                print(f"✅ [AUDIO] Send thread started: {send_thread.name}")
-                
-                recv_thread.start() 
-                print(f"✅ [AUDIO] Receive thread started: {recv_thread.name}")
-                
-                self.audio_threads = [send_thread, recv_thread]
-                self.call_start_time = time.time()
-                
-                print(f"🎯 [AUDIO] ✅ Both audio streams started successfully!")
-                
-            else:
-                print("[AUDIO] ❌ ERROR: No UDP relay configured!")
-                self.audio_streams_running = False
-                
-        except Exception as e:
-            print(f"🔴 [AUDIO ERROR] Failed to start streams: {e}")
-            self.active_call = False
-            self.audio_streams_running = False
-            import traceback
-            traceback.print_exc()
-            
+
     def show_audio_devices_popup(self):
         """Audio-Geräte, Qualitätsauswahl und Rauschfilterung - KORRIGIERTE DPI-VERSION"""
         try:
@@ -5543,88 +5540,63 @@ class CALL:
             traceback.print_exc()
             return False
     def handle_call_confirmed(self, msg):
-        """🚀 KORRIGIERT: Rollen-Erkennung basierend auf INCOMING_CALL"""
+        """🚀 KORRIGIERT: Robuste Session-ID Übernahme"""
         try:
-            print(f"[CALL] CALL_CONFIRMED received")
-            print(f"[CALL DEBUG] Message keys: {list(msg.keys())}")
+            print(f"[CALL] CALL_CONFIRMED received - setting up sessions")
             
-            # ✅ KORREKTE ROLLEN-ERKENNUNG: Prüfe ob wir vorher eine INCOMING_CALL hatten
+            # ✅ EXPLIZITE ROLLEN-ERKENNUNG
             is_callee = hasattr(self, 'incoming_call') and self.incoming_call is not None
-            is_caller = hasattr(self, 'pending_call') and self.pending_call is not None and not is_callee
+            is_caller = hasattr(self, 'pending_call') and self.pending_call is not None
             
-            role = "CALLEE" if is_callee else "CALLER" if is_caller else "UNKNOWN"
-            print(f"[CALL] Role detection: {role} (incoming_call: {is_callee}, pending_call: {is_caller})")
-            
-            # ✅ ROLLEN-BASIERTE SESSION-ZUWEISUNG
-            caller_session_id = msg.get('CALLER_SESSION_ID')   # Für Senden von Caller zu Callee
-            callee_session_id = msg.get('CALLEE_SESSION_ID')   # Für Senden von Callee zu Caller
-            
-            if is_caller:
-                # CALLER: Sendet mit CALLER_SESSION_ID, empfängt mit CALLEE_SESSION_ID
-                self.send_session_id = caller_session_id    # Senden an Callee
-                self.recv_session_id = callee_session_id    # Empfangen von Callee
-                print(f"[CALL] ✅ CALLER Session Mapping:")
-                print(f"  SEND (to callee): {self.send_session_id}")
-                print(f"  RECV (from callee): {self.recv_session_id}")
-            elif is_callee:
-                # CALLEE: Sendet mit CALLEE_SESSION_ID, empfängt mit CALLER_SESSION_ID
-                self.send_session_id = callee_session_id    # Senden an Caller  
-                self.recv_session_id = caller_session_id    # Empfangen von Caller
-                print(f"[CALL] ✅ CALLEE Session Mapping:")
-                print(f"  SEND (to caller): {self.send_session_id}")
-                print(f"  RECV (from caller): {self.recv_session_id}")
-            else:
-                print("❌ [CALL ERROR] Could not determine role!")
+            if not is_caller and not is_callee:
+                print("❌ [CALL ERROR] Cannot determine role - no pending or incoming call")
                 return
+                
+            role = "CALLEE" if is_callee else "CALLER"
+            print(f"[CALL] Role detected: {role}")
             
-            if not self.send_session_id or not self.recv_session_id:
-                print("❌ [CALL CRITICAL] No Session IDs from server!")
+            # ✅ ROBUSTE SESSION-ID EXTRAKTION
+            caller_session_id = msg.get('CALLER_SESSION_ID')
+            callee_session_id = msg.get('CALLEE_SESSION_ID')
+            
+            if not caller_session_id or not callee_session_id:
+                print("❌ [CALL ERROR] Missing session IDs in CALL_CONFIRMED")
                 return
-            
-            print(f"[CALL] ✅ Final Session IDs for {role}:")
-            print(f"[CALL]   SEND: {self.send_session_id}")
-            print(f"[CALL]   RECV: {self.recv_session_id}")
-            
-            # ✅ WICHTIG: Setze session_id für _start_audio_streams
+                
+            # ✅ KONSISTENTE ZUWEISUNG BASIEREND AUF ROLLE
+            if role == "CALLER":
+                self.send_session_id = caller_session_id  # Senden an Callee
+                self.recv_session_id = callee_session_id  # Empfangen von Callee
+            else:  # CALLEE
+                self.send_session_id = callee_session_id  # Senden an Caller  
+                self.recv_session_id = caller_session_id  # Empfangen von Caller
+                
+            # ✅ FÜR KOMPATIBILITÄT
             self.session_id = self.send_session_id
             
-            # ✅ UDP Relay Konfiguration
-            use_relay = msg.get('USE_AUDIO_RELAY', False)
-            relay_ip = msg.get('AUDIO_RELAY_IP')
-            relay_port = msg.get('SERVER_RELAY_PORT', 51820)
+            print(f"✅ [CALL] Session mapping for {role}:")
+            print(f"   SEND: '{self.send_session_id}'")
+            print(f"   RECV: '{self.recv_session_id}'")
             
-            print(f"[CALL] Relay config - use_relay: {use_relay}, ip: {relay_ip}, port: {relay_port}")
+            # ✅ UDP RELAY KONFIGURATION
+            self.use_udp_relay = msg.get('USE_AUDIO_RELAY', False)
+            self.relay_server_ip = msg.get('AUDIO_RELAY_IP')
+            self.relay_server_port = msg.get('SERVER_RELAY_PORT', 51820)  # ✅ Expliziter Default
             
-            if use_relay and relay_ip:
-                print(f"[CALL] Call confirmed with UDP Relay: {relay_ip}:{relay_port}")
-                self.use_udp_relay = True
-                self.relay_server_ip = relay_ip
-                self.relay_server_port = relay_port
-                
-                # ✅ KRITISCH: active_call ZUERST setzen
+            if self.use_udp_relay and self.relay_server_ip:
+                print(f"[CALL] ✅ UDP Relay configured: {self.relay_server_ip}:{self.relay_server_port}")
                 self.active_call = True
-                print(f"[CALL] ✅ Active call set to: {self.active_call}")
                 
-                # ✅ Audio-Streams starten
-                if hasattr(self, 'current_secret') and self.current_secret:
-                    print(f"[CALL] Scheduling delayed audio streams start...")
-                    
-                    if hasattr(self.client, 'after') and self.client.after:
-                        self.client.after(500, self._delayed_start_audio_streams)
-                    else:
-                        import threading
-                        timer = threading.Timer(0.5, self._delayed_start_audio_streams)
-                        timer.daemon = True
-                        timer.start()
-                        
-                    print("[CALL] ✅ UDP Relay call established - audio streams scheduled")
+                # Audio-Streams mit Verzögerung starten
+                if hasattr(self.client, 'after'):
+                    self.client.after(1000, self._delayed_start_audio_streams)  # 1 Sekunde Verzögerung
                 else:
-                    print("[CALL ERROR] No session secret available")
+                    threading.Timer(1.0, self._delayed_start_audio_streams).start()
             else:
-                print("[CALL ERROR] No relay configuration")
+                print("❌ [CALL ERROR] Incomplete relay configuration")
                 
         except Exception as e:
-            print(f"[CALL ERROR] Call confirmation handling failed: {str(e)}")
+            print(f"[CALL ERROR] Call confirmation failed: {str(e)}")
             import traceback
             traceback.print_exc()
     def _handle_session_key(self, msg):
