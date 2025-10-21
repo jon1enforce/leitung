@@ -3316,12 +3316,10 @@ class CALL:
 
            
     def audio_stream_out(self, target_ip, port, iv, key):
-        """🎤 KORRIGIERT: Sendet NUR verschlüsselte Audio-Daten ohne Session-ID"""
+        """🎤 KORRIGIERT: Sendet Audio NUR über send_audio_packet"""
         
-
-        print(f"🔴 [AUDIO OUT CORRECTED] Starting RAW audio stream to {target_ip}:51820")
-        print(f"🔴 [AUDIO OUT] Chunk Size: {self.audio_config.CHUNK}")
-        print(f"🔴 [AUDIO OUT] Sample Rate: {self.audio_config.RATE}")
+        print(f"🔴 [AUDIO OUT CORRECTED] Starting audio stream via send_audio_packet to {target_ip}:51820")
+        print(f"🔴 [AUDIO OUT] Session ID: {getattr(self, 'send_session_id', 'NOT SET')}")
         
         audio_socket = None
         
@@ -3334,6 +3332,11 @@ class CALL:
             print("❌ [AUDIO OUT] Kein aktiver Call")
             return False
 
+        # ✅ KRITISCHE SESSION-VALIDIERUNG
+        if not hasattr(self, 'send_session_id') or not self.send_session_id:
+            print("❌ [AUDIO OUT] CRITICAL: send_session_id not set!")
+            return False
+
         try:
             # ✅ ODE AN DIE FREUDE GENERATOR
             print("🎵 [AUDIO OUT] Initialisiere Ode Generator...")
@@ -3342,16 +3345,6 @@ class CALL:
                 chunk_size=self.audio_config.CHUNK
             )
             
-            # ✅ TEST: Ersten Chunk validieren
-            test_chunk = ode_generator.generate_chunk()
-            test_audio = np.frombuffer(test_chunk, dtype=np.int16)
-            print(f"🎵 [AUDIO OUT] Test Chunk: {len(test_chunk)} bytes, {len(test_audio)} samples")
-            print(f"🎵 [AUDIO OUT] Audio Range: {np.min(test_audio)} to {np.max(test_audio)}")
-            
-            if np.all(test_audio == 0):
-                print("❌ [AUDIO OUT] TEST FEHLER: Stille Audio!")
-                return False
-
             # ✅ INPUT STREAM ÖFFNEN
             print("🎤 [AUDIO OUT] Öffne Input Stream...")
             if self.audio_available and self.audio:
@@ -3368,23 +3361,13 @@ class CALL:
                 print("❌ [AUDIO OUT] Audio-Backend nicht verfügbar")
                 return False
             
-            # ✅ SOCKET MIT BUFFER-MANAGEMENT
-            print("🔌 [AUDIO OUT] Erstelle optimierten Socket...")
+            # ✅ SOCKET ERSTELLEN
+            print("🔌 [AUDIO OUT] Erstelle Socket...")
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-            
-            # ✅ OPTIMIERUNGEN
-            try:
-                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_SNDBUF, 32 * 1024)
-                audio_socket.setsockopt(socket.SOL_SOCKET, socket.SO_RCVBUF, 32 * 1024)
-                audio_socket.setblocking(False)
-                print("✅ [AUDIO OUT] Socket Buffer optimiert (32KB, non-blocking)")
-            except Exception as e:
-                print(f"⚠️ [AUDIO OUT] Socket options fehlgeschlagen: {e}")
-                
             audio_socket.settimeout(0.05)
             
             target_addr = (target_ip, 51820)
-            print(f"🎤 [AUDIO OUT] Sende RAW AES Audio an {target_ip}:{port}")
+            print(f"🎤 [AUDIO OUT] Sende Audio via send_audio_packet an {target_ip}:{port}")
             
             # ✅ PERFORMANCE VARIABLEN
             packet_counter = 0
@@ -3397,9 +3380,9 @@ class CALL:
             PACKET_INTERVAL = 1.0 / PACKETS_PER_SECOND
             last_send_time = time.time()
             
-            print(f"🚀 [AUDIO OUT] Starte RAW Audio-Loop ({PACKETS_PER_SECOND} pkt/sec)...")
+            print(f"🚀 [AUDIO OUT] Starte Audio-Loop ({PACKETS_PER_SECOND} pkt/sec)...")
             
-            # ✅ HAUPT AUDIO LOOP - NUR VERSCHLÜSSELTE AUDIO-DATEN
+            # ✅ HAUPT AUDIO LOOP - NUR ÜBER send_audio_packet
             while self.active_call and self.audio_available and buffer_errors < max_buffer_errors:
                 try:
                     current_time = time.time()
@@ -3426,57 +3409,28 @@ class CALL:
                     encrypted_data = cipher.update(padded_data)
                     encrypted_data += cipher.final()
                     
-                    # ✅ WICHTIG: NUR VERSCHLÜSSELTE AUDIO-DATEN SENDEN - KEINE SESSION-ID!
-                    # Die Session-ID wird erst in send_audio_packet hinzugefügt
-                    packet = encrypted_data
-                    
-                    # 🔥 GRÖSSENOPTIMIERUNG
-                    if len(packet) > 1000:
-                        packet = packet[:1000]
-                        if packet_counter <= 5:
-                            print(f"📦 [AUDIO OUT] Paket gekürzt auf {len(packet)} bytes")
-                    
-                    # ✅ VERSUCHE ZU SENDEN MIT BUFFER-MANAGEMENT
-                    try:
-                        # ✅ HIER: send_audio_packet aufrufen, das die Session-ID hinzufügt
-                        if self.send_audio_packet(audio_socket, self.send_session_id, packet, target_addr):
-                            success_packets += 1
-                            buffer_errors = 0
-                            last_send_time = time.time()
-                            
-                            # ✅ DETAILLIERTES DEBUGGING FÜR ERSTE PAKETE
-                            if packet_counter <= 10:
-                                print(f"📤 [AUDIO OUT] Paket {packet_counter} gesendet")
-                                print(f"   Audio: {len(audio_data)} bytes")
-                                print(f"   Encrypted: {len(encrypted_data)} bytes")
-                                print(f"   Buffer Errors: {buffer_errors}")
-                            
-                            # ✅ PERFORMANCE LOGGING
-                            if success_packets % 200 == 0:
-                                current_rate = 200 / (time.time() - last_send_time + PACKET_INTERVAL * 200)
-                                print(f"📊 [AUDIO OUT] {success_packets} Pakete, Rate: {current_rate:.1f} pkt/sec")
-                                
-                    except socket.error as e:
-                        # 🔥 BUFFER ERROR HANDLING
-                        if e.errno == 55:  # "No buffer space available"
-                            buffer_errors += 1
-                            print(f"🔴 [AUDIO OUT BUFFER ERROR #{buffer_errors}] {e}")
-                            
-                            backoff_time = 0.02 * buffer_errors
-                            time.sleep(min(backoff_time, 0.6))
-                            
-                            if buffer_errors % 5 == 0:
-                                print(f"⚠️ [AUDIO OUT] Buffer Probleme - {buffer_errors} Fehler, Backoff: {backoff_time:.3f}s")
-                                
-                        else:
-                            print(f"🔴 [AUDIO OUT SEND ERROR] {e}")
-                            time.sleep(0.01)
-                            buffer_errors += 1
-                    
-                    # ✅ VERMEIDE ZU HOHES TEMPO
-                    if success_packets % 500 == 0:
-                        time.sleep(0.002)
+                    # ✅ KORREKTUR: NUR ÜBER send_audio_packet SENDEN
+                    if self.send_audio_packet(audio_socket, self.send_session_id, encrypted_data, target_addr):
+                        success_packets += 1
+                        buffer_errors = 0
+                        last_send_time = time.time()
                         
+                        # ✅ DEBUGGING FÜR ERSTE PAKETE
+                        if packet_counter <= 5:
+                            print(f"📤 [AUDIO OUT] Paket {packet_counter} via send_audio_packet gesendet")
+                        
+                        # ✅ PERFORMANCE LOGGING
+                        if success_packets % 500 == 0:
+                            current_rate = 500 / (time.time() - last_send_time + PACKET_INTERVAL * 500)
+                            print(f"📊 [AUDIO OUT] {success_packets} Pakete, Rate: {current_rate:.1f} pkt/sec")
+                            
+                    else:
+                        # ❌ send_audio_packet ist fehlgeschlagen
+                        buffer_errors += 1
+                        if buffer_errors % 10 == 0:
+                            print(f"🔴 [AUDIO OUT] send_audio_packet failed #{buffer_errors}")
+                        time.sleep(0.01)
+                            
                 except socket.timeout:
                     continue
                 except Exception as e:
@@ -3492,14 +3446,6 @@ class CALL:
             print(f"   Gesamt Pakete: {packet_counter:,}")
             print(f"   Erfolgreich: {success_packets:,}")
             print(f"   Buffer Fehler: {buffer_errors}")
-            print(f"   Erfolgsrate: {(success_packets/max(packet_counter,1))*100:.1f}%")
-            
-            if buffer_errors >= max_buffer_errors:
-                print("❌ [AUDIO OUT] Zu viele Buffer Fehler - gestoppt")
-            elif not self.active_call:
-                print("ℹ️ [AUDIO OUT] Call beendet")
-            else:
-                print("ℹ️ [AUDIO OUT] Audio nicht verfügbar")
             
             return success_packets > 0
                                                 
@@ -3523,19 +3469,15 @@ class CALL:
                 print("🔌 [AUDIO OUT] Socket geschlossen")
 
     def audio_stream_in(self, listen_port, iv, key):
-        """🎧 KORRIGIERT: Empfängt NUR verschlüsselte Audio-Daten ohne Session-ID"""
+        """🎧 KORRIGIERT: Empfängt Audio NUR über recv_audio_packet"""
         audio_socket = None
         
         if not self.audio_available:
             print("❌ [AUDIO IN] Kein Audio-Backend verfügbar")
             return False
-                    
-        print(f"🎧 [AUDIO IN] ⚡ STARTING RAW AUDIO LISTENER on port {listen_port}")
+                        
+        print(f"🎧 [AUDIO IN] ⚡ STARTING AUDIO LISTENER on port {listen_port}")
         
-        # ✅ SOFORTIGE AES KEY PRÜFUNG
-        print(f"🎧 [AUDIO IN AES] IV: {iv.hex() if iv else 'NONE'}")
-        print(f"🎧 [AUDIO IN AES] Key: {key.hex() if key else 'NONE'}")
-
         try:
             # Output Stream öffnen
             if self.audio_available and self.audio:
@@ -3560,7 +3502,7 @@ class CALL:
             audio_socket.bind(('0.0.0.0', listen_port))
             audio_socket.settimeout(0.1)
             
-            print(f"🎧 [AUDIO IN] ✅ RAW AUDIO LISTENING READY on port {listen_port}")
+            print(f"🎧 [AUDIO IN] ✅ AUDIO LISTENING READY on port {listen_port}")
             
             packet_counter = 0
             valid_packets = 0
@@ -3568,19 +3510,14 @@ class CALL:
             
             while self.active_call and self.audio_available:
                 try:
-                    # ✅ HIER: recv_audio_packet aufrufen, das die Session-ID extrahiert und validiert
+                    # ✅ KORREKTUR: NUR ÜBER recv_audio_packet EMPFANGEN
                     session_id, encrypted_data, addr = self.recv_audio_packet(audio_socket)
                     packet_counter += 1
                     
                     if encrypted_data is None:
                         continue
                         
-                    # ✅ JETZT: Session-ID wurde bereits in recv_audio_packet validiert
-                    # Wir haben hier nur noch die verschlüsselten Audio-Daten
                     valid_packets += 1
-                    
-                    if valid_packets <= 10 or valid_packets % 50 == 0:
-                        print(f"✅ [AUDIO IN] Valid packet #{valid_packets}, decrypting...")
                     
                     try:
                         # ✅ AES ENTSCHLÜSSELUNG
@@ -3590,20 +3527,17 @@ class CALL:
                         
                         unpadded_data = pkcs7_unpad(decrypted_data)
                         
-                        if valid_packets <= 5:
-                            print(f"🔓 [AUDIO IN] Decryption successful: {len(unpadded_data)} bytes audio")
-                        
                         if len(unpadded_data) > 0:
                             # Schreibe zu Stream
                             self.output_stream.write(unpadded_data)
                             success_packets += 1
                             
-                            if success_packets <= 10 or success_packets % 25 == 0:
-                                print(f"🎧 [AUDIO IN] ✅ SUCCESS! Played {success_packets} packets")
+                            if success_packets <= 5 or success_packets % 50 == 0:
+                                print(f"🎧 [AUDIO IN] ✅ SUCCESS! Played {success_packets} packets via recv_audio_packet")
                                 
                     except Exception as decrypt_error:
-                        print(f"🔴 [AUDIO IN DECRYPT ERROR] {str(decrypt_error)}")
-                        print(f"    Encrypted data size: {len(encrypted_data)} bytes")
+                        if valid_packets <= 10:
+                            print(f"🔴 [AUDIO IN DECRYPT ERROR] {str(decrypt_error)}")
                             
                 except socket.timeout:
                     continue
