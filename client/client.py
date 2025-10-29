@@ -3239,15 +3239,20 @@ class CALL:
         print(f"[CALL] ✅ Initialized with session support (SESSION_ID_LENGTH={self.SESSION_ID_LENGTH})")
 
     def send_audio_packet(self, sock, session_id, encrypted_data, target_addr):
-        """🎯 KORRIGIERT: Konsistente Session-ID Handhabung"""
+        """🎯 KORRIGIERT: KONSISTENTE Session-ID zu Bytes Konvertierung"""
         try:
-            # ✅ KONSISTENTE LÄNGENVERWENDUNG
-            session_short = session_id[:self.SESSION_ID_LENGTH] if session_id else ""
-            session_bytes = session_short.encode('utf-8')[:self.SESSION_ID_LENGTH]
+            # ✅ KONSISTENT: Hex-String zu Bytes konvertieren
+            if session_id and len(session_id) == 16:  # 8 Bytes als Hex = 16 Zeichen
+                session_bytes = bytes.fromhex(session_id)
+            else:
+                # Fallback für Legacy
+                session_bytes = session_id.encode('utf-8')[:self.SESSION_ID_LENGTH] if session_id else b''
             
             # ✅ Sicherstellen dass genau 8 Bytes
             if len(session_bytes) < self.SESSION_ID_LENGTH:
                 session_bytes = session_bytes.ljust(self.SESSION_ID_LENGTH, b'\0')
+            elif len(session_bytes) > self.SESSION_ID_LENGTH:
+                session_bytes = session_bytes[:self.SESSION_ID_LENGTH]
             
             packet = session_bytes + encrypted_data
             
@@ -3268,7 +3273,7 @@ class CALL:
             return False
 
     def recv_audio_packet(self, sock, timeout=0.1):
-        """🎯 KORRIGIERT: Session-ID Validation MIT ERWEITERTEM DEBUGGING"""
+        """🎯 KORRIGIERT: KONSISTENTE Session-ID Validation mit Bytes"""
         try:
             sock.settimeout(timeout)
             data, addr = sock.recvfrom(4096)
@@ -3280,13 +3285,14 @@ class CALL:
             session_bytes = data[:self.SESSION_ID_LENGTH]
             encrypted_data = data[self.SESSION_ID_LENGTH:]
             
-            # Session-ID dekodieren
-            session_id = session_bytes.decode('utf-8', errors='ignore').rstrip('\0')
+            # ✅ KONSISTENT: Session-ID als Hex-String für Vergleich
+            session_hex = session_bytes.hex()
             
-            # ✅ STRENGE VALIDIERUNG BEIBEHALTEN (SICHERHEIT!)
+            # ✅ STRENGE VALIDIERUNG MIT HEX-STRINGS
             if hasattr(self, 'recv_session_id') and self.recv_session_id:
-                expected_short = self.recv_session_id[:self.SESSION_ID_LENGTH]
-                if session_id != expected_short:
+                expected_hex = self.recv_session_id  # Sollte bereits Hex-String sein
+                
+                if session_hex != expected_hex:
                     if not hasattr(self, 'session_validation_errors'):
                         self.session_validation_errors = 0
                     self.session_validation_errors += 1
@@ -3294,44 +3300,23 @@ class CALL:
                     # ✅ DETAILLIERTES DEBUGGING bei Mismatch
                     if self.session_validation_errors <= 10 or self.session_validation_errors % 10 == 0:
                         print(f"🚨 [SESSION SECURITY BLOCK #{self.session_validation_errors}]")
-                        print(f"   Expected: '{expected_short}' (length: {len(expected_short)})")
-                        print(f"   Received: '{session_id}' (length: {len(session_id)})")
+                        print(f"   Expected: {expected_hex}")
+                        print(f"   Received: {session_hex}")
                         print(f"   From: {addr}")
                         print(f"   Packet size: {len(data)} bytes")
-                        
-                        # Debug: Zeige alle verfügbaren Session-IDs
-                        print(f"   Available sessions:")
-                        print(f"     - recv_session_id: {getattr(self, 'recv_session_id', 'NOT SET')}")
-                        print(f"     - send_session_id: {getattr(self, 'send_session_id', 'NOT SET')}")
-                        print(f"     - session_id: {getattr(self, 'session_id', 'NOT SET')}")
                     
-                    # ❌ WICHTIG: Paket VERWERFEN bei Mismatch (Sicherheit!)
-                    return None, None, None
-            else:
-                # ✅ ERSTE PAKETE: Session-ID noch nicht bekannt
-                if not hasattr(self, 'early_packets_received'):
-                    self.early_packets_received = 0
-                self.early_packets_received += 1
-                
-                if self.early_packets_received <= 5:
-                    print(f"🎯 [AUDIO IN EARLY] Received packet with session '{session_id}' before validation setup - ACCEPTING")
-                elif self.early_packets_received == 6:
-                    print(f"⚠️ [AUDIO IN] Still receiving packets without session setup - might be security issue")
-                
-                # Früh Pakete akzeptieren, aber nach 10 Paketen blockieren
-                if self.early_packets_received > 10:
-                    print(f"🚨 [SECURITY] Too many packets without session setup - blocking")
+                    # ❌ WICHTIG: Paket VERWERFEN bei Mismatch
                     return None, None, None
             
-            # ✅ PAKET AKZEPTIERT - Session-ID stimmt überein
+            # ✅ PAKET AKZEPTIERT
             if not hasattr(self, 'valid_packets_received'):
                 self.valid_packets_received = 0
             self.valid_packets_received += 1
             
             if self.valid_packets_received <= 3 or self.valid_packets_received % 50 == 0:
-                print(f"✅ [AUDIO IN VALID] Packet #{self.valid_packets_received} with correct session '{session_id}'")
+                print(f"✅ [AUDIO IN VALID] Packet #{self.valid_packets_received} with correct session {session_hex}")
                 
-            return session_id, encrypted_data, addr
+            return session_hex, encrypted_data, addr  # ✅ Hex-String zurückgeben
             
         except socket.timeout:
             return None, None, None
@@ -3342,18 +3327,18 @@ class CALL:
 
            
     def audio_stream_out(self, target_ip, port, iv, key):
-        """🎤 KORRIGIERT: Sendet Audio NUR über send_audio_packet MIT EXPLIZITER SESSION-ID"""
+        """🎤 KORRIGIERT: KONSISTENTE Session-ID als Hex-String"""
         
-        # ✅ KRITISCHE KORREKTUR: Session-ID basierend auf Rolle setzen
+        # ✅ KONSISTENT: Verwende send_session_id direkt (ist Hex-String)
         if hasattr(self, 'send_session_id') and self.send_session_id:
             session_id_to_use = self.send_session_id
             print(f"🔴 [AUDIO OUT CORRECTED] Using EXPLICIT send_session_id: {session_id_to_use}")
         else:
-            # Fallback: Verwende session_id (Legacy)
+            # Fallback
             session_id_to_use = getattr(self, 'session_id', 'default')
             print(f"⚠️ [AUDIO OUT WARNING] Using fallback session_id: {session_id_to_use}")
         
-        print(f"🔴 [AUDIO OUT CORRECTED] Starting audio stream via send_audio_packet to {target_ip}:{port}")
+        print(f"🔴 [AUDIO OUT CORRECTED] Starting audio stream to {target_ip}:{port}")
         print(f"🔴 [AUDIO OUT] Session ID: {session_id_to_use}")
         
         audio_socket = None
@@ -5565,7 +5550,7 @@ class CALL:
             traceback.print_exc()
             return False
     def handle_call_confirmed(self, msg):
-        """🚀 KORRIGIERT: Robuste Session-ID Übernahme"""
+        """🚀 KORRIGIERT: KONSISTENTE Session-ID Übernahme als Hex-Strings"""
         try:
             print(f"[CALL] CALL_CONFIRMED received - setting up sessions")
             
@@ -5574,39 +5559,49 @@ class CALL:
             is_caller = hasattr(self, 'pending_call') and self.pending_call is not None
             
             if not is_caller and not is_callee:
-                print("❌ [CALL ERROR] Cannot determine role - no pending or incoming call")
+                print("❌ [CALL ERROR] Cannot determine role")
                 return
                 
             role = "CALLEE" if is_callee else "CALLER"
             print(f"[CALL] Role detected: {role}")
             
-            # ✅ ROBUSTE SESSION-ID EXTRAKTION
-            caller_session_id = msg.get('CALLER_SESSION_ID')
-            callee_session_id = msg.get('CALLEE_SESSION_ID')
+            # ✅ KONSISTENT: Hex-Strings direkt übernehmen
+            caller_session_hex = msg.get('CALLER_SESSION_ID')  # Hex-String
+            callee_session_hex = msg.get('CALLEE_SESSION_ID')  # Hex-String
             
-            if not caller_session_id or not callee_session_id:
+            if not caller_session_hex or not callee_session_hex:
                 print("❌ [CALL ERROR] Missing session IDs in CALL_CONFIRMED")
                 return
                 
             # ✅ KONSISTENTE ZUWEISUNG BASIEREND AUF ROLLE
             if role == "CALLER":
-                self.send_session_id = caller_session_id  # Senden an Callee
-                self.recv_session_id = callee_session_id  # Empfangen von Callee
+                self.send_session_id = caller_session_hex  # Hex-String für Senden an Callee
+                self.recv_session_id = callee_session_hex  # Hex-String für Empfangen von Callee
             else:  # CALLEE
-                self.send_session_id = callee_session_id  # Senden an Caller  
-                self.recv_session_id = caller_session_id  # Empfangen von Caller
+                self.send_session_id = callee_session_hex  # Hex-String für Senden an Caller  
+                self.recv_session_id = caller_session_hex  # Hex-String für Empfangen von Caller
                 
             # ✅ FÜR KOMPATIBILITÄT
             self.session_id = self.send_session_id
             
             print(f"✅ [CALL] Session mapping for {role}:")
-            print(f"   SEND: '{self.send_session_id}'")
-            print(f"   RECV: '{self.recv_session_id}'")
+            print(f"   SEND: {self.send_session_id}")
+            print(f"   RECV: {self.recv_session_id}")
+            
+            # ✅ VALIDIERE HEX-FORMAT
+            try:
+                # Teste ob es gültige Hex-Strings sind
+                bytes.fromhex(self.send_session_id)
+                bytes.fromhex(self.recv_session_id)
+                print("✅ [CALL] Session IDs are valid hex strings")
+            except ValueError as e:
+                print(f"❌ [CALL ERROR] Invalid hex in session IDs: {e}")
+                return
             
             # ✅ UDP RELAY KONFIGURATION
             self.use_udp_relay = msg.get('USE_AUDIO_RELAY', False)
             self.relay_server_ip = msg.get('AUDIO_RELAY_IP')
-            self.relay_server_port = msg.get('SERVER_RELAY_PORT', 51820)  # ✅ Expliziter Default
+            self.relay_server_port = msg.get('SERVER_RELAY_PORT', 51820)
             
             if self.use_udp_relay and self.relay_server_ip:
                 print(f"[CALL] ✅ UDP Relay configured: {self.relay_server_ip}:{self.relay_server_port}")
@@ -5614,7 +5609,7 @@ class CALL:
                 
                 # Audio-Streams mit Verzögerung starten
                 if hasattr(self.client, 'after'):
-                    self.client.after(1000, self._delayed_start_audio_streams)  # 1 Sekunde Verzögerung
+                    self.client.after(1000, self._delayed_start_audio_streams)
                 else:
                     threading.Timer(1.0, self._delayed_start_audio_streams).start()
             else:
