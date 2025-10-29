@@ -1254,18 +1254,18 @@ class CONVEY:
             traceback.print_exc()
 
     def _turbo_relay_loop(self):
-        """⚡ KORRIGIERT: Session-basiertes UDP Relay mit 8-Byte Session-IDs"""
+        """⚡ KORRIGIERT: Session-basiertes UDP Relay mit KONSISTENTER Bytes-Verarbeitung"""
         import select
         packet_count = 0
         
-        print(f"[TURBO RELAY CLEAN] 🚀 Starting clean session-based turbo loop ({self.SESSION_ID_LENGTH} bytes)...")
+        print(f"[TURBO RELAY FIXED] 🚀 Starting CONSISTENT bytes-based turbo loop...")
         
         while True:
             try:
                 ready, _, _ = select.select([self.udp_socket], [], [], 0.05)
                 
                 if ready:
-                    # ✅ GRÖSSENVALIDIERUNG: Max 1400 Bytes
+                    # ✅ GRÖSSENVALIDIERUNG
                     data, src_addr = self.udp_socket.recvfrom(1400)
                     packet_count += 1
                     
@@ -1274,14 +1274,17 @@ class CONVEY:
                         continue
                         
                     if len(data) > 1400:
-                        if packet_count % 1000 == 0:
-                            print(f"❌ [AUDIO OVERSIZE] {len(data)} bytes from {src_addr}")
                         continue
-                        
-                    # ✅ NUR HIER: Session-ID Extraktion für Routing
+                            
+                    # ✅ KONSISTENT: Session-ID als Bytes extrahieren
                     session_bytes = data[:self.SESSION_ID_LENGTH]
                     
-                    # ⚡ SCHNELLER SESSION-LOOKUP
+                    # ⚡ DEBUG: Zeige was tatsächlich ankommt
+                    if packet_count % 100 == 0:
+                        session_hex = session_bytes.hex()
+                        print(f"🔍 [RELAY DEBUG] Packet #{packet_count} - Session: {session_hex} from {src_addr}")
+                    
+                    # ⚡ SCHNELLER SESSION-LOOKUP MIT BYTES
                     with self.relay_lock:
                         target_addr = self.session_routing.get(session_bytes)
                     
@@ -1290,27 +1293,38 @@ class CONVEY:
                             # ⚡ DIREKTES WEITERLEITEN
                             self.udp_socket.sendto(data, target_addr)
                             
-                            # ✅ REDUZIERTES DEBUGGING
-                            if packet_count % 50000 == 0:
+                            # ✅ DEBUG: Zeige erfolgreiches Routing
+                            if packet_count % 500 == 0:
                                 session_hex = session_bytes.hex()
-                                session_str = session_bytes.decode('utf-8', errors='ignore').rstrip('\0')
-                                print(f"📤 [TURBO RELAY] Packet #{packet_count:,} via '{session_str}'")
-                                
+                                print(f"📤 [TURBO RELAY] Packet #{packet_count} routed via {session_hex} to {target_addr}")
+                                    
                         except Exception as send_error:
                             print(f"[TURBO RELAY SEND ERROR] {send_error}")
                             # ✅ CLEANUP: Defekte Verbindungen
-                            if "Connection refused" in str(send_error):
+                            if "Connection refused" in str(send_error) or "Host is down" in str(send_error):
                                 with self.relay_lock:
-                                    if session_bytes in self.session_routing:
-                                        del self.session_routing[session_bytes]
-                                        print(f"[TURBO RELAY] Removed broken session")
+                                    # Finde und entferne alle Sessions die zu dieser Adresse führen
+                                    sessions_to_remove = []
+                                    for sess_bytes, addr in self.session_routing.items():
+                                        if addr == target_addr:
+                                            sessions_to_remove.append(sess_bytes)
+                                    
+                                    for sess_bytes in sessions_to_remove:
+                                        del self.session_routing[sess_bytes]
+                                        print(f"[TURBO RELAY] Removed broken session {sess_bytes.hex()}")
                     else:
                         # ❌ Keine Route für Session-ID
-                        if packet_count % 1000 == 0:
-                            session_hex = session_bytes.hex()
-                            session_str = session_bytes.decode('utf-8', errors='ignore').rstrip('\0')
-                            print(f"[TURBO RELAY WARNING] No route for session '{session_str}' from {src_addr}")
-                            
+                        session_hex = session_bytes.hex()
+                        print(f"❌ [TURBO RELAY WARNING] No route for session {session_hex} from {src_addr}")
+                        
+                        # 🔍 DEBUG: Zeige aktuelle Routing-Tabelle
+                        if packet_count % 10 == 0:
+                            with self.relay_lock:
+                                print(f"🔍 [ROUTING TABLE DEBUG] {len(self.session_routing)} active sessions:")
+                                for sess_bytes, addr in list(self.session_routing.items())[:3]:
+                                    sess_hex = sess_bytes.hex()
+                                    print(f"   {sess_hex} -> {addr}")
+                                
             except BlockingIOError:
                 continue
             except Exception as e:
@@ -1319,32 +1333,17 @@ class CONVEY:
                 continue
 
     def _register_audio_relay(self, call_id, caller_name, callee_name):
-        """🎯 EXKLUSIV: Generiert Session-IDs und richtet Routing ein"""
+        """🎯 KORRIGIERT: Generiert Session-IDs als BYTES für Konsistenz"""
         try:
-            import hashlib
-            import time
             import secrets
             
-            # ✅ NUR HIER: Session-ID Generierung
-            caller_to_callee_session = hashlib.sha3_256(
-                f"{call_id}_caller_{time.time_ns()}_{secrets.token_hex(4)}".encode()
-            ).hexdigest()[:self.SESSION_ID_LENGTH]
+            # ✅ KONSISTENT: Direkt 8 Bytes generieren (keine Strings!)
+            caller_session_bytes = secrets.token_bytes(self.SESSION_ID_LENGTH)
+            callee_session_bytes = secrets.token_bytes(self.SESSION_ID_LENGTH)
             
-            callee_to_caller_session = hashlib.sha3_256(
-                f"{call_id}_callee_{time.time_ns()}_{secrets.token_hex(4)}".encode()
-            ).hexdigest()[:self.SESSION_ID_LENGTH]
-            
-            # ✅ Konvertiere zu Bytes
-            caller_session_bytes = caller_to_callee_session.encode('utf-8')[:self.SESSION_ID_LENGTH]
-            callee_session_bytes = callee_to_caller_session.encode('utf-8')[:self.SESSION_ID_LENGTH]
-            
-            # ✅ Stelle sicher dass genau 8 Bytes
-            caller_session_bytes = caller_session_bytes.ljust(self.SESSION_ID_LENGTH, b'\0')
-            callee_session_bytes = callee_session_bytes.ljust(self.SESSION_ID_LENGTH, b'\0')
-            
-            print(f"[RELAY CLEAN] {self.SESSION_ID_LENGTH}-Byte Session-IDs generiert:")
-            print(f"  Caller → Callee: {caller_to_callee_session} -> {caller_session_bytes.hex()}")
-            print(f"  Callee → Caller: {callee_to_caller_session} -> {callee_session_bytes.hex()}")
+            print(f"[RELAY FIXED] {self.SESSION_ID_LENGTH}-Byte Session-IDs generiert:")
+            print(f"  Caller → Callee: {caller_session_bytes.hex()}")
+            print(f"  Callee → Caller: {callee_session_bytes.hex()}")
 
             # ✅ IP-Adressen ermitteln
             caller_ip = None
@@ -1362,35 +1361,35 @@ class CONVEY:
                 print(f"[RELAY ERROR] Could not find IP addresses for clients")
                 return False
 
-            # ✅ ROUTING EINRICHTEN (NUR HIER!)
+            # ✅ ROUTING EINRICHTEN MIT BYTES
             with self.relay_lock:
                 # Alte Sessions bereinigen
                 self._cleanup_existing_sessions(call_id)
                 
-                # Neues Routing einrichten
+                # Neues Routing mit BYTES als Keys
                 self.session_routing[caller_session_bytes] = (callee_ip, 51821)
                 self.session_routing[callee_session_bytes] = (caller_ip, 51821)
                 
-                print(f"[RELAY CLEAN] Routing eingerichtet:")
+                print(f"[RELAY FIXED] Routing eingerichtet:")
                 print(f"  {caller_session_bytes.hex()} -> {callee_ip}:51821")
                 print(f"  {callee_session_bytes.hex()} -> {caller_ip}:51821")
 
-            # ✅ Relay-Info speichern
+            # ✅ Relay-Info speichern (NUR BYTES)
             self.audio_relays[call_id] = {
                 'caller_name': caller_name,
                 'callee_name': callee_name,
                 'caller_addr': (caller_ip, 51821),
                 'callee_addr': (callee_ip, 51821),
-                'caller_session_id': caller_to_callee_session,
-                'callee_session_id': callee_to_caller_session,
+                # ✅ KONSISTENT: Nur Bytes speichern
                 'caller_session_bytes': caller_session_bytes,
                 'callee_session_bytes': callee_session_bytes,
                 'timestamp': time.time(),
             }
             
+            # ✅ An Clients als HEX-Strings senden (für einfache Übertragung)
             return {
-                'caller_session_id': caller_to_callee_session,
-                'callee_session_id': callee_to_caller_session
+                'caller_session_id': caller_session_bytes.hex(),  # Bytes zu Hex-String
+                'callee_session_id': callee_session_bytes.hex()   # Bytes zu Hex-String
             }
             
         except Exception as e:
@@ -1408,29 +1407,48 @@ class CONVEY:
                 self.session_routing.pop(old_relay['callee_session_bytes'], None)
         
     def _debug_session_routing(self):
-        """Debug-Ausgabe der Session Routing Table mit erweiterter Info"""
+        """🔍 ERWEITERT: Debug-Ausgabe mit Bytes/Hex-Konsistenz-Prüfung"""
         with self.relay_lock:
-            print("\n=== ERWEITERTE SESSION ROUTING DEBUG ===")
-            print(f"Total sessions: {len(self.session_routing)}")
+            print("\n" + "="*70)
+            print("🔍 BYTES/HEX SESSION CONSISTENCY DEBUG")
+            print("="*70)
+            print(f"Total routing entries: {len(self.session_routing)}")
+            print(f"Total active relays: {len(self.audio_relays)}")
             
+            # 1. Routing-Tabelle (Bytes Keys)
+            print(f"\n📋 ROUTING TABLE ({len(self.session_routing)} entries):")
             if not self.session_routing:
-                print("  ❌ NO SESSIONS")
+                print("  ❌ NO ROUTING ENTRIES")
             else:
                 for session_bytes, target_addr in self.session_routing.items():
-                    session_hex = session_bytes.hex()[:8]
-                    session_str = session_bytes.rstrip(b'\0').decode('utf-8', errors='ignore')
-                    print(f"  Session '{session_str}' ({session_hex}...) -> {target_addr}")
+                    session_hex = session_bytes.hex()
+                    print(f"  Bytes: {session_bytes.hex()} -> {target_addr}")
             
-            print("=== ACTIVE RELAYS ===")
-            for call_id, relay_data in self.audio_relays.items():
+            # 2. Active Calls (Hex-Strings)
+            print(f"\n📞 ACTIVE CALLS ({len(self.active_calls)}):")
+            for call_id, call_data in self.active_calls.items():
+                caller_hex = call_data.get('caller_session_id', 'MISSING')
+                callee_hex = call_data.get('callee_session_id', 'MISSING')
+                
                 print(f"  Call {call_id}:")
-                print(f"    {relay_data['caller_name']} -> {relay_data['callee_name']}")
-                print(f"    Caller Session Full: {relay_data.get('caller_session_id', 'MISSING')}")
-                print(f"    Caller Session Short: {relay_data.get('caller_session_short', 'MISSING')}")
-                print(f"    Callee Session Full: {relay_data.get('callee_session_id', 'MISSING')}")
-                print(f"    Callee Session Short: {relay_data.get('callee_session_short', 'MISSING')}")
+                print(f"    Caller Session: {caller_hex}")
+                print(f"    Callee Session: {callee_hex}")
+                
+                # ✅ KONSISTENZ-PRÜFUNG
+                try:
+                    caller_bytes = bytes.fromhex(caller_hex) if caller_hex != 'MISSING' else None
+                    callee_bytes = bytes.fromhex(callee_hex) if callee_hex != 'MISSING' else None
+                    
+                    caller_in_routing = caller_bytes in self.session_routing if caller_bytes else False
+                    callee_in_routing = callee_bytes in self.session_routing if callee_bytes else False
+                    
+                    status = "✅ CONSISTENT" if (caller_in_routing and callee_in_routing) else "❌ INCONSISTENT"
+                    print(f"    Status: {status}")
+                    
+                except ValueError as e:
+                    print(f"    Status: ❌ INVALID HEX: {e}")
             
-            print("=" * 50)        
+            print("="*70)  
         
     def _is_server_in_same_nat(self, caller_nat_ip, callee_nat_ip):
         """Ermittelt ob der Server im gleichen NAT wie die Clients ist - VOLLSTÄNDIG KORRIGIERT"""
@@ -1733,7 +1751,7 @@ class CONVEY:
                 
             return False
     def handle_call_request(self, msg, client_socket, client_name):
-        """🚀 KORRIGIERT: Single-Port System mit BIDIREKTIONALEN Session-IDs"""
+        """🚀 KORRIGIERT: Mit KONSISTENTER Session-ID Übergabe"""
         try:
             custom_data = msg.get('custom_data', {})
             target_id = custom_data.get('TARGET_CLIENT_ID')
@@ -1745,13 +1763,7 @@ class CONVEY:
 
             # ✅ VALIDIERUNG
             if not all([target_id, encrypted_data, caller_name, caller_client_id]):
-                print("[CONVEY ERROR] Missing required fields in framed SIP")
-                error_msg = self.server.build_sip_message("MESSAGE", client_name, {
-                    "MESSAGE_TYPE": "CALL_ERROR",
-                    "ERROR": "MISSING_REQUIRED_FIELDS",
-                    "TIMESTAMP": int(time.time())
-                })
-                send_frame(client_socket, error_msg.encode('utf-8'))
+                print("[CONVEY ERROR] Missing required fields")
                 return False
 
             # ✅ ZIELSUCHE
@@ -1761,11 +1773,9 @@ class CONVEY:
             target_client_id = None
             
             with self.server.clients_lock:
-                print(f"[CONVEY DEBUG] Searching through {len(self.server.clients)} clients:")
                 for client_id, client_info in self.server.clients.items():
                     client_name_debug = client_info.get('name', 'unknown')
                     
-                    # ✅ VERBESSERTE SUCHE
                     if str(client_id) == str(target_id) or client_name_debug == target_id:
                         target_client = client_info
                         target_socket = client_info.get('socket')
@@ -1774,27 +1784,8 @@ class CONVEY:
                         print(f"[CONVEY DEBUG] ✓ Found target: {client_name_debug}")
                         break
 
-            if not target_client:
-                print(f"[CONVEY ERROR] Target client {target_id} not found")
-                error_msg = self.server.build_sip_message("MESSAGE", caller_name, {
-                    "MESSAGE_TYPE": "CALL_ERROR",
-                    "ERROR": "TARGET_NOT_FOUND",
-                    "TARGET_ID": target_id,
-                    "TIMESTAMP": int(time.time())
-                })
-                send_frame(client_socket, error_msg.encode('utf-8'))
-                return False
-
-            if not target_socket:
-                print(f"[CONVEY ERROR] Target client {target_id} has no active socket")
-                error_msg = self.server.build_sip_message("MESSAGE", caller_name, {
-                    "MESSAGE_TYPE": "CALL_ERROR", 
-                    "ERROR": "TARGET_OFFLINE",
-                    "TARGET_ID": target_id,
-                    "TARGET_NAME": target_client_name,
-                    "TIMESTAMP": int(time.time())
-                })
-                send_frame(client_socket, error_msg.encode('utf-8'))
+            if not target_client or not target_socket:
+                print(f"[CONVEY ERROR] Target client {target_id} not found or offline")
                 return False
 
             # ✅ Server IP für Relay
@@ -1810,38 +1801,28 @@ class CONVEY:
             
             server_ip = get_server_public_ip()
 
-            # ✅ CALL REGISTRIERUNG (VOR Audio Setup)
+            # ✅ CALL REGISTRIERUNG
             call_id = f"{caller_client_id}_{target_client_id}_{int(time.time())}"
             
-            # ✅ AUDIO RELAY SETUP MIT BIDIREKTIONALEN SESSION-IDs
+            # ✅ AUDIO RELAY SETUP MIT KONSISTENTEN BYTES
             relay_result = self._register_audio_relay(call_id, caller_name, target_client_name)
             if not relay_result:
                 print("[CONVEY ERROR] Failed to setup audio relay")
-                error_msg = self.server.build_sip_message("MESSAGE", caller_name, {
-                    "MESSAGE_TYPE": "CALL_ERROR",
-                    "ERROR": "AUDIO_RELAY_SETUP_FAILED",
-                    "TARGET_NAME": target_client_name,
-                    "TIMESTAMP": int(time.time())
-                })
-                send_frame(client_socket, error_msg.encode('utf-8'))
                 return False
 
-            caller_session_id = relay_result.get('caller_session_id')
-            callee_session_id = relay_result.get('callee_session_id')
+            # ✅ KONSISTENT: Hex-Strings vom Relay erhalten
+            caller_session_hex = relay_result.get('caller_session_id')  # Hex-String
+            callee_session_hex = relay_result.get('callee_session_id')  # Hex-String
             
-            if not caller_session_id or not callee_session_id:
+            if not caller_session_hex or not callee_session_hex:
                 print("[CONVEY ERROR] Missing session IDs from relay setup")
-                error_msg = self.server.build_sip_message("MESSAGE", caller_name, {
-                    "MESSAGE_TYPE": "CALL_ERROR",
-                    "ERROR": "SESSION_ID_GENERATION_FAILED", 
-                    "TIMESTAMP": int(time.time())
-                })
-                send_frame(client_socket, error_msg.encode('utf-8'))
                 return False
 
-            print(f"[CONVEY] ✅ Bidirectional Session IDs generated - Caller: {caller_session_id}, Callee: {callee_session_id}")
+            print(f"[CONVEY] ✅ Bidirectional Session IDs generated:")
+            print(f"  Caller: {caller_session_hex}")
+            print(f"  Callee: {callee_session_hex}")
 
-            # ✅ INCOMING_CALL AN CALLEE mit BEIDEN Session-IDs
+            # ✅ INCOMING_CALL AN CALLEE mit HEX-STRINGS
             incoming_call_data = {
                 "MESSAGE_TYPE": "INCOMING_CALL",
                 "CALLER_NAME": caller_name,
@@ -1849,36 +1830,30 @@ class CONVEY:
                 "ENCRYPTED_CALL_DATA": encrypted_data,
                 "TIMESTAMP": int(time.time()),
                 "TIMEOUT": 120,
-                # ✅ SINGLE-PORT SYSTEM
                 "USE_AUDIO_RELAY": True,
                 "AUDIO_RELAY_IP": server_ip,
                 "SERVER_RELAY_PORT": self.udp_relay_port,
                 "CLIENT_PORT": 51821,
-                # ✅ NEU: BIDIREKTIONALE SESSION-IDs
-                "CALLER_SESSION_ID": caller_session_id,  # Für Empfangen von Caller
-                "CALLEE_SESSION_ID": callee_session_id   # Für Senden an Caller
+                # ✅ KONSISTENT: Hex-Strings senden
+                "CALLER_SESSION_ID": caller_session_hex,  # Hex-String für Empfangen von Caller
+                "CALLEE_SESSION_ID": callee_session_hex   # Hex-String für Senden an Caller
             }
             
             incoming_call_msg = self.server.build_sip_message("MESSAGE", target_client_name, incoming_call_data)
             
-            print(f"[CONVEY DEBUG] Outgoing INCOMING_CALL with session IDs - Caller: {caller_session_id}, Callee: {callee_session_id}")
+            print(f"[CONVEY DEBUG] Outgoing INCOMING_CALL with session IDs:")
+            print(f"  Caller Session: {caller_session_hex}")
+            print(f"  Callee Session: {callee_session_hex}")
             
             send_success = send_frame(target_socket, incoming_call_msg.encode('utf-8'))
             
             if not send_success:
                 print("[CONVEY ERROR] Failed to send framed SIP INCOMING_CALL")
-                error_msg = self.server.build_sip_message("MESSAGE", caller_name, {
-                    "MESSAGE_TYPE": "CALL_ERROR",
-                    "ERROR": "TARGET_SEND_FAILED",
-                    "TARGET_NAME": target_client_name,
-                    "TIMESTAMP": int(time.time())
-                })
-                send_frame(client_socket, error_msg.encode('utf-8'))
                 return False
 
             print(f"[CONVEY] ✓ Framed SIP INCOMING_CALL successfully sent to target {target_client_name}")
 
-            # ✅ ACTIVE CALLS REGISTRIERUNG (nach erfolgreichem Senden)
+            # ✅ ACTIVE CALLS REGISTRIERUNG
             self.active_calls[call_id] = {
                 'caller_id': caller_client_id,
                 'callee_id': target_client_id,
@@ -1890,14 +1865,14 @@ class CONVEY:
                 'status': 'pending',
                 'timeout': 120,
                 'server_ip': server_ip,
-                # ✅ NEU: Beide Session-IDs speichern
-                'caller_session_id': caller_session_id,
-                'callee_session_id': callee_session_id
+                # ✅ KONSISTENT: Hex-Strings speichern
+                'caller_session_id': caller_session_hex,
+                'callee_session_id': callee_session_hex
             }
 
             print(f"[CONVEY] Call {call_id} registered in active calls")
 
-            # ✅ ACKNOWLEDGMENT AN CALLER mit BEIDEN Session-IDs
+            # ✅ ACKNOWLEDGMENT AN CALLER mit HEX-STRINGS
             ack_msg = self.server.build_sip_message("MESSAGE", caller_name, {
                 "MESSAGE_TYPE": "CALL_REQUEST_ACK",
                 "STATUS": "CALL_FORWARDED",
@@ -1905,19 +1880,18 @@ class CONVEY:
                 "TARGET_NAME": target_client_name,
                 "CALL_ID": call_id,
                 "TIMESTAMP": int(time.time()),
-                # ✅ SINGLE-PORT INFO
                 "SERVER_RELAY_PORT": self.udp_relay_port,
                 "CLIENT_PORT": 51821,
-                # ✅ NEU: BIDIREKTIONALE SESSION-IDs
-                "CALLER_SESSION_ID": caller_session_id,  # Für Senden an Callee
-                "CALLEE_SESSION_ID": callee_session_id   # Für Empfangen von Callee
+                # ✅ KONSISTENT: Hex-Strings senden
+                "CALLER_SESSION_ID": caller_session_hex,  # Hex-String für Senden an Callee
+                "CALLEE_SESSION_ID": callee_session_hex   # Hex-String für Empfangen von Callee
             })
             
             ack_success = send_frame(client_socket, ack_msg.encode('utf-8'))
             if ack_success:
-                print(f"[CONVEY] ✓ Call request acknowledgment sent to caller {caller_name} with both Session-IDs")
+                print(f"[CONVEY] ✓ Call request acknowledgment sent to caller {caller_name}")
             else:
-                print(f"[CONVEY WARNING] Failed to send acknowledgment to caller {caller_name}")
+                print(f"[CONVEY WARNING] Failed to send acknowledgment to caller")
 
             # Timeout-Überwachung
             threading.Thread(
@@ -1926,24 +1900,13 @@ class CONVEY:
                 daemon=True
             ).start()
 
-            print(f"[CONVEY] ✅ Framed SIP call request completed for {call_id} with bidirectional Session-IDs")
+            print(f"[CONVEY] ✅ Framed SIP call request completed for {call_id}")
             return True
             
         except Exception as e:
             print(f"[CONVEY ERROR] Framed SIP call request failed: {str(e)}")
             import traceback
             traceback.print_exc()
-            
-            try:
-                error_msg = self.server.build_sip_message("MESSAGE", client_name, {
-                    "MESSAGE_TYPE": "CALL_ERROR", 
-                    "ERROR": f"INTERNAL_SERVER_ERROR: {str(e)}",
-                    "TIMESTAMP": int(time.time())
-                })
-                send_frame(client_socket, error_msg.encode('utf-8'))
-            except:
-                print("[CONVEY CRITICAL] Could not send error message")
-                
             return False
 
     def handle_call_response(self, msg, client_socket, client_name):
