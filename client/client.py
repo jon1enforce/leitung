@@ -3370,17 +3370,17 @@ class CALL:
             
             # ✅ STARTE ISOLIERTE AUDIO-THREADS
             send_thread = threading.Thread(
-                target=self.audio_stream_out_robust,
+                target=self.audio_stream_out,
                 args=(relay_ip, send_to_port, iv, key),
                 daemon=True,
-                name="AudioOut_Robust"
+                name="AudioOut"
             )
             
             recv_thread = threading.Thread(
-                target=self.audio_stream_in_robust, 
+                target=self.audio_stream_in, 
                 args=(listen_port, iv, key),
                 daemon=True,
-                name="AudioIn_Robust"
+                name="AudioIn"
             )
             
             # ✅ STARTE THREADS MIT VERZÖGERUNG
