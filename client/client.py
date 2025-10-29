@@ -3268,7 +3268,7 @@ class CALL:
             return False
 
     def recv_audio_packet(self, sock, timeout=0.1):
-        """🎯 KORRIGIERT: WENIGER STRENGE Session-ID Validierung FÜR DEBUG"""
+        """🎯 KORRIGIERT: Session-ID Validation MIT ERWEITERTEM DEBUGGING"""
         try:
             sock.settimeout(timeout)
             data, addr = sock.recvfrom(4096)
@@ -3283,19 +3283,30 @@ class CALL:
             # Session-ID dekodieren
             session_id = session_bytes.decode('utf-8', errors='ignore').rstrip('\0')
             
-            # ✅ WENIGER STRENGE VALIDIERUNG: Nur prüfen, aber nicht blockieren
+            # ✅ STRENGE VALIDIERUNG BEIBEHALTEN (SICHERHEIT!)
             if hasattr(self, 'recv_session_id') and self.recv_session_id:
                 expected_short = self.recv_session_id[:self.SESSION_ID_LENGTH]
                 if session_id != expected_short:
-                    if hasattr(self, 'session_validation_errors'):
-                        self.session_validation_errors += 1
-                    else:
-                        self.session_validation_errors = 1
+                    if not hasattr(self, 'session_validation_errors'):
+                        self.session_validation_errors = 0
+                    self.session_validation_errors += 1
                     
-                    # ✅ WICHTIG: NUR LOGGEN, NICHT BLOCKIEREN!
-                    if self.session_validation_errors <= 10 or self.session_validation_errors % 20 == 0:
-                        print(f"🔍 [SESSION MISMATCH #{self.session_validation_errors}] Received: '{session_id}' vs Expected: '{expected_short}' - BUT ACCEPTING FOR DEBUG")
-                    # return None, None, None  # ❌ DIESE ZEILE AUSKOMMENTIEREN!
+                    # ✅ DETAILLIERTES DEBUGGING bei Mismatch
+                    if self.session_validation_errors <= 10 or self.session_validation_errors % 10 == 0:
+                        print(f"🚨 [SESSION SECURITY BLOCK #{self.session_validation_errors}]")
+                        print(f"   Expected: '{expected_short}' (length: {len(expected_short)})")
+                        print(f"   Received: '{session_id}' (length: {len(session_id)})")
+                        print(f"   From: {addr}")
+                        print(f"   Packet size: {len(data)} bytes")
+                        
+                        # Debug: Zeige alle verfügbaren Session-IDs
+                        print(f"   Available sessions:")
+                        print(f"     - recv_session_id: {getattr(self, 'recv_session_id', 'NOT SET')}")
+                        print(f"     - send_session_id: {getattr(self, 'send_session_id', 'NOT SET')}")
+                        print(f"     - session_id: {getattr(self, 'session_id', 'NOT SET')}")
+                    
+                    # ❌ WICHTIG: Paket VERWERFEN bei Mismatch (Sicherheit!)
+                    return None, None, None
             else:
                 # ✅ ERSTE PAKETE: Session-ID noch nicht bekannt
                 if not hasattr(self, 'early_packets_received'):
@@ -3303,8 +3314,23 @@ class CALL:
                 self.early_packets_received += 1
                 
                 if self.early_packets_received <= 5:
-                    print(f"🎯 [AUDIO IN EARLY] Received packet with session '{session_id}' before validation setup")
+                    print(f"🎯 [AUDIO IN EARLY] Received packet with session '{session_id}' before validation setup - ACCEPTING")
+                elif self.early_packets_received == 6:
+                    print(f"⚠️ [AUDIO IN] Still receiving packets without session setup - might be security issue")
+                
+                # Früh Pakete akzeptieren, aber nach 10 Paketen blockieren
+                if self.early_packets_received > 10:
+                    print(f"🚨 [SECURITY] Too many packets without session setup - blocking")
+                    return None, None, None
             
+            # ✅ PAKET AKZEPTIERT - Session-ID stimmt überein
+            if not hasattr(self, 'valid_packets_received'):
+                self.valid_packets_received = 0
+            self.valid_packets_received += 1
+            
+            if self.valid_packets_received <= 3 or self.valid_packets_received % 50 == 0:
+                print(f"✅ [AUDIO IN VALID] Packet #{self.valid_packets_received} with correct session '{session_id}'")
+                
             return session_id, encrypted_data, addr
             
         except socket.timeout:
@@ -3316,10 +3342,19 @@ class CALL:
 
            
     def audio_stream_out(self, target_ip, port, iv, key):
-        """🎤 KORRIGIERT: Sendet Audio NUR über send_audio_packet"""
+        """🎤 KORRIGIERT: Sendet Audio NUR über send_audio_packet MIT EXPLIZITER SESSION-ID"""
         
-        print(f"🔴 [AUDIO OUT CORRECTED] Starting audio stream via send_audio_packet to {target_ip}:51820")
-        print(f"🔴 [AUDIO OUT] Session ID: {getattr(self, 'send_session_id', 'NOT SET')}")
+        # ✅ KRITISCHE KORREKTUR: Session-ID basierend auf Rolle setzen
+        if hasattr(self, 'send_session_id') and self.send_session_id:
+            session_id_to_use = self.send_session_id
+            print(f"🔴 [AUDIO OUT CORRECTED] Using EXPLICIT send_session_id: {session_id_to_use}")
+        else:
+            # Fallback: Verwende session_id (Legacy)
+            session_id_to_use = getattr(self, 'session_id', 'default')
+            print(f"⚠️ [AUDIO OUT WARNING] Using fallback session_id: {session_id_to_use}")
+        
+        print(f"🔴 [AUDIO OUT CORRECTED] Starting audio stream via send_audio_packet to {target_ip}:{port}")
+        print(f"🔴 [AUDIO OUT] Session ID: {session_id_to_use}")
         
         audio_socket = None
         
@@ -3330,11 +3365,6 @@ class CALL:
             
         if not self.active_call:
             print("❌ [AUDIO OUT] Kein aktiver Call")
-            return False
-
-        # ✅ KRITISCHE SESSION-VALIDIERUNG
-        if not hasattr(self, 'send_session_id') or not self.send_session_id:
-            print("❌ [AUDIO OUT] CRITICAL: send_session_id not set!")
             return False
 
         try:
@@ -3366,7 +3396,7 @@ class CALL:
             audio_socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             audio_socket.settimeout(0.05)
             
-            target_addr = (target_ip, 51820)
+            target_addr = (target_ip, port)
             print(f"🎤 [AUDIO OUT] Sende Audio via send_audio_packet an {target_ip}:{port}")
             
             # ✅ PERFORMANCE VARIABLEN
@@ -3382,7 +3412,7 @@ class CALL:
             
             print(f"🚀 [AUDIO OUT] Starte Audio-Loop ({PACKETS_PER_SECOND} pkt/sec)...")
             
-            # ✅ HAUPT AUDIO LOOP - NUR ÜBER send_audio_packet
+            # ✅ HAUPT AUDIO LOOP - NUR ÜBER send_audio_packet MIT KORREKTER SESSION-ID
             while self.active_call and self.audio_available and buffer_errors < max_buffer_errors:
                 try:
                     current_time = time.time()
@@ -3409,15 +3439,15 @@ class CALL:
                     encrypted_data = cipher.update(padded_data)
                     encrypted_data += cipher.final()
                     
-                    # ✅ KORREKTUR: NUR ÜBER send_audio_packet SENDEN
-                    if self.send_audio_packet(audio_socket, self.send_session_id, encrypted_data, target_addr):
+                    # ✅ KORREKTUR: NUR ÜBER send_audio_packet SENDEN MIT EXPLIZITER SESSION-ID
+                    if self.send_audio_packet(audio_socket, session_id_to_use, encrypted_data, target_addr):
                         success_packets += 1
                         buffer_errors = 0
                         last_send_time = time.time()
                         
                         # ✅ DEBUGGING FÜR ERSTE PAKETE
                         if packet_counter <= 5:
-                            print(f"📤 [AUDIO OUT] Paket {packet_counter} via send_audio_packet gesendet")
+                            print(f"📤 [AUDIO OUT] Paket {packet_counter} mit Session '{session_id_to_use}' gesendet")
                         
                         # ✅ PERFORMANCE LOGGING
                         if success_packets % 500 == 0:
@@ -3446,6 +3476,7 @@ class CALL:
             print(f"   Gesamt Pakete: {packet_counter:,}")
             print(f"   Erfolgreich: {success_packets:,}")
             print(f"   Buffer Fehler: {buffer_errors}")
+            print(f"   Verwendete Session-ID: {session_id_to_use}")
             
             return success_packets > 0
                                                 
@@ -3607,8 +3638,7 @@ class CALL:
                 print(f"✅ [AUDIO] Active call confirmed: {self.active_call}")
                 
                 # ✅ SYNCHRONISATION
-                import time
-                time.sleep(0.1)
+                time.sleep(2.5)
                 
                 # ✅ TIMER STARTEN
                 self._start_call_timer()
@@ -3707,9 +3737,12 @@ class CALL:
         
         print("="*60)
     def _delayed_start_audio_streams(self):
-        """Startet Audio-Streams mit Verzögerung nach CALL_CONFIRMED - MIT SAFETY CHECK"""
+        """Startet Audio-Streams mit Verzögerung nach CALL_CONFIRMED - MIT SESSION-DEBUG"""
         try:
             print("🚀 [DELAYED AUDIO] Starting audio streams after delay...")
+            
+            # ✅ NUR EINE DEBUG-FUNKTION
+            self.debug_session_state()
             
             # ✅ Prüfe ob Call noch aktiv ist
             if not self.active_call:
@@ -3739,7 +3772,63 @@ class CALL:
             print(f"❌ [DELAYED AUDIO ERROR] Failed to start audio: {e}")
             import traceback
             traceback.print_exc()
-
+    def debug_session_state(self):
+        """🔍 Debug-Methode zur Überprüfung des Session-Zustands"""
+        print("\n" + "="*60)
+        print("🔍 SESSION STATE DEBUG")
+        print("="*60)
+        
+        # Rolle bestimmen
+        if hasattr(self, 'pending_call') and self.pending_call:
+            role = "CALLER"
+        elif hasattr(self, 'incoming_call') and self.incoming_call:
+            role = "CALLEE" 
+        else:
+            role = "UNKNOWN"
+        
+        print(f"Role: {role}")
+        print(f"Active Call: {self.active_call}")
+        print(f"Audio Streams Running: {getattr(self, 'audio_streams_running', False)}")
+        print(f"Use UDP Relay: {self.use_udp_relay}")
+        print(f"Relay Server: {self.relay_server_ip}:{getattr(self, 'relay_server_port', 'N/A')}")
+        
+        # Session-IDs mit Längen
+        sessions = {
+            'send_session_id': getattr(self, 'send_session_id', 'NOT SET'),
+            'recv_session_id': getattr(self, 'recv_session_id', 'NOT SET'),
+            'session_id': getattr(self, 'session_id', 'NOT SET')
+        }
+        
+        for name, value in sessions.items():
+            if value != 'NOT SET':
+                short = value[:self.SESSION_ID_LENGTH] if len(value) >= self.SESSION_ID_LENGTH else value
+                print(f"{name}: '{short}' (full: {value[:16]}... length: {len(value)})")
+            else:
+                print(f"{name}: {value}")
+        
+        # Session-Konsistenz prüfen
+        if (sessions['send_session_id'] != 'NOT SET' and 
+            sessions['recv_session_id'] != 'NOT SET'):
+            
+            send_short = sessions['send_session_id'][:self.SESSION_ID_LENGTH]
+            recv_short = sessions['recv_session_id'][:self.SESSION_ID_LENGTH]
+            
+            if send_short == recv_short:
+                print("❌ PROBLEM: send_session_id == recv_session_id (should be different!)")
+            else:
+                print("✅ GOOD: send_session_id != recv_session_id")
+        
+        # Secret-Info
+        if hasattr(self, 'current_secret') and self.current_secret:
+            print(f"Current Secret: {len(self.current_secret)} bytes")
+            iv = self.current_secret[:16]
+            key = self.current_secret[16:48]
+            print(f"IV (first 8): {iv[:8].hex()}...")
+            print(f"Key (first 8): {key[:8].hex()}...")
+        else:
+            print("Current Secret: NOT SET")
+        
+        print("="*60)
 
     def show_audio_devices_popup(self):
         """Audio-Geräte, Qualitätsauswahl und Rauschfilterung - KORRIGIERTE DPI-VERSION"""
